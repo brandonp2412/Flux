@@ -2590,6 +2590,49 @@ app Screen
         "Text.wrap: false requires compile-time textAlign unless ellipsize: 'end' is used"
     ));
 
+    let advanced_source = r#"
+view Screen {
+    state spacing: i64 = 2
+    state leading: i64 = 125
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "A long native label"
+        letterSpacing: spacing
+        lineHeightPercent: leading
+        maxLines: 2
+        ellipsize: "end"
+}
+app Screen
+"#;
+    let advanced_program = fluxc::parser::parse(advanced_source)
+        .expect("advanced Windows Text layout source should parse");
+    let advanced_signatures = fluxc::typecheck::check(&advanced_program)
+        .expect("advanced Windows Text layout source should typecheck");
+    let advanced_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &advanced_program,
+        &advanced_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows Text letter spacing and line height should lower natively");
+    assert!(
+        advanced_windows
+            .contains("SetTextCharacterExtra(dc, flux__win_scale(state->letter_spacing))")
+    );
+    assert!(advanced_windows.contains("GetTextExtentExPointW("));
+    assert!(
+        advanced_windows.contains("static flux__win_text_layout_state flux__win_text_layout_label")
+    );
+    assert!(
+        advanced_windows.contains("SetWindowSubclass(flux__ui_label, flux__win_text_layout_proc")
+    );
+    assert!(advanced_windows.contains("flux__win_next_letter_spacing_label"));
+    assert!(advanced_windows.contains("flux__win_next_line_height_label"));
+    assert!(advanced_windows.contains(
+        "flux__win_text_height_for_lines(flux__ui_label, INT64_C(2), flux__win_text_layout_label.line_height_percent)"
+    ));
+
     for (property, message) in [
         (
             "wrapMode: \"char\"",
@@ -2600,12 +2643,12 @@ app Screen
             "Text.ellipsize currently supports only 'none' and 'end'",
         ),
         (
-            "letterSpacing: 2",
-            "Text.letterSpacing is not yet supported",
+            "letterSpacing: 2097152",
+            "Text.letterSpacing is outside the supported native range",
         ),
         (
-            "lineHeightPercent: 125",
-            "Text.lineHeightPercent is not yet supported",
+            "lineHeightPercent: 0",
+            "Text.lineHeightPercent must be greater than zero",
         ),
     ] {
         let source = format!(
@@ -2861,9 +2904,9 @@ app Screen
         generated.contains("flux__win_text_width_for_chars(flux__ui_title, flux__ui_state_width)")
     );
     assert!(generated.contains("flux__win_text_width_for_chars(flux__ui_body, INT64_C(72))"));
-    assert!(
-        generated.contains("flux__win_text_height_for_lines(flux__ui_title, flux__ui_state_lines)")
-    );
+    assert!(generated.contains(
+        "flux__win_text_height_for_lines(flux__ui_title, flux__ui_state_lines, INT64_C(100))"
+    ));
     assert!(generated.contains("RECT flux__win_refresh_client = {0}"));
 }
 

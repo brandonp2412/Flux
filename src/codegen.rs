@@ -4116,7 +4116,7 @@ fn emit_runtime_prelude(
         out.push_str("static void flux__menu_show(const char *title, const char **items, int64_t item_count, void (*callback)(int64_t)) { if (title == NULL || items == NULL || callback == NULL || item_count <= 0 || item_count > 4096 || !flux__windows_ensure_runtime_proc()) return; HMENU bar = CreateMenu(); HMENU popup = CreatePopupMenu(); wchar_t *wide_title = flux__windows_utf8_to_wide(title); if (bar == NULL || popup == NULL || wide_title == NULL) { if (bar != NULL) DestroyMenu(bar); if (popup != NULL) DestroyMenu(popup); free(wide_title); return; } bool ok = true; for (int64_t index = 0; index < item_count; ++index) { wchar_t *label = flux__windows_utf8_to_wide(items[index] == NULL ? \"\" : items[index]); if (label == NULL || !AppendMenuW(popup, MF_STRING, (UINT_PTR)(FLUX_WINDOWS_MENU_BASE + index), label)) ok = false; free(label); if (!ok) break; } if (ok) ok = AppendMenuW(bar, MF_POPUP, (UINT_PTR)popup, wide_title) != 0; free(wide_title); if (!ok) { DestroyMenu(popup); DestroyMenu(bar); return; } HMENU previous = GetMenu(flux__windows_active_window); if (!SetMenu(flux__windows_active_window, bar)) { DestroyMenu(bar); return; } if (previous != NULL) DestroyMenu(previous); flux__windows_menu_callback = callback; flux__windows_menu_count = (UINT)item_count; DrawMenuBar(flux__windows_active_window); }\n");
     }
     if uses_tray_show && uses_windows {
-        out.push_str("static void flux__tray_show(const char *title, const char *icon_name, void (*callback)(void)) { if (title == NULL || icon_name == NULL || callback == NULL || !flux__windows_ensure_runtime_proc()) return; wchar_t *wide_title = flux__windows_utf8_to_wide(title); wchar_t *wide_icon = flux__windows_utf8_to_wide(icon_name); if (wide_title == NULL || wide_icon == NULL) { free(wide_title); free(wide_icon); return; } HICON icon = NULL; bool owns_icon = false; if (wide_icon[0] != L'\\0') { icon = (HICON)LoadImageW(NULL, wide_icon, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE); owns_icon = icon != NULL; } if (icon == NULL) icon = LoadIconW(NULL, IDI_APPLICATION); memset(&flux__windows_tray_data, 0, sizeof(flux__windows_tray_data)); flux__windows_tray_data.cbSize = sizeof(flux__windows_tray_data); flux__windows_tray_data.hWnd = flux__windows_active_window; flux__windows_tray_data.uID = 1; flux__windows_tray_data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP; flux__windows_tray_data.uCallbackMessage = FLUX_WINDOWS_TRAY_MESSAGE; flux__windows_tray_data.hIcon = icon; lstrcpynW(flux__windows_tray_data.szTip, wide_title, (int)(sizeof(flux__windows_tray_data.szTip) / sizeof(flux__windows_tray_data.szTip[0]))); bool added = icon != NULL && Shell_NotifyIconW(flux__windows_tray_added ? NIM_MODIFY : NIM_ADD, &flux__windows_tray_data) != 0; if (added) { if (flux__windows_tray_icon_owned && flux__windows_tray_icon != NULL && flux__windows_tray_icon != icon) DestroyIcon(flux__windows_tray_icon); flux__windows_tray_icon = icon; flux__windows_tray_icon_owned = owns_icon; flux__windows_tray_added = true; flux__windows_tray_callback = callback; } else if (owns_icon && icon != NULL) { DestroyIcon(icon); } free(wide_title); free(wide_icon); }\n");
+        out.push_str("static void flux__tray_show(const char *title, const char *icon_name, void (*callback)(void)) { if (title == NULL || icon_name == NULL || callback == NULL || !flux__windows_ensure_runtime_proc()) return; wchar_t *wide_title = flux__windows_utf8_to_wide(title); wchar_t *wide_icon = flux__windows_utf8_to_wide(icon_name); if (wide_title == NULL || wide_icon == NULL) { free(wide_title); free(wide_icon); return; } HICON icon = NULL; bool owns_icon = false; if (wide_icon[0] != L'\0') { icon = (HICON)LoadImageW(NULL, wide_icon, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE); owns_icon = icon != NULL; } if (icon == NULL) icon = LoadIconW(NULL, IDI_APPLICATION); memset(&flux__windows_tray_data, 0, sizeof(flux__windows_tray_data)); flux__windows_tray_data.cbSize = sizeof(flux__windows_tray_data); flux__windows_tray_data.hWnd = flux__windows_active_window; flux__windows_tray_data.uID = 1; flux__windows_tray_data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP; flux__windows_tray_data.uCallbackMessage = FLUX_WINDOWS_TRAY_MESSAGE; flux__windows_tray_data.hIcon = icon; lstrcpynW(flux__windows_tray_data.szTip, wide_title, (int)(sizeof(flux__windows_tray_data.szTip) / sizeof(flux__windows_tray_data.szTip[0]))); bool added = icon != NULL && Shell_NotifyIconW(flux__windows_tray_added ? NIM_MODIFY : NIM_ADD, &flux__windows_tray_data) != 0; if (added) { if (flux__windows_tray_icon_owned && flux__windows_tray_icon != NULL && flux__windows_tray_icon != icon) DestroyIcon(flux__windows_tray_icon); flux__windows_tray_icon = icon; flux__windows_tray_icon_owned = owns_icon; flux__windows_tray_added = true; flux__windows_tray_callback = callback; } else if (owns_icon && icon != NULL) { DestroyIcon(icon); } free(wide_title); free(wide_icon); }\n");
     }
     if uses_file_dialog && uses_windows {
         out.push_str("static void flux__windows_file_dialog_callback_path(const wchar_t *path, void (*callback)(const char *)) { if (path == NULL || callback == NULL) return; char *utf8 = flux__windows_wide_to_utf8(path); if (utf8 != NULL) { callback(utf8); free(utf8); } }\n");
@@ -14363,18 +14363,34 @@ fn emit_windows_native_application(
                 "bootstrap Windows Text.richText is not yet supported by the native Win32 text backend",
             ));
         }
-        for (property_name, source_name) in [
-            ("letter_spacing", "letterSpacing"),
-            ("line_height_percent", "lineHeightPercent"),
-        ] {
-            if let Some(property) = view_property(element, property_name) {
-                return Err(diag(
-                    property.value.span,
-                    &format!(
-                        "bootstrap Windows Text.{source_name} is not yet supported by the native Win32 text backend"
-                    ),
-                ));
-            }
+        let uses_custom_text_layout = view_property(element, "letter_spacing").is_some()
+            || view_property(element, "line_height_percent").is_some();
+        if selectable && uses_custom_text_layout {
+            let property = view_property(element, "letter_spacing")
+                .or_else(|| view_property(element, "line_height_percent"))
+                .expect("custom Text layout property exists");
+            return Err(diag(
+                property.value.span,
+                "bootstrap Windows selectable Text does not yet support letterSpacing or lineHeightPercent",
+            ));
+        }
+        if let Some(property) = view_property(element, "letter_spacing")
+            && let Some(value) = static_expr_i64(&property.value, signatures)
+            && !(i64::from(i32::MIN) / 1024..=i64::from(i32::MAX) / 1024).contains(&value)
+        {
+            return Err(diag(
+                property.value.span,
+                "Text.letterSpacing is outside the supported native range",
+            ));
+        }
+        if let Some(property) = view_property(element, "line_height_percent")
+            && let Some(value) = static_expr_i64(&property.value, signatures)
+            && (value <= 0 || value > i64::from(i32::MAX))
+        {
+            return Err(diag(
+                property.value.span,
+                "Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer",
+            ));
         }
         let wrap = match view_property(element, "wrap") {
             Some(property) => {
@@ -14632,15 +14648,24 @@ fn emit_windows_native_application(
                 .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
         })
     });
+    let uses_custom_windows_text_layout = view.elements.iter().any(|element| {
+        element.kind == "Text"
+            && (view_property(element, "letter_spacing").is_some()
+                || view_property(element, "line_height_percent").is_some())
+    });
     let uses_dynamic_text_layout = view.elements.iter().any(|element| {
         element.kind == "Text"
-            && ["max_width_chars", "max_lines"]
-                .iter()
-                .any(|property_name| {
-                    view_property(element, property_name).is_some_and(|property| {
-                        static_expr_i64(&property.value, signatures).is_none()
-                    })
-                })
+            && [
+                "max_width_chars",
+                "max_lines",
+                "letter_spacing",
+                "line_height_percent",
+            ]
+            .iter()
+            .any(|property_name| {
+                view_property(element, property_name)
+                    .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
+            })
     });
     let uses_dynamic_text_typography = view.elements.iter().any(|element| {
         element.kind == "Text"
@@ -14727,12 +14752,279 @@ fn emit_windows_native_application(
     }
     if view.elements.iter().any(|element| element.kind == "Text") {
         out.push_str("static int flux__win_text_width_for_chars(HWND control, int64_t chars) { if (control == NULL) return INT32_MAX; if (chars < 0 || chars > INT32_MAX) { fputs(\"Flux runtime error: Text.maxWidthChars must be between 0 and 2147483647\\n\", stderr); abort(); } if (chars == 0) return INT32_MAX; HDC dc = GetDC(control); if (dc == NULL) return INT32_MAX; HFONT font = (HFONT)SendMessageW(control, WM_GETFONT, 0, 0); HGDIOBJ previous = font != NULL ? SelectObject(dc, font) : NULL; TEXTMETRICA metrics = {0}; int result = INT32_MAX; if (GetTextMetricsA(dc, &metrics)) { int average = metrics.tmAveCharWidth > 0 ? metrics.tmAveCharWidth : 1; int64_t measured = chars * (int64_t)average; result = measured > INT32_MAX ? INT32_MAX : (int)measured; } if (previous != NULL && previous != HGDI_ERROR) SelectObject(dc, previous); ReleaseDC(control, dc); return result; }\n");
-        out.push_str("static int flux__win_text_height_for_lines(HWND control, int64_t lines) { if (control == NULL) return INT32_MAX; if (lines < 1 || lines > INT32_MAX) { fputs(\"Flux runtime error: Text.maxLines must be between 1 and 2147483647\\n\", stderr); abort(); } HDC dc = GetDC(control); if (dc == NULL) return INT32_MAX; HFONT font = (HFONT)SendMessageW(control, WM_GETFONT, 0, 0); HGDIOBJ previous = font != NULL ? SelectObject(dc, font) : NULL; TEXTMETRICA metrics = {0}; int result = INT32_MAX; if (GetTextMetricsA(dc, &metrics)) { int line_height = metrics.tmHeight + metrics.tmExternalLeading; if (line_height < 1) line_height = 1; int64_t measured = lines * (int64_t)line_height; result = measured > INT32_MAX ? INT32_MAX : (int)measured; } if (previous != NULL && previous != HGDI_ERROR) SelectObject(dc, previous); ReleaseDC(control, dc); return result; }\n");
+        out.push_str("static int flux__win_text_height_for_lines(HWND control, int64_t lines, int64_t line_height_percent) { if (control == NULL) return INT32_MAX; if (lines < 1 || lines > INT32_MAX) { fputs(\"Flux runtime error: Text.maxLines must be between 1 and 2147483647\\n\", stderr); abort(); } if (line_height_percent < 1 || line_height_percent > INT32_MAX) { fputs(\"Flux runtime error: Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); } HDC dc = GetDC(control); if (dc == NULL) return INT32_MAX; HFONT font = (HFONT)SendMessageW(control, WM_GETFONT, 0, 0); HGDIOBJ previous = font != NULL ? SelectObject(dc, font) : NULL; TEXTMETRICA metrics = {0}; int result = INT32_MAX; if (GetTextMetricsA(dc, &metrics)) { int base_line_height = metrics.tmHeight + metrics.tmExternalLeading; if (base_line_height < 1) base_line_height = 1; int64_t scaled_line_height = ((int64_t)base_line_height * line_height_percent + INT64_C(50)) / INT64_C(100); if (scaled_line_height < 1) scaled_line_height = 1; int64_t measured = lines * scaled_line_height; result = measured > INT32_MAX ? INT32_MAX : (int)measured; } if (previous != NULL && previous != HGDI_ERROR) SelectObject(dc, previous); ReleaseDC(control, dc); return result; }\n");
     }
     if uses_tooltips {
         out.push_str("static HWND flux__win_tooltips = NULL;\nstatic void flux__win_set_tooltip(HWND control, wchar_t **storage, const char *text) { if (control == NULL || flux__win_tooltips == NULL || storage == NULL) return; if (text == NULL) text = \"\"; size_t length = 0; if (!flux__win_bounded_length(text, 65536, &length)) { fputs(\"Flux runtime error: tooltip exceeds 65536 bytes\\n\", stderr); abort(); } (void)length; wchar_t *wide = flux__windows_utf8_to_wide(text); if (wide == NULL) { fputs(\"Flux runtime error: tooltip is not valid UTF-8\\n\", stderr); abort(); } if (*storage != NULL && wcscmp(*storage, wide) == 0) { free(wide); return; } free(*storage); *storage = wide; TOOLINFOW info = {0}; info.cbSize = sizeof(info); info.uFlags = TTF_IDISHWND | TTF_SUBCLASS; info.hwnd = flux__windows_active_window; info.uId = (UINT_PTR)control; info.lpszText = *storage; SendMessageW(flux__win_tooltips, TTM_UPDATETIPTEXTW, 0, (LPARAM)&info); }\n");
     }
     out.push_str("static void flux__win_enable_dpi_awareness(void) { HMODULE user32 = GetModuleHandleA(\"user32.dll\"); if (user32 != NULL) { typedef BOOL (WINAPI *flux__set_dpi_context_fn)(HANDLE); flux__set_dpi_context_fn set_context = (flux__set_dpi_context_fn)(void *)GetProcAddress(user32, \"SetProcessDpiAwarenessContext\"); if (set_context != NULL && set_context((HANDLE)(INT_PTR)-4)) return; } (void)SetProcessDPIAware(); }\nstatic UINT flux__win_query_dpi(HWND hwnd) { HDC dc = GetDC(hwnd); if (dc == NULL) return 96; int value = GetDeviceCaps(dc, LOGPIXELSX); ReleaseDC(hwnd, dc); return value > 0 ? (UINT)value : 96; }\nstatic int flux__win_scale(int64_t logical) { if (logical > INT32_MAX) return INT32_MAX; if (logical < INT32_MIN) return INT32_MIN; int64_t product = logical * (int64_t)flux__win_dpi; int64_t scaled = product >= 0 ? (product + INT64_C(48)) / INT64_C(96) : (product - INT64_C(48)) / INT64_C(96); if (scaled > INT32_MAX) return INT32_MAX; if (scaled < INT32_MIN) return INT32_MIN; return (int)scaled; }\nstatic int64_t flux__win_unscale(int physical) { int64_t scaled = (int64_t)physical * INT64_C(96); int64_t rounding = (int64_t)flux__win_dpi / INT64_C(2); return scaled >= 0 ? (scaled + rounding) / (int64_t)flux__win_dpi : (scaled - rounding) / (int64_t)flux__win_dpi; }\n");
+    if uses_custom_windows_text_layout {
+        out.push_str(
+            r#"typedef struct {
+    int64_t letter_spacing;
+    int64_t line_height_percent;
+    bool wrap;
+    bool ellipsize_end;
+} flux__win_text_layout_state;
+
+static bool flux__win_text_space(wchar_t value) {
+    return value == L' ' || value == L'\t';
+}
+
+static int flux__win_text_measure(HDC dc, const wchar_t *text, int count) {
+    if (dc == NULL || text == NULL || count <= 0) return 0;
+    SIZE size = {0};
+    if (!GetTextExtentPoint32W(dc, text, count, &size)) return 0;
+    return size.cx;
+}
+
+static void flux__win_draw_text_line(
+    HWND control,
+    HDC dc,
+    const wchar_t *text,
+    int count,
+    int top,
+    const RECT *bounds,
+    bool append_ellipsis
+) {
+    if (control == NULL || dc == NULL || bounds == NULL || text == NULL) return;
+    wchar_t *owned = NULL;
+    const wchar_t *render = text;
+    int render_count = count;
+    if (append_ellipsis) {
+        size_t capacity = (size_t)(count < 0 ? 0 : count) + 2;
+        owned = (wchar_t *)malloc(capacity * sizeof(wchar_t));
+        if (owned == NULL) return;
+        if (count > 0) memcpy(owned, text, (size_t)count * sizeof(wchar_t));
+        owned[count] = L'\x2026';
+        owned[count + 1] = L'\0';
+        render = owned;
+        render_count = count + 1;
+    }
+    RECT line = *bounds;
+    line.top = top;
+    LONG_PTR style = GetWindowLongPtrW(control, GWL_STYLE);
+    UINT flags = DT_SINGLELINE | DT_NOPREFIX;
+    switch ((DWORD)style & SS_TYPEMASK) {
+        case SS_CENTER:
+            flags |= DT_CENTER;
+            break;
+        case SS_RIGHT:
+            flags |= DT_RIGHT;
+            break;
+        default:
+            flags |= DT_LEFT;
+            break;
+    }
+    if (append_ellipsis) flags |= DT_END_ELLIPSIS;
+    (void)DrawTextW(dc, render, render_count, &line, flags);
+    free(owned);
+}
+
+static LRESULT CALLBACK flux__win_text_layout_proc(
+    HWND control,
+    UINT message,
+    WPARAM wparam,
+    LPARAM lparam,
+    UINT_PTR subclass_id,
+    DWORD_PTR reference
+) {
+    flux__win_text_layout_state *state = (flux__win_text_layout_state *)(uintptr_t)reference;
+    if (state == NULL) return DefSubclassProc(control, message, wparam, lparam);
+    switch (message) {
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_SETTEXT:
+        case WM_SETFONT: {
+            LRESULT result = DefSubclassProc(control, message, wparam, lparam);
+            InvalidateRect(control, NULL, TRUE);
+            return result;
+        }
+        case WM_SIZE: {
+            LRESULT result = DefSubclassProc(control, message, wparam, lparam);
+            InvalidateRect(control, NULL, TRUE);
+            return result;
+        }
+        case WM_NCDESTROY:
+            RemoveWindowSubclass(control, flux__win_text_layout_proc, subclass_id);
+            return DefSubclassProc(control, message, wparam, lparam);
+        case WM_PAINT:
+            break;
+        default:
+            return DefSubclassProc(control, message, wparam, lparam);
+    }
+
+    PAINTSTRUCT paint = {0};
+    HDC dc = BeginPaint(control, &paint);
+    if (dc == NULL) return 0;
+    RECT bounds = {0};
+    if (!GetClientRect(control, &bounds)) {
+        EndPaint(control, &paint);
+        return 0;
+    }
+    HWND parent = GetParent(control);
+    HBRUSH brush = NULL;
+    if (parent != NULL) {
+        brush = (HBRUSH)(INT_PTR)SendMessageW(
+            parent,
+            WM_CTLCOLORSTATIC,
+            (WPARAM)dc,
+            (LPARAM)control
+        );
+    }
+    if (brush == NULL) brush = GetSysColorBrush(COLOR_WINDOW);
+    FillRect(dc, &bounds, brush);
+    SetBkMode(dc, TRANSPARENT);
+
+    HFONT font = (HFONT)SendMessageW(control, WM_GETFONT, 0, 0);
+    HGDIOBJ previous_font = font != NULL ? SelectObject(dc, font) : NULL;
+    int previous_character_extra = SetTextCharacterExtra(dc, flux__win_scale(state->letter_spacing));
+
+    TEXTMETRICW metrics = {0};
+    int base_line_height = 1;
+    if (GetTextMetricsW(dc, &metrics)) {
+        base_line_height = metrics.tmHeight + metrics.tmExternalLeading;
+        if (base_line_height < 1) base_line_height = 1;
+    }
+    int64_t line_height_wide =
+        ((int64_t)base_line_height * state->line_height_percent + INT64_C(50))
+        / INT64_C(100);
+    if (line_height_wide < 1) line_height_wide = 1;
+    if (line_height_wide > INT32_MAX) line_height_wide = INT32_MAX;
+    int line_height = (int)line_height_wide;
+
+    int text_length = GetWindowTextLengthW(control);
+    wchar_t *text = NULL;
+    if (text_length > 0) {
+        text = (wchar_t *)malloc(((size_t)text_length + 1) * sizeof(wchar_t));
+        if (text != NULL) {
+            int copied = GetWindowTextW(control, text, text_length + 1);
+            if (copied < 0) copied = 0;
+            text_length = copied;
+        }
+    }
+
+    if (text != NULL && text_length > 0 && bounds.right > bounds.left) {
+        int position = 0;
+        int top = bounds.top;
+        int available_width = bounds.right - bounds.left;
+        while (position < text_length && top < bounds.bottom) {
+            if (text[position] == L'\r' || text[position] == L'\n') {
+                if (text[position] == L'\r') position++;
+                if (position < text_length && text[position] == L'\n') position++;
+                top += line_height;
+                continue;
+            }
+
+            int paragraph_end = position;
+            while (
+                paragraph_end < text_length
+                && text[paragraph_end] != L'\r'
+                && text[paragraph_end] != L'\n'
+            ) {
+                paragraph_end++;
+            }
+            int remaining = paragraph_end - position;
+            int count = remaining;
+            bool wrapped = false;
+            bool width_overflow = false;
+
+            if (state->wrap && remaining > 0) {
+                int fit = remaining;
+                SIZE measured = {0};
+                if (
+                    !GetTextExtentExPointW(
+                        dc,
+                        text + position,
+                        remaining,
+                        available_width,
+                        &fit,
+                        NULL,
+                        &measured
+                    )
+                ) {
+                    fit = remaining;
+                }
+                if (fit < remaining) {
+                    wrapped = true;
+                    if (fit < 1) fit = 1;
+                    int word_break = fit;
+                    while (
+                        word_break > 0
+                        && !flux__win_text_space(text[position + word_break - 1])
+                    ) {
+                        word_break--;
+                    }
+                    count = word_break > 0 ? word_break : fit;
+                }
+            } else if (remaining > 0) {
+                width_overflow =
+                    flux__win_text_measure(dc, text + position, remaining) > available_width;
+            }
+
+            int next_position = position + count;
+            bool more_in_paragraph = next_position < paragraph_end;
+            bool more_after_paragraph = paragraph_end < text_length;
+            bool no_full_next_line =
+                (int64_t)top + (int64_t)line_height * INT64_C(2) > bounds.bottom;
+            bool append_ellipsis =
+                state->ellipsize_end
+                && (
+                    width_overflow
+                    || ((more_in_paragraph || more_after_paragraph) && no_full_next_line)
+                );
+
+            int draw_count = count;
+            while (
+                draw_count > 0
+                && flux__win_text_space(text[position + draw_count - 1])
+            ) {
+                draw_count--;
+            }
+            flux__win_draw_text_line(
+                control,
+                dc,
+                text + position,
+                draw_count,
+                top,
+                &bounds,
+                append_ellipsis
+            );
+            top += line_height;
+
+            if (!state->wrap) {
+                position = paragraph_end;
+            } else if (wrapped) {
+                position = next_position;
+                while (
+                    position < paragraph_end
+                    && flux__win_text_space(text[position])
+                ) {
+                    position++;
+                }
+            } else {
+                position = paragraph_end;
+            }
+
+            if (position >= paragraph_end) {
+                if (position < text_length && text[position] == L'\r') position++;
+                if (position < text_length && text[position] == L'\n') position++;
+            }
+            if (append_ellipsis && no_full_next_line) break;
+        }
+    }
+
+    free(text);
+    if (previous_character_extra != INT32_MIN) (void)SetTextCharacterExtra(dc, previous_character_extra);
+    if (previous_font != NULL && previous_font != HGDI_ERROR) {
+        SelectObject(dc, previous_font);
+    }
+    EndPaint(control, &paint);
+    return 0;
+}
+"#,
+        );
+    }
     out.push_str("static void flux__win_set_application_id(const char *application_id) { wchar_t *wide = flux__windows_utf8_to_wide(application_id); if (wide == NULL) return; HMODULE shell32 = LoadLibraryA(\"shell32.dll\"); if (shell32 != NULL) { typedef HRESULT (WINAPI *flux__set_app_id_fn)(LPCWSTR); flux__set_app_id_fn set_app_id = (flux__set_app_id_fn)(void *)GetProcAddress(shell32, \"SetCurrentProcessExplicitAppUserModelID\"); if (set_app_id != NULL) (void)set_app_id(wide); FreeLibrary(shell32); } free(wide); }\n");
     if uses_input_scopes {
         out.push_str("typedef HRESULT (WINAPI *flux__win_set_input_scope_fn)(HWND, int);\nstatic HMODULE flux__win_msctf = NULL;\nstatic flux__win_set_input_scope_fn flux__win_set_input_scope_api = NULL;\nstatic void flux__win_input_scope_init(void) { flux__win_msctf = LoadLibraryA(\"Msctf.dll\"); if (flux__win_msctf == NULL) return; flux__win_set_input_scope_api = (flux__win_set_input_scope_fn)(void *)GetProcAddress(flux__win_msctf, \"SetInputScope\"); if (flux__win_set_input_scope_api == NULL) { FreeLibrary(flux__win_msctf); flux__win_msctf = NULL; } }\nstatic int flux__win_input_scope_value(const char *value) { if (value != NULL && strcmp(value, \"text\") == 0) return 57; if (value != NULL && strcmp(value, \"email\") == 0) return 5; if (value != NULL && strcmp(value, \"number\") == 0) return 28; if (value != NULL && strcmp(value, \"decimal\") == 0) return 29; if (value != NULL && strcmp(value, \"phone\") == 0) return 32; if (value != NULL && strcmp(value, \"url\") == 0) return 1; fputs(\"Flux runtime error: TextInput.keyboardType must be one of 'text', 'email', 'number', 'decimal', 'phone', or 'url'\\n\", stderr); abort(); }\nstatic void flux__win_set_input_scope(HWND control, const char *value) { int scope = flux__win_input_scope_value(value); if (control != NULL && flux__win_set_input_scope_api != NULL) (void)flux__win_set_input_scope_api(control, scope); }\nstatic void flux__win_clear_input_scope(HWND control) { if (control != NULL && flux__win_set_input_scope_api != NULL) (void)flux__win_set_input_scope_api(control, 0); }\nstatic void flux__win_input_scope_shutdown(void) { flux__win_set_input_scope_api = NULL; if (flux__win_msctf != NULL) { FreeLibrary(flux__win_msctf); flux__win_msctf = NULL; } }\n");
@@ -14858,6 +15150,31 @@ fn emit_windows_native_application(
                 element.name,
                 element.name,
                 element.name
+            ));
+        }
+        if element.kind == "Text"
+            && (view_property(element, "letter_spacing").is_some()
+                || view_property(element, "line_height_percent").is_some())
+        {
+            let initial_letter_spacing = view_property(element, "letter_spacing")
+                .and_then(|property| static_expr_i64(&property.value, signatures))
+                .unwrap_or(0);
+            let initial_line_height_percent = view_property(element, "line_height_percent")
+                .and_then(|property| static_expr_i64(&property.value, signatures))
+                .unwrap_or(100);
+            let wrap = view_property(element, "wrap")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                .unwrap_or(true);
+            let ellipsize_end = view_property(element, "ellipsize")
+                .and_then(|property| static_expr_str(&property.value, signatures))
+                .is_some_and(|value| value == "end");
+            out.push_str(&format!(
+                "static flux__win_text_layout_state flux__win_text_layout_{} = {{ INT64_C({}), INT64_C({}), {}, {} }};\n",
+                element.name,
+                initial_letter_spacing,
+                initial_line_height_percent,
+                if wrap { "true" } else { "false" },
+                if ellipsize_end { "true" } else { "false" },
             ));
         }
         if element.kind == "Button"
@@ -16160,8 +16477,14 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
         } else {
             None
         };
+        let text_line_height_percent =
+            if element.kind == "Text" && view_property(element, "line_height_percent").is_some() {
+                format!("flux__win_text_layout_{}.line_height_percent", element.name)
+            } else {
+                "INT64_C(100)".to_string()
+            };
         let text_height_limit = text_max_lines
-            .map(|lines| format!("int text_maximum_height = flux__win_text_height_for_lines({variable}, {lines}); if (control_height > text_maximum_height) control_height = text_maximum_height; "))
+            .map(|lines| format!("int text_maximum_height = flux__win_text_height_for_lines({variable}, {lines}, {text_line_height_percent}); if (control_height > text_maximum_height) control_height = text_maximum_height; "))
             .unwrap_or_default();
         let width_relationship = if min_width.is_some() && max_width.is_some() {
             "if (requested_max_width < requested_min_width) { fputs(\"Flux runtime error: maxWidth must be greater than or equal to minWidth\\n\", stderr); abort(); } "
@@ -16185,6 +16508,33 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
     }
     if view.elements.iter().any(|element| element.kind == "Text") {
         out.push_str("flux__win_apply_fonts();\n");
+    }
+    for element in &view.elements {
+        if element.kind != "Text"
+            || (view_property(element, "letter_spacing").is_none()
+                && view_property(element, "line_height_percent").is_none())
+        {
+            continue;
+        }
+        let variable = ui_widget_c_name(&element.name);
+        if let Some(property) = view_property(element, "letter_spacing")
+            && static_expr_i64(&property.value, signatures).is_none()
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "int64_t flux__win_next_letter_spacing_{0} = {value}; if (flux__win_next_letter_spacing_{0} < INT32_MIN / INT64_C(1024) || flux__win_next_letter_spacing_{0} > INT32_MAX / INT64_C(1024)) {{ fputs(\"Flux runtime error: Text.letterSpacing is outside the supported native range\\n\", stderr); abort(); }} if (flux__win_text_layout_{0}.letter_spacing != flux__win_next_letter_spacing_{0}) {{ flux__win_text_layout_{0}.letter_spacing = flux__win_next_letter_spacing_{0}; if ({variable} != NULL) InvalidateRect({variable}, NULL, TRUE); }}\n",
+                element.name
+            ));
+        }
+        if let Some(property) = view_property(element, "line_height_percent")
+            && static_expr_i64(&property.value, signatures).is_none()
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "int64_t flux__win_next_line_height_{0} = {value}; if (flux__win_next_line_height_{0} <= 0 || flux__win_next_line_height_{0} > INT32_MAX) {{ fputs(\"Flux runtime error: Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (flux__win_text_layout_{0}.line_height_percent != flux__win_next_line_height_{0}) {{ flux__win_text_layout_{0}.line_height_percent = flux__win_next_line_height_{0}; if ({variable} != NULL) InvalidateRect({variable}, NULL, TRUE); }}\n",
+                element.name
+            ));
+        }
     }
     if uses_dynamic_layout {
         out.push_str("RECT flux__win_refresh_client = {0}; if (flux__windows_active_window != NULL && GetClientRect(flux__windows_active_window, &flux__win_refresh_client)) { flux__win_layout(flux__win_refresh_client.right - flux__win_refresh_client.left, flux__win_refresh_client.bottom - flux__win_refresh_client.top); }\n");
@@ -17037,6 +17387,16 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
             out.push_str(&format!(
                 "if (!flux__win_register_drop_target({variable}, &flux__win_drop_target_{index}, {})) return 1;\n",
                 function_c_name(function)
+            ));
+        }
+        if element.kind == "Text"
+            && (view_property(element, "letter_spacing").is_some()
+                || view_property(element, "line_height_percent").is_some())
+        {
+            out.push_str(&format!(
+                "if (!SetWindowSubclass({variable}, flux__win_text_layout_proc, (UINT_PTR){}, (DWORD_PTR)(uintptr_t)&flux__win_text_layout_{})) return 1;\n",
+                index + 1,
+                element.name
             ));
         }
     }
