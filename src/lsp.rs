@@ -6814,6 +6814,11 @@ fn symbol_for_position_with_source_id<'a>(
             }
             let name = identifier_at(line, byte)?;
             if let Some(local) =
+                cfg_local_symbol_for_position(database, source_id, line_index + 1, byte + 1, name)
+            {
+                return Some(local);
+            }
+            if let Some(local) =
                 visible_local_symbol_for_position(database, source, source_id, line_index + 1, name)
             {
                 return Some(local);
@@ -6825,6 +6830,42 @@ fn symbol_for_position_with_source_id<'a>(
             let first = matches.next()?;
             matches.next().is_none().then_some(first)
         })
+}
+
+fn cfg_local_symbol_for_position<'a>(
+    database: &'a crate::semantic::SemanticDatabase,
+    source_id: SourceId,
+    line: usize,
+    column: usize,
+    name: &str,
+) -> Option<&'a crate::semantic::SemanticSymbol> {
+    database.control_flow_graphs().iter().find_map(|graph| {
+        let value = graph.values().iter().find(|value| {
+            value.span.source_id == source_id
+                && value.span.line == line
+                && column >= value.span.column
+                && column < value.span.column + value.span.length
+                && matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::NameRead {
+                        name: read_name,
+                        ..
+                    } if read_name == name
+                )
+        })?;
+        let crate::ir::ControlFlowValueKind::NameRead { definitions, .. } = &value.kind else {
+            return None;
+        };
+        let [definition] = definitions.as_slice() else {
+            return None;
+        };
+        let definition_span = graph.definition_span(*definition)?;
+        database.symbols().iter().find(|symbol| {
+            symbol.name == name
+                && symbol.span == definition_span
+                && is_local_symbol_kind(symbol.kind)
+        })
+    })
 }
 
 fn visible_view_symbol_for_position<'a>(
@@ -7196,7 +7237,16 @@ fn local_symbol_occurrences(
     identifier_occurrences(source, &target.name)
         .into_iter()
         .filter(|span| {
-            visible_local_symbol_for_position(database, source, source_id, span.line, &target.name)
+            cfg_local_symbol_for_position(database, source_id, span.line, span.column, &target.name)
+                .or_else(|| {
+                    visible_local_symbol_for_position(
+                        database,
+                        source,
+                        source_id,
+                        span.line,
+                        &target.name,
+                    )
+                })
                 .is_some_and(|symbol| symbol.span == target.span)
         })
         .collect()
@@ -13000,6 +13050,83 @@ fn main() -> i64 {
         .to_json();
         assert!(definition.contains("\"line\":3"));
         assert!(definition.contains("\"character\":10"));
+    }
+
+    #[test]
+    fn local_navigation_respects_anonymous_parameter_scope() {
+        let uri = "file:///tmp/anonymous-local-navigation.flux";
+        let source = r#"fn main() -> i64 {
+    let value: str = "outer"
+    let values: i64[] = [1]
+    let mapped: i64[] = map(values, fn(value: i64) { value + 1 })
+    print(value)
+    return mapped.first
+}
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+
+        let callback_line_index = 3usize;
+        let callback_line = source.lines().nth(callback_line_index).unwrap();
+        let callback_usage = callback_line
+            .rfind("value")
+            .expect("callback usage should exist");
+        let callback_definition = definition_for_document(
+            uri,
+            source,
+            &documents,
+            callback_line_index,
+            callback_usage,
+            PositionEncoding::Utf8,
+        )
+        .expect("callback parameter usage should resolve")
+        .to_json();
+        assert!(
+            callback_definition.contains("\"line\":3"),
+            "{callback_definition}"
+        );
+
+        let outer_usage_line_index = 4usize;
+        let outer_usage_line = source.lines().nth(outer_usage_line_index).unwrap();
+        let outer_usage = outer_usage_line
+            .find("value")
+            .expect("outer value usage should exist");
+        let outer_definition = definition_for_document(
+            uri,
+            source,
+            &documents,
+            outer_usage_line_index,
+            outer_usage,
+            PositionEncoding::Utf8,
+        )
+        .expect("outer binding usage after callback should resolve")
+        .to_json();
+        assert!(outer_definition.contains("\"line\":1"));
+        assert!(outer_definition.contains("\"character\":8"));
+
+        let hover = hover_for_document(
+            uri,
+            source,
+            &documents,
+            outer_usage_line_index,
+            outer_usage,
+            PositionEncoding::Utf8,
+        )
+        .expect("outer binding hover after callback should resolve")
+        .to_json();
+        assert!(hover.contains("value: str"), "{hover}");
+        let outer_references = references_for_document(
+            uri,
+            source,
+            &documents,
+            outer_usage_line_index,
+            outer_usage,
+            PositionEncoding::Utf8,
+        );
+        assert_eq!(outer_references.len(), 2);
+        let outer_references = JsonValue::Array(outer_references).to_json();
+        assert!(outer_references.contains("\"line\":1"));
+        assert!(outer_references.contains("\"line\":4"));
+        assert!(!outer_references.contains("\"line\":3"));
     }
 
     #[test]
