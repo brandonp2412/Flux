@@ -164,6 +164,36 @@ fn main() -> i64 {
 }
 
 #[test]
+fn effectful_temporary_map_ordinary_call_uses_ordered_typed_ir_storage() {
+    let source = r#"
+fn observeLeft(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeRight(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn consume(values: map<str, (value: i64)>) -> i64 {
+    return values.count
+}
+
+fn main() -> i64 {
+    return consume(map{"left": (value: observeLeft(7)), "right": (value: observeRight(8))})
+}
+"#;
+    let generated = compile_to_c(source)
+        .expect("effectful temporary map ordinary call should lower through typed IR");
+    assert!(
+        generated.contains("flux__typed_borrowed_map_values"),
+        "{generated}"
+    );
+    assert!(generated.contains("flux__fn_consume"), "{generated}");
+}
+
+#[test]
 fn typed_ir_proves_short_circuit_result_from_left_constant() {
     let source = r#"
 fn choose(value: bool) -> bool {
