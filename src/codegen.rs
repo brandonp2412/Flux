@@ -54400,42 +54400,6 @@ fn emit_cfg_borrowed_list_argument_direct(
     emit_cfg_scalar_expr_direct(argument, env, signatures)
 }
 
-fn emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-    scalar_arguments: &[CfgScalarExpr],
-    expected_scalars: &[Type],
-    borrowed_argument: &CfgScalarExpr,
-    borrowed_element: &Type,
-    env: &HashMap<String, Type>,
-    signatures: &Signatures,
-) -> Option<(Vec<String>, String)> {
-    let borrowed = emit_cfg_borrowed_list_argument_direct(
-        borrowed_argument,
-        borrowed_element,
-        env,
-        signatures,
-    )?;
-    let rendered_scalars = if cfg_scalar_expr_is_aggregate_reorder_safe(borrowed_argument) {
-        emit_cfg_order_safe_call_arguments_direct(
-            scalar_arguments,
-            expected_scalars,
-            env,
-            signatures,
-        )?
-    } else {
-        if scalar_arguments.len() != expected_scalars.len() {
-            return None;
-        }
-        scalar_arguments
-            .iter()
-            .zip(expected_scalars)
-            .map(|(argument, expected)| {
-                emit_cfg_call_argument_direct(argument, expected, env, signatures)
-            })
-            .collect::<Option<Vec<_>>>()?
-    };
-    Some((rendered_scalars, borrowed))
-}
-
 fn emit_cfg_ordered_call_with_borrowed_list_direct<F>(
     scalar_arguments: &[CfgScalarExpr],
     expected_scalars: &[Type],
@@ -82679,6 +82643,153 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn effectful_temporary_network_lists_emit_from_ordered_typed_ir() {
+        let source = r#"
+fn orderedFirst(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn orderedSecond(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn readyCallback(_socket: i64) -> void {
+}
+
+fn stateCallback(_socket: i64, _readable: bool, _writable: bool) -> void {
+}
+
+fn sendBytes(socket: i64, first: i64, second: i64) -> i64 {
+    let (sent, _) = net.writeBytes(socket, [orderedFirst(first), orderedSecond(second)])
+    return sent
+}
+
+fn readableMany(first: i64, second: i64, timeout: i64) -> i64 {
+    let (count, _) = net.readableMany([orderedFirst(first), orderedSecond(second)], timeout, readyCallback)
+    return count
+}
+
+fn writableMany(first: i64, second: i64, timeout: i64) -> i64 {
+    let (count, _) = net.writableMany([orderedFirst(first), orderedSecond(second)], timeout, readyCallback)
+    return count
+}
+
+fn readyMany(first: i64, second: i64, timeout: i64) -> i64 {
+    let (count, _) = net.readyMany([orderedFirst(first), orderedSecond(second)], timeout, stateCallback)
+    return count
+}
+
+fn waitAny(first: i64, second: i64, timeout: i64) -> i64 {
+    let (handle, _, _) = net.waitAny([orderedFirst(first), orderedSecond(second)], timeout)
+    return handle
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4254))
+            .expect("effectful temporary network-list fixture should analyze");
+
+        for (function, source_name, helper, result_ty) in [
+            ("sendBytes", "writeBytes", "flux__net_send_bytes", Type::I64),
+            (
+                "readableMany",
+                "readableMany",
+                "flux__net_wait_readable_many",
+                Type::I64,
+            ),
+            (
+                "writableMany",
+                "writableMany",
+                "flux__net_wait_writable_many",
+                Type::I64,
+            ),
+            (
+                "readyMany",
+                "readyMany",
+                "flux__net_wait_ready_many",
+                Type::I64,
+            ),
+            ("waitAny", "waitAny", "flux__net_wait_any", Type::I64),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .unwrap_or_else(|| panic!("{function}: CFG should exist"));
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    value.result_index == Some(0)
+                        && matches!(
+                            &value.kind,
+                            crate::ir::ControlFlowValueKind::QualifiedCall {
+                                namespace,
+                                name,
+                                ..
+                            } if namespace == "net" && name == source_name
+                        )
+                })
+                .unwrap_or_else(|| panic!("{function}: network call should remain in typed IR"));
+            let facts = cfg_rewrite_facts(graph);
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .unwrap_or_else(|| {
+                    panic!("{function}: network call should have multi-value facts")
+                });
+            let env = if function == "sendBytes" {
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("first".to_string(), Type::I64),
+                    ("second".to_string(), Type::I64),
+                ])
+            } else {
+                HashMap::from([
+                    ("first".to_string(), Type::I64),
+                    ("second".to_string(), Type::I64),
+                    ("timeout".to_string(), Type::I64),
+                ])
+            };
+
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!("{function}: effectful temporary list should emit directly")
+                });
+            let first = direct
+                .0
+                .find(&function_c_name("orderedFirst"))
+                .unwrap_or_else(|| panic!("{function}: first list effect should be emitted"));
+            let second = direct
+                .0
+                .find(&function_c_name("orderedSecond"))
+                .unwrap_or_else(|| panic!("{function}: second list effect should be emitted"));
+            let call = direct
+                .0
+                .rfind(helper)
+                .unwrap_or_else(|| panic!("{function}: native helper should be emitted"));
+            assert!(first < second && second < call, "{function}: {}", direct.0);
+            assert!(
+                direct.0.contains("flux__typed_borrowed_list_storage"),
+                "{function}: {}",
+                direct.0
+            );
+            assert_eq!(direct.2.first(), Some(&result_ty), "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Bool(false),
+            };
+            let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+                .unwrap_or_else(|_| panic!("{function}: typed IR should bypass checked AST"));
+            assert_eq!(emitted, direct, "{function}");
+        }
+    }
+
+    #[test]
     fn network_named_readiness_multi_values_emit_from_typed_ir() {
         let source = r#"
 fn networkI64(value: i64) -> i64 {
@@ -86802,20 +86913,18 @@ fn emit_cfg_multi_expr_direct(
                         Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "sendBytes" if arguments.len() == 2 => {
-                        let (rendered, bytes) =
-                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-                                &arguments[..1],
-                                &[Type::I64],
-                                &arguments[1],
-                                &Type::I64,
-                                env,
-                                signatures,
-                            )?;
-                        Some((
-                            format!("flux__net_send_bytes({}, {bytes})", rendered[0]),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                            &arguments[..1],
+                            &[Type::I64],
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                            |rendered, bytes| {
+                                format!("flux__net_send_bytes({}, {bytes})", rendered[0])
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "sendBytesProgress" if arguments.len() == 3 => {
                         let scalar_arguments = [arguments[0].clone(), arguments[2].clone()];
@@ -87243,15 +87352,6 @@ fn emit_cfg_multi_expr_direct(
                     }
                     "waitReadableMany" | "waitWritableMany" if arguments.len() == 3 => {
                         let scalar_arguments = [arguments[1].clone()];
-                        let (rendered, sockets) =
-                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-                                &scalar_arguments,
-                                &[Type::I64],
-                                &arguments[0],
-                                &Type::I64,
-                                env,
-                                signatures,
-                            )?;
                         let callback = emit_cfg_callback_argument_direct(
                             &arguments[2],
                             &[Type::I64],
@@ -87263,54 +87363,57 @@ fn emit_cfg_multi_expr_direct(
                         } else {
                             "flux__net_wait_writable_many"
                         };
-                        Some((
-                            format!("{helper}({sockets}, {}, {callback})", rendered[0]),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                            &scalar_arguments,
+                            &[Type::I64],
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                            |rendered, sockets| {
+                                format!("{helper}({sockets}, {}, {callback})", rendered[0])
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "waitReadyMany" if arguments.len() == 3 => {
                         let scalar_arguments = [arguments[1].clone()];
-                        let (rendered, sockets) =
-                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-                                &scalar_arguments,
-                                &[Type::I64],
-                                &arguments[0],
-                                &Type::I64,
-                                env,
-                                signatures,
-                            )?;
                         let callback = emit_cfg_callback_argument_direct(
                             &arguments[2],
                             &[Type::I64, Type::Bool, Type::Bool],
                             env,
                             signatures,
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_wait_ready_many({sockets}, {}, {callback})",
-                                rendered[0]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                            &scalar_arguments,
+                            &[Type::I64],
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                            |rendered, sockets| {
+                                format!(
+                                    "flux__net_wait_ready_many({sockets}, {}, {callback})",
+                                    rendered[0]
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "waitAny" if arguments.len() == 2 => {
                         let scalar_arguments = [arguments[1].clone()];
-                        let (rendered, sockets) =
-                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-                                &scalar_arguments,
-                                &[Type::I64],
-                                &arguments[0],
-                                &Type::I64,
-                                env,
-                                signatures,
-                            )?;
-                        Some((
-                            format!("flux__net_wait_any({sockets}, {})", rendered[0]),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                            &scalar_arguments,
+                            &[Type::I64],
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                            |rendered, sockets| {
+                                format!("flux__net_wait_any({sockets}, {})", rendered[0])
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "waitReadable" | "waitWritable" if arguments.len() == 2 => {
                         let helper = if name == "waitReadable" {
