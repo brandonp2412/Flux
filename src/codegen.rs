@@ -43030,6 +43030,28 @@ enum BufferedListItem {
     },
 }
 
+fn emit_cfg_eager_list_child_direct(
+    out: &mut String,
+    pad: &str,
+    span: (u32, usize, usize, usize),
+    expected: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+    temp_counter: &mut usize,
+) -> Option<String> {
+    let expected = signatures.canonical_type(expected);
+    if let Some(sequence) = rewrite_facts.sequence_exprs.get(&span) {
+        let emitted =
+            emit_cfg_sequence_list_value(out, pad, sequence, env, signatures, temp_counter)?;
+        if signatures.canonical_type(&emitted.ty) != expected {
+            return None;
+        }
+        return Some(emitted.code);
+    }
+    emit_cfg_aggregate_shape_child_direct(span, &expected, env, signatures, rewrite_facts)
+}
+
 fn emit_cfg_list_builder_binding(
     out: &mut String,
     pad: &str,
@@ -43063,12 +43085,15 @@ fn emit_cfg_list_builder_binding(
     for item in items {
         match item {
             CfgListItemShape::Value(value) => {
-                let value = emit_cfg_aggregate_shape_child_direct(
+                let value = emit_cfg_eager_list_child_direct(
+                    out,
+                    pad,
                     *value,
                     element,
                     env,
                     signatures,
                     rewrite_facts,
+                    temp_counter,
                 )?;
                 let value_name = format!("flux__list_build_value_{}", *temp_counter);
                 *temp_counter += 1;
@@ -43085,38 +43110,24 @@ fn emit_cfg_list_builder_binding(
                 } else {
                     Type::List(element.clone())
                 };
-                let spread = if !*optional {
-                    if let Some(sequence) = rewrite_facts.sequence_exprs.get(value) {
-                        let emitted = emit_cfg_sequence_list_value(
-                            out,
-                            pad,
-                            sequence,
-                            env,
-                            signatures,
-                            temp_counter,
-                        )?;
-                        if signatures.canonical_type(&emitted.ty)
-                            != signatures.canonical_type(&spread_ty)
-                        {
-                            return None;
-                        }
-                        emitted.code
-                    } else {
-                        emit_cfg_aggregate_shape_child_direct(
-                            *value,
-                            &spread_ty,
-                            env,
-                            signatures,
-                            rewrite_facts,
-                        )?
-                    }
-                } else {
+                let spread = if *optional {
                     emit_cfg_aggregate_shape_child_direct(
                         *value,
                         &spread_ty,
                         env,
                         signatures,
                         rewrite_facts,
+                    )?
+                } else {
+                    emit_cfg_eager_list_child_direct(
+                        out,
+                        pad,
+                        *value,
+                        &spread_ty,
+                        env,
+                        signatures,
+                        rewrite_facts,
+                        temp_counter,
                     )?
                 };
                 if *optional {
@@ -56055,6 +56066,79 @@ fn main() -> i64 {
         assert!(out.contains("flux__list_build_source_"), "{out}");
         assert!(out.contains(&local_c_name("values")), "{out}");
         assert!(!out.contains("999"), "{out}");
+    }
+
+    #[test]
+    fn list_builder_value_accepts_sequence_child_without_checked_ast_root() {
+        let source = r#"
+fn exercise(values: i64[]) -> i64 {
+    let nested: i64[][] = [sorted(values)]
+    return nested.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("sequence value list builder fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let inner_ty = Type::List(Box::new(Type::I64));
+        let nested_ty = Type::List(Box::new(inner_ty.clone()));
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(value.kind, crate::ir::ControlFlowValueKind::List { .. })
+                    && database.signatures().canonical_type(&value.ty) == nested_ty
+            })
+            .expect("typed IR should retain the nested list root");
+        let facts = cfg_rewrite_facts(graph);
+        let shape = facts
+            .aggregates
+            .get(&source_span_key(root.span))
+            .expect("nested list root should retain aggregate shape");
+        let CfgAggregateShape::List(items) = shape else {
+            panic!("nested list root should retain list item shape");
+        };
+        let value = items
+            .iter()
+            .find_map(|item| match item {
+                CfgListItemShape::Value(value) if facts.sequence_exprs.contains_key(value) => {
+                    Some(*value)
+                }
+                _ => None,
+            })
+            .expect("nested list should retain its sequence-valued item");
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Int(999),
+        };
+        let mut env = HashMap::from([("values".to_string(), inner_ty)]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_builder_binding(
+            &mut out,
+            "",
+            ("nested", &nested_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("sequence-valued list item should lower from typed IR");
+
+        assert!(out.contains("flux__sorted_source_"), "{out}");
+        assert!(out.contains("flux__list_build_value_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(!out.contains("999"), "{out}");
+        assert!(facts.sequence_exprs.contains_key(&value));
     }
 
     #[test]
