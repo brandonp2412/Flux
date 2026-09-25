@@ -30568,14 +30568,24 @@ fn emit_async_nested_branch_continuation_function(
             format!("!{temp}.has_value")
         }
     } else {
-        let condition = emit_expr(cond, &env, signatures)?;
-        if signatures.canonical_type(&condition.ty) != Type::Bool {
+        let condition_ty = signatures.canonical_type(&cfg_rewrite_required_root_type(
+            cond.span,
+            context.cfg_rewrite_facts,
+        )?);
+        if condition_ty != Type::Bool {
             return Err(diag(
                 cond.span,
                 "async nested branch requires a boolean outer condition",
             ));
         }
-        c_condition(&condition.code)
+        c_condition(&emit_expr_for_expected_with_cfg_proofs(
+            cond,
+            &condition_ty,
+            &env,
+            signatures,
+            context.checked_i64_cfg_proofs,
+            context.cfg_rewrite_facts,
+        )?)
     };
     out.push_str(&format!("{pad}if ({condition}) {{\n"));
     let mut then_env = outer_env.clone();
@@ -31036,8 +31046,21 @@ fn emit_async_branch_continuation_function(
             format!("!{temp}.has_value")
         }
     } else {
-        let condition = emit_expr(cond, &env, signatures)?;
-        c_condition(&condition.code)
+        let condition_ty = signatures.canonical_type(&cfg_rewrite_required_root_type(
+            cond.span,
+            context.cfg_rewrite_facts,
+        )?);
+        if condition_ty != Type::Bool {
+            return Err(diag(cond.span, "async branch requires a boolean condition"));
+        }
+        c_condition(&emit_expr_for_expected_with_cfg_proofs(
+            cond,
+            &condition_ty,
+            &env,
+            signatures,
+            context.checked_i64_cfg_proofs,
+            context.cfg_rewrite_facts,
+        )?)
     };
     out.push_str(&format!("{pad}if ({condition}) {{\n"));
 
@@ -31426,7 +31449,21 @@ fn emit_async_while_iteration(
         )?;
         return Ok((outer_env.clone(), outer_mutable.clone()));
     }
-    let condition = emit_expr(cond, outer_env, signatures)?;
+    let condition_ty = signatures.canonical_type(&cfg_rewrite_required_root_type(
+        cond.span,
+        context.cfg_rewrite_facts,
+    )?);
+    if condition_ty != Type::Bool {
+        return Err(diag(cond.span, "async while requires a boolean condition"));
+    }
+    let condition = emit_expr_for_expected_with_cfg_proofs(
+        cond,
+        &condition_ty,
+        outer_env,
+        signatures,
+        context.checked_i64_cfg_proofs,
+        context.cfg_rewrite_facts,
+    )?;
     let first_body_state = 1;
     let continue_state = first_body_state + while_plan.body_await_indices.len();
     emit_async_while_condition_body(
@@ -31435,7 +31472,7 @@ fn emit_async_while_iteration(
         signatures,
         plan,
         while_plan,
-        &c_condition(&condition.code),
+        &c_condition(&condition),
         body,
         first_body_state,
         continue_state,
@@ -79846,14 +79883,21 @@ async fn main() -> i64 {
             .iter_mut()
             .find(|function| function.name == "exercise")
             .expect("exercise function should exist");
-        let StmtKind::If { body, .. } = &mut function.body[0].kind else {
+        let StmtKind::If { cond, body, .. } = &mut function.body[0].kind else {
             panic!("exercise should contain one if statement");
         };
+        assert_eq!(
+            cfg_rewrite_root_type(cond.span, &facts),
+            Some(Type::Bool),
+            "typed IR should retain the branch condition type"
+        );
+        cond.kind = ExprKind::Int(999);
         let StmtKind::Return(values) = &mut body[0].kind else {
             panic!("then branch should contain one return statement");
         };
         let await_expr = &mut values[0];
         let await_span = await_expr.span;
+        let original_await = await_expr.clone();
         await_expr.kind = ExprKind::Int(0);
 
         assert!(!stmt_contains_await(&function.body[0]));
@@ -79876,6 +79920,29 @@ async fn main() -> i64 {
         assert_eq!(direct_await_callee(selected, &facts), Some("ping"));
         async_continuation_plan(function, database.signatures(), graph)
             .expect("typed IR should preserve the full async continuation plan");
+
+        let StmtKind::If { body, .. } = &mut function.body[0].kind else {
+            unreachable!()
+        };
+        let StmtKind::Return(values) = &mut body[0].kind else {
+            unreachable!()
+        };
+        values[0] = original_await;
+
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_function(
+            &mut out,
+            function,
+            database.signatures(),
+            graph,
+            &mut temp_counter,
+            &HashMap::new(),
+        )
+        .expect("async branch should emit its poisoned condition from typed IR");
+        assert!(out.contains(&local_c_name("flag")), "{out}");
+        assert!(out.contains(&async_start_cont_c_name("ping")), "{out}");
+        assert!(!out.contains("INT64_C(999)"), "{out}");
     }
 
     #[test]
@@ -79939,9 +80006,20 @@ async fn main() -> i64 {
                 };
                 cond
             } else {
-                let StmtKind::If { else_body, .. } = &mut function.body[0].kind else {
+                let StmtKind::If {
+                    cond: outer_condition,
+                    else_body,
+                    ..
+                } = &mut function.body[0].kind
+                else {
                     panic!("chooseNested should start with an if");
                 };
+                assert_eq!(
+                    cfg_rewrite_root_type(outer_condition.span, &facts),
+                    Some(Type::Bool),
+                    "chooseNested should retain its outer boolean condition type"
+                );
+                outer_condition.kind = ExprKind::Int(998);
                 let [nested] = else_body.as_mut_slice() else {
                     panic!("chooseNested should contain one nested elif");
                 };
@@ -79999,7 +80077,80 @@ async fn main() -> i64 {
                 !out.contains("INT64_C(999)"),
                 "{function_name}: poisoned nested condition leaked into output: {out}"
             );
+            assert!(
+                !out.contains("INT64_C(998)"),
+                "{function_name}: poisoned outer condition leaked into output: {out}"
+            );
         }
+    }
+
+    #[test]
+    fn async_while_condition_emits_from_typed_ir_after_ast_poisoning() {
+        let source = r#"
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn exercise(limit: i64) -> i64 {
+    var value: i64 = 0
+    while value < limit:
+        value = await addOne(value)
+    return value
+}
+
+async fn main() -> i64 {
+    return await exercise(3)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("async while typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+
+        let mut program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("async while fixture should parse");
+        let function = program
+            .functions
+            .iter_mut()
+            .find(|function| function.name == "exercise")
+            .expect("exercise function should exist");
+        let while_stmt = function
+            .body
+            .iter_mut()
+            .find(|stmt| matches!(stmt.kind, StmtKind::While { .. }))
+            .expect("exercise should contain a while statement");
+        let StmtKind::While { cond, .. } = &mut while_stmt.kind else {
+            unreachable!()
+        };
+        assert_eq!(
+            cfg_rewrite_root_type(cond.span, &facts),
+            Some(Type::Bool),
+            "typed IR should retain the while condition type"
+        );
+        cond.kind = ExprKind::Int(999);
+
+        let plan = async_continuation_plan(function, database.signatures(), graph)
+            .expect("typed IR should preserve async while continuation lowering");
+        assert!(plan.while_await.is_some());
+
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_function(
+            &mut out,
+            function,
+            database.signatures(),
+            graph,
+            &mut temp_counter,
+            &HashMap::new(),
+        )
+        .expect("async while should emit its poisoned condition from typed IR");
+        assert!(out.contains(&async_resume_c_name("exercise")), "{out}");
+        assert!(out.contains(&async_start_cont_c_name("addOne")), "{out}");
+        assert!(out.contains(&local_c_name("value")), "{out}");
+        assert!(out.contains(&local_c_name("limit")), "{out}");
+        assert!(!out.contains("INT64_C(999)"), "{out}");
     }
 
     #[test]
