@@ -2679,6 +2679,7 @@ view Screen {
         text: "A long native label"
         letterSpacing: spacing
         lineHeightPercent: leading
+        wrapMode: "char"
         maxLines: 2
         ellipsize: "end"
 }
@@ -2700,6 +2701,9 @@ app Screen
             .contains("SetTextCharacterExtra(dc, flux__win_scale(state->letter_spacing))")
     );
     assert!(advanced_windows.contains("GetTextExtentExPointW("));
+    assert!(advanced_windows.contains("FLUX__WIN_WRAP_CHAR"));
+    assert!(advanced_windows.contains("state->wrap_mode == FLUX__WIN_WRAP_CHAR"));
+    assert!(advanced_windows.contains("state->wrap_mode == FLUX__WIN_WRAP_WORD_CHAR"));
     assert!(
         advanced_windows.contains("static flux__win_text_layout_state flux__win_text_layout_label")
     );
@@ -2712,11 +2716,61 @@ app Screen
         "flux__win_text_height_for_lines(flux__ui_label, INT64_C(2), flux__win_text_layout_label.line_height_percent)"
     ));
 
+    let word_char_source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "supercalifragilisticexpialidocious wraps portably"
+        wrapMode: "wordChar"
+}
+app Screen
+"#;
+    let word_char_program = fluxc::parser::parse(word_char_source)
+        .expect("Windows wordChar wrapping source should parse");
+    let word_char_signatures = fluxc::typecheck::check(&word_char_program)
+        .expect("Windows wordChar wrapping source should typecheck");
+    let word_char_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &word_char_program,
+        &word_char_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows wordChar wrapping should lower through the native text painter");
+    assert!(word_char_windows.contains(
+        "static flux__win_text_layout_state flux__win_text_layout_label = { INT64_C(0), INT64_C(100), true, FLUX__WIN_WRAP_WORD_CHAR, false }"
+    ));
+    assert!(word_char_windows.contains("else if (state->wrap_mode == FLUX__WIN_WRAP_WORD_CHAR)"));
+
+    let selectable_char_source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Selectable"
+        selectable: true
+        wrapMode: "char"
+}
+app Screen
+"#;
+    let selectable_char_program = fluxc::parser::parse(selectable_char_source)
+        .expect("selectable Windows character wrapping source should parse");
+    let selectable_char_signatures = fluxc::typecheck::check(&selectable_char_program)
+        .expect("selectable Windows character wrapping source should typecheck");
+    let selectable_char_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &selectable_char_program,
+        &selectable_char_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("selectable Windows Text must not fake character wrapping");
+    assert!(
+        selectable_char_error
+            .message
+            .contains("selectable Text currently supports only wrapMode: 'word'")
+    );
+
     for (property, message) in [
-        (
-            "wrapMode: \"char\"",
-            "Text.wrapMode currently supports only 'word'",
-        ),
         (
             "ellipsize: \"middle\"",
             "Text.ellipsize currently supports only 'none' and 'end'",
@@ -3341,6 +3395,7 @@ view Screen {
         borderStyle: "solid"
         tooltip: "Native tooltip"
         accessibilityRole: "heading"
+        wrapMode: "wordChar"
         minWidth: extent
         maxWidth: 320
         marginStart: extent

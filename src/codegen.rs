@@ -14407,10 +14407,11 @@ fn emit_windows_native_application(
             };
             match wrap_mode.as_str() {
                 "word" => {}
-                "char" | "wordChar" => {
+                "char" | "wordChar" | "word_char" if !selectable => {}
+                "char" | "wordChar" | "word_char" => {
                     return Err(diag(
                         property.value.span,
-                        "bootstrap Windows Text.wrapMode currently supports only 'word'",
+                        "bootstrap Windows selectable Text currently supports only wrapMode: 'word'",
                     ));
                 }
                 _ => {
@@ -14637,7 +14638,10 @@ fn emit_windows_native_application(
     let uses_custom_windows_text_layout = view.elements.iter().any(|element| {
         element.kind == "Text"
             && (view_property(element, "letter_spacing").is_some()
-                || view_property(element, "line_height_percent").is_some())
+                || view_property(element, "line_height_percent").is_some()
+                || view_property(element, "wrap_mode")
+                    .and_then(|property| static_expr_str(&property.value, signatures))
+                    .is_some_and(|value| value != "word"))
     });
     let uses_dynamic_text_layout = view.elements.iter().any(|element| {
         element.kind == "Text"
@@ -14760,10 +14764,17 @@ fn emit_windows_native_application(
     out.push_str("static void flux__win_enable_dpi_awareness(void) { HMODULE user32 = GetModuleHandleA(\"user32.dll\"); if (user32 != NULL) { typedef BOOL (WINAPI *flux__set_dpi_context_fn)(HANDLE); flux__set_dpi_context_fn set_context = (flux__set_dpi_context_fn)(void *)GetProcAddress(user32, \"SetProcessDpiAwarenessContext\"); if (set_context != NULL && set_context((HANDLE)(INT_PTR)-4)) return; } (void)SetProcessDPIAware(); }\nstatic UINT flux__win_query_dpi(HWND hwnd) { HDC dc = GetDC(hwnd); if (dc == NULL) return 96; int value = GetDeviceCaps(dc, LOGPIXELSX); ReleaseDC(hwnd, dc); return value > 0 ? (UINT)value : 96; }\nstatic int flux__win_scale(int64_t logical) { if (logical > INT32_MAX) return INT32_MAX; if (logical < INT32_MIN) return INT32_MIN; int64_t product = logical * (int64_t)flux__win_dpi; int64_t scaled = product >= 0 ? (product + INT64_C(48)) / INT64_C(96) : (product - INT64_C(48)) / INT64_C(96); if (scaled > INT32_MAX) return INT32_MAX; if (scaled < INT32_MIN) return INT32_MIN; return (int)scaled; }\nstatic int64_t flux__win_unscale(int physical) { int64_t scaled = (int64_t)physical * INT64_C(96); int64_t rounding = (int64_t)flux__win_dpi / INT64_C(2); return scaled >= 0 ? (scaled + rounding) / (int64_t)flux__win_dpi : (scaled - rounding) / (int64_t)flux__win_dpi; }\n");
     if uses_custom_windows_text_layout {
         out.push_str(
-            r#"typedef struct {
+            r#"enum {
+    FLUX__WIN_WRAP_WORD = 0,
+    FLUX__WIN_WRAP_CHAR = 1,
+    FLUX__WIN_WRAP_WORD_CHAR = 2
+};
+
+typedef struct {
     int64_t letter_spacing;
     int64_t line_height_percent;
     bool wrap;
+    int wrap_mode;
     bool ellipsize_end;
 } flux__win_text_layout_state;
 
@@ -14948,14 +14959,28 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
                 if (fit < remaining) {
                     wrapped = true;
                     if (fit < 1) fit = 1;
-                    int word_break = fit;
-                    while (
-                        word_break > 0
-                        && !flux__win_text_space(text[position + word_break - 1])
-                    ) {
-                        word_break--;
+                    if (state->wrap_mode == FLUX__WIN_WRAP_CHAR) {
+                        count = fit;
+                    } else {
+                        int word_break = fit;
+                        while (
+                            word_break > 0
+                            && !flux__win_text_space(text[position + word_break - 1])
+                        ) {
+                            word_break--;
+                        }
+                        if (word_break > 0) {
+                            count = word_break;
+                        } else if (state->wrap_mode == FLUX__WIN_WRAP_WORD_CHAR) {
+                            count = fit;
+                        } else {
+                            count = remaining;
+                            wrapped = false;
+                            width_overflow =
+                                flux__win_text_measure(dc, text + position, remaining)
+                                > available_width;
+                        }
                     }
-                    count = word_break > 0 ? word_break : fit;
                 }
             } else if (remaining > 0) {
                 width_overflow =
@@ -15154,7 +15179,10 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
         }
         if element.kind == "Text"
             && (view_property(element, "letter_spacing").is_some()
-                || view_property(element, "line_height_percent").is_some())
+                || view_property(element, "line_height_percent").is_some()
+                || view_property(element, "wrap_mode")
+                    .and_then(|property| static_expr_str(&property.value, signatures))
+                    .is_some_and(|value| value != "word"))
         {
             let initial_letter_spacing = view_property(element, "letter_spacing")
                 .and_then(|property| static_expr_i64(&property.value, signatures))
@@ -15165,15 +15193,24 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
             let wrap = view_property(element, "wrap")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
                 .unwrap_or(true);
+            let wrap_mode = match view_property(element, "wrap_mode")
+                .and_then(|property| static_expr_str(&property.value, signatures))
+                .as_deref()
+            {
+                Some("char") => "FLUX__WIN_WRAP_CHAR",
+                Some("wordChar" | "word_char") => "FLUX__WIN_WRAP_WORD_CHAR",
+                _ => "FLUX__WIN_WRAP_WORD",
+            };
             let ellipsize_end = view_property(element, "ellipsize")
                 .and_then(|property| static_expr_str(&property.value, signatures))
                 .is_some_and(|value| value == "end");
             out.push_str(&format!(
-                "static flux__win_text_layout_state flux__win_text_layout_{} = {{ INT64_C({}), INT64_C({}), {}, {} }};\n",
+                "static flux__win_text_layout_state flux__win_text_layout_{} = {{ INT64_C({}), INT64_C({}), {}, {}, {} }};\n",
                 element.name,
                 initial_letter_spacing,
                 initial_line_height_percent,
                 if wrap { "true" } else { "false" },
+                wrap_mode,
                 if ellipsize_end { "true" } else { "false" },
             ));
         }
@@ -17579,7 +17616,10 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
         if element.kind == "Text"
             && (view_property(element, "letter_spacing").is_some()
-                || view_property(element, "line_height_percent").is_some())
+                || view_property(element, "line_height_percent").is_some()
+                || view_property(element, "wrap_mode")
+                    .and_then(|property| static_expr_str(&property.value, signatures))
+                    .is_some_and(|value| value != "word"))
         {
             out.push_str(&format!(
                 "if (!SetWindowSubclass({variable}, flux__win_text_layout_proc, (UINT_PTR){}, (DWORD_PTR)(uintptr_t)&flux__win_text_layout_{})) return 1;\n",
