@@ -5836,7 +5836,178 @@ static inline const char *flux__json_encode_optional_str(struct flux__optional_s
 "#);
     }
     if runtime_usage.contains("flux__uri_normalize(") {
-        out.push_str(r#"static inline const char *flux__uri_normalize(const char *value, void (*callback)(const char *)) {
+        out.push_str(r#"static inline bool flux__parse_ipv6_hex_group(const char *value, size_t length, uint16_t *group) {
+    if (length == 0 || length > 4 || group == NULL) return false;
+    uint16_t parsed = 0;
+    for (size_t index = 0; index < length; index += 1) {
+        unsigned char byte = (unsigned char)value[index];
+        unsigned int digit = byte >= '0' && byte <= '9' ? (unsigned int)(byte - '0')
+            : byte >= 'a' && byte <= 'f' ? (unsigned int)(byte - 'a' + 10)
+            : byte >= 'A' && byte <= 'F' ? (unsigned int)(byte - 'A' + 10)
+            : 16u;
+        if (digit >= 16u) return false;
+        parsed = (uint16_t)((parsed << 4) | digit);
+    }
+    *group = parsed;
+    return true;
+}
+
+static inline bool flux__parse_ipv4_tail(const char *value, size_t length, uint16_t groups[2]) {
+    unsigned int octets[4] = {0, 0, 0, 0};
+    size_t cursor = 0;
+    for (size_t part = 0; part < 4; part += 1) {
+        if (cursor >= length) return false;
+        size_t digits = 0;
+        unsigned int parsed = 0;
+        while (cursor < length && value[cursor] >= '0' && value[cursor] <= '9') {
+            if (digits == 0 && value[cursor] == '0'
+                && cursor + 1 < length && value[cursor + 1] >= '0' && value[cursor + 1] <= '9') {
+                return false;
+            }
+            parsed = parsed * 10u + (unsigned int)(value[cursor] - '0');
+            if (parsed > 255u) return false;
+            cursor += 1;
+            digits += 1;
+        }
+        if (digits == 0) return false;
+        octets[part] = parsed;
+        if (part < 3) {
+            if (cursor >= length || value[cursor] != '.') return false;
+            cursor += 1;
+        } else if (cursor != length) {
+            return false;
+        }
+    }
+    groups[0] = (uint16_t)((octets[0] << 8) | octets[1]);
+    groups[1] = (uint16_t)((octets[2] << 8) | octets[3]);
+    return true;
+}
+
+static inline bool flux__canonicalize_ipv6(const char *value, size_t length, char output[64], size_t *output_length) {
+    if (value == NULL || output == NULL || output_length == NULL || length == 0) return false;
+    uint16_t explicit_groups[8] = {0};
+    size_t explicit_count = 0;
+    size_t compression = 9;
+    bool ipv4_tail = false;
+    size_t cursor = 0;
+    if (length >= 2 && value[0] == ':' && value[1] == ':') {
+        compression = 0;
+        cursor = 2;
+    } else if (value[0] == ':') {
+        return false;
+    }
+    while (cursor < length) {
+        size_t token_start = cursor;
+        while (cursor < length && value[cursor] != ':') cursor += 1;
+        size_t token_length = cursor - token_start;
+        if (token_length == 0) return false;
+        bool dotted = false;
+        for (size_t index = token_start; index < cursor; index += 1) {
+            if (value[index] == '.') {
+                dotted = true;
+                break;
+            }
+        }
+        if (dotted) {
+            if (cursor != length || explicit_count > 6) return false;
+            uint16_t tail[2] = {0, 0};
+            if (!flux__parse_ipv4_tail(value + token_start, token_length, tail)) return false;
+            explicit_groups[explicit_count++] = tail[0];
+            explicit_groups[explicit_count++] = tail[1];
+            ipv4_tail = true;
+            break;
+        }
+        if (explicit_count >= 8
+            || !flux__parse_ipv6_hex_group(value + token_start, token_length, &explicit_groups[explicit_count])) {
+            return false;
+        }
+        explicit_count += 1;
+        if (cursor == length) break;
+        if (cursor + 1 < length && value[cursor + 1] == ':') {
+            if (compression != 9) return false;
+            compression = explicit_count;
+            cursor += 2;
+            if (cursor == length) break;
+        } else {
+            cursor += 1;
+            if (cursor == length) return false;
+        }
+    }
+
+    uint16_t groups[8] = {0};
+    if (compression == 9) {
+        if (explicit_count != 8) return false;
+        memcpy(groups, explicit_groups, sizeof(groups));
+    } else {
+        if (explicit_count >= 8) return false;
+        size_t omitted = 8 - explicit_count;
+        for (size_t index = 0; index < compression; index += 1) groups[index] = explicit_groups[index];
+        for (size_t index = compression; index < explicit_count; index += 1) {
+            groups[index + omitted] = explicit_groups[index];
+        }
+    }
+
+    size_t hex_group_count = ipv4_tail ? 6 : 8;
+    size_t best_start = 8;
+    size_t best_length = 0;
+    for (size_t index = 0; index < hex_group_count;) {
+        if (groups[index] != 0) {
+            index += 1;
+            continue;
+        }
+        size_t end = index + 1;
+        while (end < hex_group_count && groups[end] == 0) end += 1;
+        size_t run = end - index;
+        if (run >= 2 && run > best_length) {
+            best_start = index;
+            best_length = run;
+        }
+        index = end;
+    }
+
+    static const char hex[] = "0123456789abcdef";
+    size_t written = 0;
+    for (size_t index = 0; index < hex_group_count;) {
+        if (best_length >= 2 && index == best_start) {
+            if (written == 0 || output[written - 1] != ':') output[written++] = ':';
+            output[written++] = ':';
+            index += best_length;
+            continue;
+        }
+        if (written > 0 && output[written - 1] != ':') output[written++] = ':';
+        uint16_t group = groups[index];
+        bool started = false;
+        for (int shift = 12; shift >= 0; shift -= 4) {
+            unsigned int digit = (unsigned int)((group >> shift) & 0x0f);
+            if (!started && digit == 0 && shift > 0) continue;
+            started = true;
+            output[written++] = hex[digit];
+        }
+        index += 1;
+    }
+
+    if (ipv4_tail) {
+        if (written > 0 && output[written - 1] != ':') output[written++] = ':';
+        unsigned int octets[4] = {
+            (unsigned int)(groups[6] >> 8),
+            (unsigned int)(groups[6] & 0xff),
+            (unsigned int)(groups[7] >> 8),
+            (unsigned int)(groups[7] & 0xff),
+        };
+        for (size_t part = 0; part < 4; part += 1) {
+            if (part > 0) output[written++] = '.';
+            unsigned int octet = octets[part];
+            if (octet >= 100u) output[written++] = (char)('0' + octet / 100u);
+            if (octet >= 10u) output[written++] = (char)('0' + (octet / 10u) % 10u);
+            output[written++] = (char)('0' + octet % 10u);
+        }
+    }
+    output[written] = '\0';
+    *output_length = written;
+    return true;
+}
+
+static inline const char *flux__uri_normalize(const char *value, void (*callback)(const char *)) {
     size_t length = 0;
     if (callback == NULL) return "invalid URI normalize callback";
     if (!flux__bounded_url_length(value, &length)) return "URI exceeds 65536 bytes";
@@ -5895,28 +6066,58 @@ static inline const char *flux__json_encode_optional_str(struct flux__optional_s
         }
         char *host_end = authority_end;
         bool registered_name = true;
-        bool plain_ipv6_literal = false;
         if (host_start < authority_end && *host_start == '[') {
             registered_name = false;
             char *closing = NULL;
             for (char *part = host_start + 1; part < authority_end; part += 1) {
                 if (*part == ']') {
                     closing = part;
-                    host_end = part + 1;
                     break;
                 }
             }
             if (closing != NULL) {
-                plain_ipv6_literal = true;
-                for (char *part = host_start + 1; part < closing; part += 1) {
-                    unsigned char byte = (unsigned char)*part;
-                    bool ipv6_byte = (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f')
-                        || (byte >= 'A' && byte <= 'F') || byte == ':' || byte == '.';
-                    if (!ipv6_byte) {
-                        plain_ipv6_literal = false;
+                char *address_end = closing;
+                for (char *part = host_start + 1; part + 2 < closing; part += 1) {
+                    if (part[0] == '%' && part[1] == '2' && part[2] == '5') {
+                        address_end = part;
                         break;
                     }
                 }
+                bool ipv6_candidate = false;
+                bool ipv6_chars = address_end > host_start + 1;
+                for (char *part = host_start + 1; part < address_end; part += 1) {
+                    unsigned char byte = (unsigned char)*part;
+                    if (byte == ':') ipv6_candidate = true;
+                    bool valid = (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f')
+                        || (byte >= 'A' && byte <= 'F') || byte == ':' || byte == '.';
+                    if (!valid) {
+                        ipv6_chars = false;
+                        break;
+                    }
+                }
+                if (ipv6_candidate && ipv6_chars) {
+                    char canonical[64];
+                    size_t canonical_length = 0;
+                    size_t address_length = (size_t)(address_end - (host_start + 1));
+                    if (!flux__canonicalize_ipv6(host_start + 1, address_length, canonical, &canonical_length)) {
+                        return "URI IPv6 host is invalid";
+                    }
+                    if (canonical_length > address_length) return "URI IPv6 host is invalid";
+                    size_t shrink = address_length - canonical_length;
+                    size_t zone_length = (size_t)(closing - address_end);
+                    if (zone_length > 0) {
+                        memmove(host_start + 1 + canonical_length, address_end, zone_length);
+                    }
+                    char *new_closing = closing - shrink;
+                    if (shrink > 0) {
+                        memmove(new_closing, closing, length - (size_t)(closing - buffer) + 1);
+                        authority_end -= shrink;
+                        length -= shrink;
+                    }
+                    memcpy(host_start + 1, canonical, canonical_length);
+                    closing = new_closing;
+                }
+                host_end = closing + 1;
             }
         } else {
             for (char *part = host_start; part < authority_end; part += 1) {
@@ -5926,11 +6127,11 @@ static inline const char *flux__json_encode_optional_str(struct flux__optional_s
                 }
             }
         }
-        for (char *part = host_start; part < host_end; part += 1) {
-            unsigned char byte = (unsigned char)*part;
-            bool uppercase_host = registered_name && byte >= 'A' && byte <= 'Z';
-            bool uppercase_ipv6_hex = plain_ipv6_literal && byte >= 'A' && byte <= 'F';
-            if (uppercase_host || uppercase_ipv6_hex) *part = (char)(byte - 'A' + 'a');
+        if (registered_name) {
+            for (char *part = host_start; part < host_end; part += 1) {
+                unsigned char byte = (unsigned char)*part;
+                if (byte >= 'A' && byte <= 'Z') *part = (char)(byte - 'A' + 'a');
+            }
         }
 
         char *port_marker = host_end < authority_end && *host_end == ':' ? host_end : NULL;

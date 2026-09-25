@@ -9201,6 +9201,14 @@ fn main() -> i64 {
     print(uri.normalize("custom://User@[2001:DB8::A]:99/%41", normalized))
     print(uri.normalize("custom://HOST/a/%2e/b/%2E%2E/c", normalized))
     print(uri.normalize("custom://[FE80::1%25Eth0]/", normalized))
+    print(uri.normalize("custom://[2001:0DB8:0000:0000:0000:FF00:0042:8329]/", normalized))
+    print(uri.normalize("custom://[2001:0:0:1:0:0:1:1]/", normalized))
+    print(uri.normalize("custom://[0:0:0:0:0:0:0:1]/", normalized))
+    print(uri.normalize("custom://[0:0:0:0:0:0:0:0]/", normalized))
+    print(uri.normalize("custom://[2001:db8:0:1:1:1:1:1]/", normalized))
+    print(uri.normalize("custom://[::FFFF:192.0.2.128]/", normalized))
+    print(uri.normalize("custom://[FE80:0000::1%25Eth0]/", normalized))
+    print(uri.normalize("custom://[2001:::1]/", normalized))
     print(uri.normalize("HTTP://Example.COM:80/%7e", normalized))
     print(uri.normalize("https://[2001:DB8::A]:443/a", normalized))
     print(uri.normalize("https://Example.COM:444/a", normalized))
@@ -9241,7 +9249,7 @@ fn main() -> i64 {
     assert!(run.status.success());
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
-        "custom://example.com/~user/a%2Fb\nnil\nhttp://host.example/a/c?x=~1#A\nnil\nmailto:alice.smith/./../example.test\nnil\ncustom://User@[2001:db8::a]:99/A\nnil\ncustom://host/a/c\nnil\ncustom://[FE80::1%25Eth0]/\nnil\nhttp://example.com/~\nnil\nhttps://[2001:db8::a]/a\nnil\nhttps://example.com:444/a\nnil\ncustom://example.com:80/a\nnil\nURI contains an invalid percent escape\nURI contains raw non-ASCII bytes; percent-encode UTF-8\n"
+        "custom://example.com/~user/a%2Fb\nnil\nhttp://host.example/a/c?x=~1#A\nnil\nmailto:alice.smith/./../example.test\nnil\ncustom://User@[2001:db8::a]:99/A\nnil\ncustom://host/a/c\nnil\ncustom://[fe80::1%25Eth0]/\nnil\ncustom://[2001:db8::ff00:42:8329]/\nnil\ncustom://[2001::1:0:0:1:1]/\nnil\ncustom://[::1]/\nnil\ncustom://[::]/\nnil\ncustom://[2001:db8:0:1:1:1:1:1]/\nnil\ncustom://[::ffff:192.0.2.128]/\nnil\ncustom://[fe80::1%25Eth0]/\nnil\nURI IPv6 host is invalid\nhttp://example.com/~\nnil\nhttps://[2001:db8::a]/a\nnil\nhttps://example.com:444/a\nnil\ncustom://example.com:80/a\nnil\nURI contains an invalid percent escape\nURI contains raw non-ASCII bytes; percent-encode UTF-8\n"
     );
     let _ = fs::remove_dir_all(&root);
 }
