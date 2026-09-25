@@ -43049,6 +43049,24 @@ fn emit_cfg_list_child_direct(
         }
         return Some(emitted.code);
     }
+    if let Some(scalar) = rewrite_facts.scalar_exprs.get(&span) {
+        let mut projection_out = String::new();
+        let mut projection_env = env.clone();
+        let mut projection_temp_counter = *temp_counter;
+        if let Some(rendered) = emit_cfg_sequence_projection_direct(
+            &mut projection_out,
+            pad,
+            scalar,
+            &expected,
+            &mut projection_env,
+            signatures,
+            &mut projection_temp_counter,
+        ) {
+            out.push_str(&projection_out);
+            *temp_counter = projection_temp_counter;
+            return Some(rendered);
+        }
+    }
     emit_cfg_aggregate_shape_child_direct(span, &expected, env, signatures, rewrite_facts)
 }
 
@@ -43193,12 +43211,15 @@ fn emit_cfg_list_builder_binding(
                 } else {
                     Type::Bool
                 };
-                let condition_expr = emit_cfg_aggregate_shape_child_direct(
+                let condition_expr = emit_cfg_list_child_direct(
+                    out,
+                    pad,
                     *condition,
                     &condition_ty,
                     env,
                     signatures,
                     rewrite_facts,
+                    temp_counter,
                 )?;
                 let condition_name = format!("flux__list_build_condition_{}", *temp_counter);
                 *temp_counter += 1;
@@ -44047,13 +44068,17 @@ fn emit_cfg_list_comprehension_binding(
     ));
     nested.insert(binding.clone(), (**input_element).clone());
 
+    let loop_pad = format!("{pad}    ");
     if let Some(condition) = condition {
-        let condition = emit_cfg_aggregate_shape_child_direct(
+        let condition = emit_cfg_list_child_direct(
+            out,
+            &loop_pad,
             *condition,
             &Type::Bool,
             &nested,
             signatures,
             rewrite_facts,
+            temp_counter,
         )?;
         out.push_str(&format!(
             "{pad}    if (!{}) continue;
@@ -44061,7 +44086,6 @@ fn emit_cfg_list_comprehension_binding(
             c_condition(&condition)
         ));
     }
-    let loop_pad = format!("{pad}    ");
     let value = emit_cfg_list_child_direct(
         out,
         &loop_pad,
@@ -56251,6 +56275,100 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn list_builder_sequence_projection_guard_lowers_from_typed_ir() {
+        let source = r#"
+fn exercise(values: i64[]) -> i64 {
+    let built: i64[] = [if sorted(values).isNotEmpty: 7 else: 8]
+    return built.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("sequence-projection list guard fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let list_ty = Type::List(Box::new(Type::I64));
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(value.kind, crate::ir::ControlFlowValueKind::List { .. })
+                    && database.signatures().canonical_type(&value.ty) == list_ty
+            })
+            .expect("typed IR should retain the controlled list root");
+        let facts = cfg_rewrite_facts(graph);
+        let shape = facts
+            .aggregates
+            .get(&source_span_key(root.span))
+            .expect("controlled list root should retain aggregate shape");
+        let CfgAggregateShape::List(items) = shape else {
+            panic!("controlled list root should retain list item shape");
+        };
+        let condition = items
+            .iter()
+            .find_map(|item| match item {
+                CfgListItemShape::Conditional {
+                    condition,
+                    binding: None,
+                    ..
+                } => Some(*condition),
+                _ => None,
+            })
+            .expect("list should retain its boolean guard");
+        assert!(matches!(
+            facts.scalar_exprs.get(&condition).map(|expr| &expr.kind),
+            Some(CfgScalarExprKind::Field {
+                base,
+                optional: false,
+                ..
+            }) if matches!(
+                &base.kind,
+                CfgScalarExprKind::Call { callee, .. }
+                    if crate::builtin_names::global_impl(callee) == "sorted"
+            )
+        ));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Int(999),
+        };
+        let mut env = HashMap::from([("values".to_string(), list_ty.clone())]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_builder_binding(
+            &mut out,
+            "",
+            ("built", &list_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("sequence-projection guard should lower from typed IR");
+
+        let sorted = out
+            .find("flux__sorted_source_")
+            .expect("guard should materialize its normalized sorted source");
+        let branch = out
+            .find("bool flux__list_build_condition_")
+            .expect("list builder should emit the materialized guard");
+        assert!(
+            sorted < branch,
+            "guard sequence must be evaluated before branch selection: {out}"
+        );
+        assert!(out.contains("__flux_sequence_projection_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(!out.contains("999"), "{out}");
+    }
+
+    #[test]
     fn dynamic_list_comprehension_lowers_from_typed_ir_without_ast_root() {
         let source = r#"
 fn exercise(values: i64[], floor: i64) -> i64 {
@@ -56395,6 +56513,100 @@ fn main() -> i64 {
         );
         assert!(out.contains(&local_c_name("groups")), "{out}");
         assert!(out.contains(&local_c_name("value")), "{out}");
+        assert!(!out.contains("999"), "{out}");
+    }
+
+    #[test]
+    fn list_comprehension_sequence_projection_filter_stays_inside_loop() {
+        let source = r#"
+fn exercise(groups: i64[][]) -> i64 {
+    let projected: i64[] = [group.length for group in groups if sorted(group).isNotEmpty]
+    return projected.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("sequence-projection comprehension filter fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let inner_ty = Type::List(Box::new(Type::I64));
+        let groups_ty = Type::List(Box::new(inner_ty));
+        let result_ty = Type::List(Box::new(Type::I64));
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::ListComprehension { .. }
+                ) && database.signatures().canonical_type(&value.ty) == result_ty
+            })
+            .expect("typed IR should retain the filtered list comprehension");
+        let facts = cfg_rewrite_facts(graph);
+        let shape = facts
+            .aggregates
+            .get(&source_span_key(root.span))
+            .expect("comprehension root should retain aggregate shape");
+        let CfgAggregateShape::ListComprehension {
+            condition: Some(condition),
+            ..
+        } = shape
+        else {
+            panic!("comprehension should retain its filter");
+        };
+        assert!(matches!(
+            facts.scalar_exprs.get(condition).map(|expr| &expr.kind),
+            Some(CfgScalarExprKind::Field {
+                base,
+                optional: false,
+                ..
+            }) if matches!(
+                &base.kind,
+                CfgScalarExprKind::Call { callee, .. }
+                    if crate::builtin_names::global_impl(callee) == "sorted"
+            )
+        ));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Int(999),
+        };
+        let mut env = HashMap::from([("groups".to_string(), groups_ty)]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_comprehension_binding(
+            &mut out,
+            "",
+            ("projected", &result_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("sequence-projection filter should lower from typed IR");
+
+        let loop_start = out
+            .find("for (size_t flux__list_index_")
+            .expect("comprehension should emit its loop");
+        let sorted = out
+            .find("flux__sorted_source_")
+            .expect("filter should materialize its normalized sorted source");
+        let filter = out
+            .find("if (!")
+            .expect("comprehension should emit its filter branch");
+        assert!(
+            loop_start < sorted && sorted < filter,
+            "filter sequence must stay inside the loop before filtering: {out}"
+        );
+        assert!(out.contains("__flux_sequence_projection_"), "{out}");
+        assert!(out.contains(&local_c_name("group")), "{out}");
         assert!(!out.contains("999"), "{out}");
     }
 
