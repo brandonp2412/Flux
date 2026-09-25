@@ -76237,7 +76237,7 @@ fn websocket_blocked_io_is_worker_cancellable() {
 fn blockedRead(session: i64) -> void {{
     let (_bytes, readError) = websocket.readText(session, 64, onText)
     if readError != nil && worker.cancelled():
-        print(1)
+        print(readError)
 }}
 
 fn main() -> i64 {{
@@ -76277,6 +76277,8 @@ fn main() -> i64 {{
     assert!(generated.contains("int ready = flux__net_poll_cancellable(&descriptor, 1, -1);"));
     assert!(generated.contains("MSG_DONTWAIT"));
     assert!(generated.contains("errno = ECANCELED"));
+    assert!(generated.contains("WebSocket read cancelled by worker scope"));
+    assert!(generated.contains("WebSocket write cancelled by worker scope"));
 
     let root = std::env::temp_dir().join(format!("flux-websocket-cancel-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -76344,7 +76346,7 @@ fn main() -> i64 {{
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "1
+        "WebSocket read cancelled by worker scope
 "
     );
     let _ = fs::remove_dir_all(&root);
