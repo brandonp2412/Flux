@@ -54825,9 +54825,10 @@ fn emit_cfg_borrowed_list_argument_direct(
     emit_cfg_scalar_expr_direct(argument, env, signatures)
 }
 
-fn emit_cfg_ordered_call_with_borrowed_list_direct<F>(
+fn emit_cfg_ordered_call_with_borrowed_list_direct_positioned<F>(
     scalar_arguments: &[CfgScalarExpr],
     expected_scalars: &[Type],
+    borrowed_scalar_position: Option<usize>,
     borrowed_argument: &CfgScalarExpr,
     borrowed_element: &Type,
     env: &HashMap<String, Type>,
@@ -54837,20 +54838,59 @@ fn emit_cfg_ordered_call_with_borrowed_list_direct<F>(
 where
     F: FnOnce(&[String], &str) -> String,
 {
-    if let Some((prelude, borrowed)) = emit_cfg_call_scoped_borrowed_list_direct(
+    if let Some((borrowed_prelude, borrowed)) = emit_cfg_call_scoped_borrowed_list_direct(
         borrowed_argument,
         borrowed_element,
         env,
         signatures,
     ) {
-        if scalar_arguments.len() != expected_scalars.len()
-            || scalar_arguments.iter().any(|argument| {
-                !matches!(
+        if scalar_arguments.len() != expected_scalars.len() {
+            return None;
+        }
+        if let Some(borrowed_scalar_position) = borrowed_scalar_position {
+            if borrowed_scalar_position > scalar_arguments.len() {
+                return None;
+            }
+            let mut before_borrowed = String::new();
+            let mut after_borrowed = String::new();
+            let mut rendered = Vec::with_capacity(scalar_arguments.len());
+            for (index, (argument, expected)) in
+                scalar_arguments.iter().zip(expected_scalars).enumerate()
+            {
+                let expected = signatures.canonical_type(expected);
+                let value =
+                    emit_cfg_ordinary_call_argument_direct(argument, &expected, env, signatures)?;
+                if matches!(
                     argument.kind,
                     CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                )
-            })
-        {
+                ) {
+                    rendered.push(value);
+                    continue;
+                }
+                if !signatures.is_copy_type(&expected) {
+                    return None;
+                }
+                let temp = format!("flux__typed_borrowed_peer_arg_{index}");
+                let statement = format!("{} {temp} = {value}; ", c_type(&expected, signatures));
+                if index < borrowed_scalar_position {
+                    before_borrowed.push_str(&statement);
+                } else {
+                    after_borrowed.push_str(&statement);
+                }
+                rendered.push(temp);
+            }
+            return Some(format!(
+                "__extension__ ({{ {before_borrowed}{borrowed_prelude}{after_borrowed}{}; }})",
+                render_call(&rendered, &borrowed)
+            ));
+        }
+
+        if scalar_arguments.iter().any(|argument| {
+            !matches!(
+                argument.kind,
+                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+            )
+        }) {
             return None;
         }
         let rendered = scalar_arguments
@@ -54861,7 +54901,7 @@ where
             })
             .collect::<Option<Vec<_>>>()?;
         return Some(format!(
-            "__extension__ ({{ {prelude}{}; }})",
+            "__extension__ ({{ {borrowed_prelude}{}; }})",
             render_call(&rendered, &borrowed)
         ));
     }
@@ -56684,9 +56724,10 @@ fn emit_cfg_scalar_expr_direct(
                         scalar_arguments.push(arguments[6].clone());
                         expected.push(Type::Bool);
                     }
-                    emit_cfg_ordered_call_with_borrowed_list_direct(
+                    emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                         &scalar_arguments,
                         &expected,
+                        Some(5),
                         &arguments[5],
                         &Type::I64,
                         env,
@@ -56719,9 +56760,10 @@ fn emit_cfg_scalar_expr_direct(
                         scalar_arguments.push(arguments[7].clone());
                         expected.push(Type::Bool);
                     }
-                    emit_cfg_ordered_call_with_borrowed_list_direct(
+                    emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                         &scalar_arguments,
                         &expected,
+                        Some(5),
                         &arguments[5],
                         &Type::I64,
                         env,
@@ -56797,9 +56839,10 @@ fn emit_cfg_scalar_expr_direct(
                         scalar_arguments.push(arguments[5].clone());
                         expected.push(Type::Bool);
                     }
-                    emit_cfg_ordered_call_with_borrowed_list_direct(
+                    emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                         &scalar_arguments,
                         &expected,
+                        Some(3),
                         &arguments[3],
                         &Type::I64,
                         env,
@@ -56853,9 +56896,10 @@ fn emit_cfg_scalar_expr_direct(
                         scalar_arguments.push(arguments[4].clone());
                         expected.push(Type::Bool);
                     }
-                    emit_cfg_ordered_call_with_borrowed_list_direct(
+                    emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                         &scalar_arguments,
                         &expected,
+                        Some(3),
                         &arguments[3],
                         &Type::I64,
                         env,
@@ -56913,9 +56957,10 @@ fn emit_cfg_scalar_expr_direct(
                 |rendered| format!("flux__tls_write({}, {})", rendered[0], rendered[1]),
             ),
             "writeBytes" if arguments.len() == 2 => {
-                emit_cfg_ordered_call_with_borrowed_list_direct(
+                emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                     &arguments[..1],
                     &[Type::I64],
+                    Some(1),
                     &arguments[1],
                     &Type::I64,
                     env,
@@ -56955,9 +57000,10 @@ fn emit_cfg_scalar_expr_direct(
                     },
                 ),
                 "sendTextParts" if arguments.len() == 2 => {
-                    emit_cfg_ordered_call_with_borrowed_list_direct(
+                    emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                         &arguments[..1],
                         &[Type::I64],
+                        Some(1),
                         &arguments[1],
                         &Type::Str,
                         env,
@@ -56980,9 +57026,10 @@ fn emit_cfg_scalar_expr_direct(
                     },
                 ),
                 "sendTextToParts" if arguments.len() == 4 => {
-                    emit_cfg_ordered_call_with_borrowed_list_direct(
+                    emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                         &arguments[..3],
                         &[Type::I64, Type::Str, Type::I64],
+                        Some(3),
                         &arguments[3],
                         &Type::Str,
                         env,
@@ -57066,9 +57113,10 @@ fn emit_cfg_scalar_expr_direct(
                 },
             ),
             "writeBytes" if arguments.len() == 2 => {
-                emit_cfg_ordered_call_with_borrowed_list_direct(
+                emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                     &arguments[..1],
                     &[Type::I64],
+                    Some(1),
                     &arguments[1],
                     &Type::I64,
                     env,
@@ -78884,6 +78932,11 @@ fn main() -> i64 {
     #[test]
     fn effectful_temporary_websocket_bytes_emit_from_ordered_typed_ir() {
         let source = r#"
+fn wsSession(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
 fn firstWsByte(value: i64) -> i64 {
     print(value)
     return value
@@ -78895,7 +78948,7 @@ fn secondWsByte(value: i64) -> i64 {
 }
 
 fn send(session: i64, first: i64, second: i64) -> error {
-    return websocket.writeBytes(session, [firstWsByte(first), secondWsByte(second)])
+    return websocket.writeBytes(wsSession(session), [firstWsByte(first), secondWsByte(second)])
 }
 
 fn main() -> i64 {
@@ -78934,6 +78987,9 @@ fn main() -> i64 {
 
         let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
             .expect("effectful temporary WebSocket bytes should emit inside call scope");
+        let session = direct
+            .find(&function_c_name("wsSession"))
+            .expect("session effect should be emitted");
         let first = direct
             .find(&function_c_name("firstWsByte"))
             .expect("first byte effect should be emitted");
@@ -78943,7 +78999,10 @@ fn main() -> i64 {
         let call = direct
             .rfind("flux__websocket_write_bytes")
             .expect("WebSocket byte write should be emitted");
-        assert!(first < second && second < call, "{direct}");
+        assert!(
+            session < first && first < second && second < call,
+            "{direct}"
+        );
         assert!(
             direct.contains("flux__typed_borrowed_list_storage"),
             "{direct}"
@@ -85307,6 +85366,16 @@ fn main() -> i64 {
     #[test]
     fn effectful_temporary_network_lists_emit_from_ordered_typed_ir() {
         let source = r#"
+fn orderedSocket(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn orderedTimeout(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
 fn orderedFirst(value: i64) -> i64 {
     print(value)
     return value
@@ -85324,27 +85393,27 @@ fn stateCallback(_socket: i64, _readable: bool, _writable: bool) -> void {
 }
 
 fn sendBytes(socket: i64, first: i64, second: i64) -> i64 {
-    let (sent, _) = net.writeBytes(socket, [orderedFirst(first), orderedSecond(second)])
+    let (sent, _) = net.writeBytes(orderedSocket(socket), [orderedFirst(first), orderedSecond(second)])
     return sent
 }
 
 fn readableMany(first: i64, second: i64, timeout: i64) -> i64 {
-    let (count, _) = net.readableMany([orderedFirst(first), orderedSecond(second)], timeout, readyCallback)
+    let (count, _) = net.readableMany([orderedFirst(first), orderedSecond(second)], orderedTimeout(timeout), readyCallback)
     return count
 }
 
 fn writableMany(first: i64, second: i64, timeout: i64) -> i64 {
-    let (count, _) = net.writableMany([orderedFirst(first), orderedSecond(second)], timeout, readyCallback)
+    let (count, _) = net.writableMany([orderedFirst(first), orderedSecond(second)], orderedTimeout(timeout), readyCallback)
     return count
 }
 
 fn readyMany(first: i64, second: i64, timeout: i64) -> i64 {
-    let (count, _) = net.readyMany([orderedFirst(first), orderedSecond(second)], timeout, stateCallback)
+    let (count, _) = net.readyMany([orderedFirst(first), orderedSecond(second)], orderedTimeout(timeout), stateCallback)
     return count
 }
 
 fn waitAny(first: i64, second: i64, timeout: i64) -> i64 {
-    let (handle, _, _) = net.waitAny([orderedFirst(first), orderedSecond(second)], timeout)
+    let (handle, _, _) = net.waitAny([orderedFirst(first), orderedSecond(second)], orderedTimeout(timeout))
     return handle
 }
 
@@ -85428,11 +85497,32 @@ fn main() -> i64 {
                 .0
                 .find(&function_c_name("orderedSecond"))
                 .unwrap_or_else(|| panic!("{function}: second list effect should be emitted"));
+            let peer_name = if function == "sendBytes" {
+                "orderedSocket"
+            } else {
+                "orderedTimeout"
+            };
+            let peer = direct
+                .0
+                .find(&function_c_name(peer_name))
+                .unwrap_or_else(|| panic!("{function}: scalar peer effect should be emitted"));
             let call = direct
                 .0
                 .rfind(helper)
                 .unwrap_or_else(|| panic!("{function}: native helper should be emitted"));
-            assert!(first < second && second < call, "{function}: {}", direct.0);
+            if function == "sendBytes" {
+                assert!(
+                    peer < first && first < second && second < call,
+                    "{function}: {}",
+                    direct.0
+                );
+            } else {
+                assert!(
+                    first < second && second < peer && peer < call,
+                    "{function}: {}",
+                    direct.0
+                );
+            }
             assert!(
                 direct.0.contains("flux__typed_borrowed_list_storage"),
                 "{function}: {}",
@@ -85449,6 +85539,105 @@ fn main() -> i64 {
                 .unwrap_or_else(|_| panic!("{function}: typed IR should bypass checked AST"));
             assert_eq!(emitted, direct, "{function}");
         }
+    }
+
+    #[test]
+    fn positioned_effectful_borrowed_list_sequences_computed_scalar_peers() {
+        let source = r#"
+fn before(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn item(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn after(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn send(session: i64, byte: i64, timeout: i64) -> i64 {
+    let (sent, _) = net.writeBytesTimeout(before(session), [item(byte)], after(timeout))
+    return sent
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4268))
+            .expect("positioned borrowed-list fixture should analyze");
+        let graph = database
+            .control_flow_graph("send")
+            .expect("send CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                value.result_index == Some(0)
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if namespace == "net" && name == "writeBytesTimeout"
+                    )
+            })
+            .expect("timed byte write should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let multi = facts
+            .multi_exprs
+            .get(&source_span_key(root.span))
+            .expect("timed byte write should have multi-value facts");
+        let env = HashMap::from([
+            ("session".to_string(), Type::I64),
+            ("byte".to_string(), Type::I64),
+            ("timeout".to_string(), Type::I64),
+        ]);
+
+        let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+            .expect("computed peers around effectful byte list should emit directly");
+        let before = direct
+            .0
+            .find(&function_c_name("before"))
+            .expect("leading scalar effect should be emitted");
+        let item = direct
+            .0
+            .find(&function_c_name("item"))
+            .expect("list item effect should be emitted");
+        let after = direct
+            .0
+            .find(&function_c_name("after"))
+            .expect("trailing scalar effect should be emitted");
+        let call = direct
+            .0
+            .rfind("flux__net_send_bytes_with_timeout")
+            .expect("timed byte write helper should be emitted");
+        assert!(
+            before < item && item < after && after < call,
+            "{}",
+            direct.0
+        );
+        assert!(
+            direct.0.contains("flux__typed_borrowed_peer_arg_0")
+                && direct.0.contains("flux__typed_borrowed_peer_arg_1")
+                && direct.0.contains("flux__typed_borrowed_list_storage"),
+            "{}",
+            direct.0
+        );
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Bool(false),
+        };
+        let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+            .expect("positioned borrowed-list call should bypass checked AST");
+        assert_eq!(emitted, direct);
     }
 
     #[test]
@@ -89301,9 +89490,10 @@ fn emit_cfg_multi_expr_direct(
                     }
                     "writeBytesTimeout" if arguments.len() == 3 => {
                         let scalar_arguments = vec![arguments[0].clone(), arguments[2].clone()];
-                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                             &scalar_arguments,
                             &[Type::I64, Type::I64],
+                            Some(1),
                             &arguments[1],
                             &Type::I64,
                             env,
@@ -89575,9 +89765,10 @@ fn emit_cfg_multi_expr_direct(
                         Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "sendBytes" if arguments.len() == 2 => {
-                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                             &arguments[..1],
                             &[Type::I64],
+                            Some(1),
                             &arguments[1],
                             &Type::I64,
                             env,
@@ -89590,9 +89781,10 @@ fn emit_cfg_multi_expr_direct(
                     }
                     "sendBytesProgress" if arguments.len() == 3 => {
                         let scalar_arguments = [arguments[0].clone(), arguments[2].clone()];
-                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                             &scalar_arguments,
                             &[Type::I64, Type::I64],
+                            Some(1),
                             &arguments[1],
                             &Type::I64,
                             env,
@@ -89608,9 +89800,10 @@ fn emit_cfg_multi_expr_direct(
                     }
                     "sendBytesWithTimeout" if arguments.len() == 3 => {
                         let scalar_arguments = [arguments[0].clone(), arguments[2].clone()];
-                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                             &scalar_arguments,
                             &[Type::I64, Type::I64],
+                            Some(1),
                             &arguments[1],
                             &Type::I64,
                             env,
@@ -89630,9 +89823,10 @@ fn emit_cfg_multi_expr_direct(
                             arguments[2].clone(),
                             arguments[3].clone(),
                         ];
-                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                             &scalar_arguments,
                             &[Type::I64, Type::I64, Type::I64],
+                            Some(1),
                             &arguments[1],
                             &Type::I64,
                             env,
@@ -89648,9 +89842,10 @@ fn emit_cfg_multi_expr_direct(
                     }
                     "sendTextPartsProgress" if arguments.len() == 3 => {
                         let scalar_arguments = [arguments[0].clone(), arguments[2].clone()];
-                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                             &scalar_arguments,
                             &[Type::I64, Type::I64],
+                            Some(1),
                             &arguments[1],
                             &Type::Str,
                             env,
@@ -89666,9 +89861,10 @@ fn emit_cfg_multi_expr_direct(
                     }
                     "sendTextPartsWithTimeout" if arguments.len() == 3 => {
                         let scalar_arguments = [arguments[0].clone(), arguments[2].clone()];
-                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                             &scalar_arguments,
                             &[Type::I64, Type::I64],
+                            Some(1),
                             &arguments[1],
                             &Type::Str,
                             env,
@@ -89688,9 +89884,10 @@ fn emit_cfg_multi_expr_direct(
                             arguments[2].clone(),
                             arguments[3].clone(),
                         ];
-                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                             &scalar_arguments,
                             &[Type::I64, Type::I64, Type::I64],
+                            Some(1),
                             &arguments[1],
                             &Type::Str,
                             env,
@@ -89705,9 +89902,10 @@ fn emit_cfg_multi_expr_direct(
                         Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "sendBytesToParts" if arguments.len() == 4 => {
-                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                             &arguments[..3],
                             &[Type::I64, Type::Str, Type::I64],
+                            Some(3),
                             &arguments[3],
                             &Type::List(Box::new(Type::I64)),
                             env,
@@ -89722,9 +89920,10 @@ fn emit_cfg_multi_expr_direct(
                         Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "sendBytesTo" if arguments.len() == 4 => {
-                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                             &arguments[..3],
                             &[Type::I64, Type::Str, Type::I64],
+                            Some(3),
                             &arguments[3],
                             &Type::I64,
                             env,
@@ -90025,9 +90224,10 @@ fn emit_cfg_multi_expr_direct(
                         } else {
                             "flux__net_wait_writable_many"
                         };
-                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                             &scalar_arguments,
                             &[Type::I64],
+                            Some(0),
                             &arguments[0],
                             &Type::I64,
                             env,
@@ -90046,9 +90246,10 @@ fn emit_cfg_multi_expr_direct(
                             env,
                             signatures,
                         )?;
-                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                             &scalar_arguments,
                             &[Type::I64],
+                            Some(0),
                             &arguments[0],
                             &Type::I64,
                             env,
@@ -90064,9 +90265,10 @@ fn emit_cfg_multi_expr_direct(
                     }
                     "waitAny" if arguments.len() == 2 => {
                         let scalar_arguments = [arguments[1].clone()];
-                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct_positioned(
                             &scalar_arguments,
                             &[Type::I64],
+                            Some(0),
                             &arguments[0],
                             &Type::I64,
                             env,
