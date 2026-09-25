@@ -45952,9 +45952,14 @@ fn emit_sequence_reduction_binding(
 fn list_literal_needs_builder(expr: &Expr, rewrite_facts: &CfgRewriteFacts) -> bool {
     if let Some(CfgAggregateShape::List(items)) =
         rewrite_facts.aggregates.get(&source_span_key(expr.span))
-        && items
-            .iter()
-            .any(|item| !matches!(item, CfgListItemShape::Value(_)))
+        && items.iter().any(|item| match item {
+            CfgListItemShape::Value(value) => {
+                !cfg_aggregate_shape_child_is_direct_safe(*value, rewrite_facts)
+            }
+            CfgListItemShape::Spread { .. }
+            | CfgListItemShape::Optional { .. }
+            | CfgListItemShape::Conditional { .. } => true,
+        })
     {
         return true;
     }
@@ -61741,6 +61746,85 @@ fn main() -> i64 {
             !struct_code.contains("checked-ast-struct-root"),
             "{struct_code}"
         );
+    }
+
+    #[test]
+    fn effectful_copy_list_binding_emits_from_ordered_typed_ir() {
+        let source = r#"
+fn observeLeft(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeRight(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn exercise(first: i64, second: i64) -> i64 {
+    let values: i64[] = [observeLeft(first), observeRight(second)]
+    return values[0] + values[1]
+}
+
+fn main() -> i64 {
+    return exercise(7, 8)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4251))
+            .expect("effectful list typed-IR fixture should analyze");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::List { items } if items.len() == 2
+                )
+            })
+            .expect("list literal should have a typed-IR root");
+        let facts = cfg_rewrite_facts(graph);
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-effectful-list".to_string()),
+        };
+        assert!(
+            list_literal_needs_builder(&fake, &facts),
+            "effectful typed list should use the ordered binding builder"
+        );
+
+        let mut env = HashMap::from([
+            ("first".to_string(), Type::I64),
+            ("second".to_string(), Type::I64),
+        ]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_builder_binding(
+            &mut out,
+            "",
+            ("values", &root.ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("effectful Copy list binding should emit from ordered typed IR");
+
+        let left = out
+            .find(&function_c_name("observeLeft"))
+            .expect("left effect should be emitted");
+        let right = out
+            .find(&function_c_name("observeRight"))
+            .expect("right effect should be emitted");
+        assert!(left < right, "{out}");
+        assert!(out.contains("flux__list_build_buffer_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(!out.contains("checked-ast-effectful-list"), "{out}");
     }
 
     #[test]
