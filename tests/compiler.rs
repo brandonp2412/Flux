@@ -508,6 +508,43 @@ fn main() -> i64 {
         drops[0].1.value,
         "release value identity must match the definition value query"
     );
+    assert_eq!(
+        graph.definition_ownership(drops[0].1.definition),
+        Some(ControlFlowValueOwnership::Owned),
+        "implicit releases must be attached only to normalized owner definitions"
+    );
+}
+
+#[test]
+fn ownership_ir_does_not_drop_borrowed_collection_parameters() {
+    let source = r#"
+fn inspect(values: i64[]) -> i64 {
+    return values.count
+}
+
+fn main() -> i64 {
+    let values: i64[] = [4, 8]
+    return inspect(values)
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::new(1432))
+        .expect("borrowed parameter fixture should typecheck");
+    let graph = database
+        .control_flow_graph("inspect")
+        .expect("inspect CFG should be available");
+    let parameter = ControlFlowDefinitionId::Parameter(0);
+    assert_eq!(
+        graph.definition_ownership(parameter),
+        Some(ControlFlowValueOwnership::ImmutableBorrow)
+    );
+    assert!(
+        graph
+            .drops()
+            .iter()
+            .all(|(_, drop)| drop.definition != parameter),
+        "borrowed collection parameters must never receive implicit owner drops: {:?}",
+        graph.drops()
+    );
 }
 
 #[test]
@@ -17843,6 +17880,11 @@ fn main() -> i64 {
                 })
         })
         .expect("destination definition should be present");
+    assert_eq!(
+        graph.definition_ownership(destination),
+        Some(ControlFlowValueOwnership::Owned),
+        "whole-value moves must transfer normalized definition ownership"
+    );
     assert!(
         graph
             .drops()

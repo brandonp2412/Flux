@@ -1005,6 +1005,7 @@ pub struct ControlFlowGraph {
     escaping_values: BTreeSet<ControlFlowValueId>,
     scoped_definitions: Vec<Vec<ControlFlowDefinition>>,
     definition_values: BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
+    definition_ownership: BTreeMap<ControlFlowDefinitionId, ControlFlowValueOwnership>,
     scoped_borrow_sources: BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
     reaching_definitions_before: Vec<Option<ReachingDefinitionMap>>,
     move_states_before: Vec<ControlFlowMoveState>,
@@ -1019,7 +1020,7 @@ pub struct ControlFlowGraph {
     drops: Vec<(ControlFlowNodeId, OwnershipDrop)>,
 }
 
-const PERSISTED_IR_MAGIC: &[u8] = b"FLUXIR3\0";
+const PERSISTED_IR_MAGIC: &[u8] = b"FLUXIR4\0";
 const PERSISTED_IR_MAX_ITEMS: usize = 1_000_000;
 const PERSISTED_IR_MAX_STRING_BYTES: usize = 16 * 1024 * 1024;
 
@@ -2967,6 +2968,7 @@ impl PersistedIrCodec for ControlFlowGraph {
         self.escaping_values.encode_cache_value(bytes);
         self.scoped_definitions.encode_cache_value(bytes);
         self.definition_values.encode_cache_value(bytes);
+        self.definition_ownership.encode_cache_value(bytes);
         self.scoped_borrow_sources.encode_cache_value(bytes);
         self.reaching_definitions_before.encode_cache_value(bytes);
         self.move_states_before.encode_cache_value(bytes);
@@ -2998,6 +3000,10 @@ impl PersistedIrCodec for ControlFlowGraph {
             scoped_definitions: Vec::<Vec<ControlFlowDefinition>>::decode_cache_value(reader)?,
             definition_values:
                 BTreeMap::<ControlFlowDefinitionId, ControlFlowValueId>::decode_cache_value(reader)?,
+            definition_ownership:
+                BTreeMap::<ControlFlowDefinitionId, ControlFlowValueOwnership>::decode_cache_value(
+                    reader,
+                )?,
             scoped_borrow_sources:
                 BTreeMap::<ControlFlowDefinitionId, ControlFlowValueId>::decode_cache_value(reader)?,
             reaching_definitions_before: Vec::<Option<ReachingDefinitionMap>>::decode_cache_value(
@@ -3121,6 +3127,10 @@ impl ControlFlowGraph {
             .definition_values
             .iter()
             .any(|(definition, value)| !valid_definition(*definition) || value.0 >= value_count)
+            || self
+                .definition_ownership
+                .keys()
+                .any(|definition| !valid_definition(*definition))
             || self
                 .scoped_borrow_sources
                 .iter()
@@ -3657,6 +3667,18 @@ impl ControlFlowGraph {
 
     pub fn definition_value(&self, id: ControlFlowDefinitionId) -> Option<ControlFlowValueId> {
         self.definition_values.get(&id).copied()
+    }
+
+    /// Return the normalized ownership class for one definition.
+    ///
+    /// Non-copy parameters and scoped views are immutable borrows. Local
+    /// storage-producing bindings are owners, and whole-value moves transfer
+    /// that owner class to the exact destination definition.
+    pub fn definition_ownership(
+        &self,
+        id: ControlFlowDefinitionId,
+    ) -> Option<ControlFlowValueOwnership> {
+        self.definition_ownership.get(&id).copied()
     }
 
     pub fn definition_borrow_source_value(
@@ -4656,6 +4678,14 @@ impl<'a> ControlFlowBuilder<'a> {
         // them before the fixed point so normalized consuming boundaries can
         // actually invalidate their reaching definitions.
         populate_call_argument_definitions(&mut self.nodes, &self.values, self.signatures);
+        let definition_ownership = compute_definition_ownership(
+            &self.nodes,
+            &self.parameters,
+            &self.scoped_definitions,
+            &self.values,
+            &definition_values,
+            self.signatures,
+        );
         let move_states_before = compute_move_states(&self.nodes, &self.edges, self.entry);
         let (live_before, live_after) =
             compute_liveness(&self.nodes, &self.edges, &self.parameters);
@@ -4700,6 +4730,7 @@ impl<'a> ControlFlowBuilder<'a> {
             escaping_values,
             scoped_definitions: self.scoped_definitions,
             definition_values,
+            definition_ownership,
             scoped_borrow_sources: self.scoped_borrow_sources,
             reaching_definitions_before,
             move_states_before,
@@ -8676,6 +8707,107 @@ fn compute_definition_values(
     values
 }
 
+fn compute_definition_ownership(
+    nodes: &[ControlFlowNode],
+    parameters: &[ControlFlowParameter],
+    scoped_definitions: &[Vec<ControlFlowDefinition>],
+    values: &[ControlFlowValue],
+    definition_values: &BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
+    signatures: &Signatures,
+) -> BTreeMap<ControlFlowDefinitionId, ControlFlowValueOwnership> {
+    let default_ownership = |ty: &Type| {
+        if signatures.is_copy_type(ty) {
+            ControlFlowValueOwnership::Copy
+        } else {
+            ControlFlowValueOwnership::ImmutableBorrow
+        }
+    };
+    let mut ownership = BTreeMap::new();
+
+    for (index, parameter) in parameters.iter().enumerate() {
+        ownership.insert(
+            ControlFlowDefinitionId::Parameter(index),
+            default_ownership(&parameter.ty),
+        );
+    }
+    for node in nodes {
+        for (index, definition) in node.definitions.iter().enumerate() {
+            let id = ControlFlowDefinitionId::Node {
+                node: node.id,
+                index,
+            };
+            let value_ownership = definition_values
+                .get(&id)
+                .and_then(|value| values.get(value.0))
+                .map(|value| value.ownership)
+                .unwrap_or_else(|| default_ownership(&definition.ty));
+            ownership.insert(id, value_ownership);
+        }
+    }
+    for (node_index, definitions) in scoped_definitions.iter().enumerate() {
+        for (index, definition) in definitions.iter().enumerate() {
+            ownership.insert(
+                ControlFlowDefinitionId::Scoped {
+                    node: ControlFlowNodeId(node_index),
+                    index,
+                },
+                default_ownership(&definition.ty),
+            );
+        }
+    }
+
+    // A local binding whose initializer is a non-copy name read is initially
+    // represented as a borrowed descriptor. A normalized whole-value move is
+    // the proof that ownership crosses that binding boundary. Propagate that
+    // proof to the destination definition to keep later drop decisions on
+    // definition identities rather than source names.
+    loop {
+        let mut changed = false;
+        for node in nodes {
+            for movement in &node.ownership.moves {
+                if movement.is_partial() || movement.source_definitions.is_empty() {
+                    continue;
+                }
+                if !movement.source_definitions.iter().all(|definition| {
+                    ownership.get(definition) == Some(&ControlFlowValueOwnership::Owned)
+                }) {
+                    continue;
+                }
+                let Some(value) = movement.value else {
+                    continue;
+                };
+                for (definition, definition_value) in definition_values {
+                    if *definition_value != value {
+                        continue;
+                    }
+                    let destination_matches = match *definition {
+                        ControlFlowDefinitionId::Node { node, index } => nodes
+                            .get(node.0)
+                            .and_then(|node| node.definitions.get(index))
+                            .is_some_and(|definition| definition.name == movement.destination),
+                        ControlFlowDefinitionId::Scoped { node, index } => scoped_definitions
+                            .get(node.0)
+                            .and_then(|definitions| definitions.get(index))
+                            .is_some_and(|definition| definition.name == movement.destination),
+                        ControlFlowDefinitionId::Parameter(_) => false,
+                    };
+                    if destination_matches
+                        && ownership.insert(*definition, ControlFlowValueOwnership::Owned)
+                            != Some(ControlFlowValueOwnership::Owned)
+                    {
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    ownership
+}
+
 fn propagate_definition_constants(
     values: &mut [ControlFlowValue],
     definition_values: &BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
@@ -9299,17 +9431,6 @@ fn ownership_node_consumes_definition(
 }
 
 fn compute_drop_facts(graph: &ControlFlowGraph) -> Vec<(ControlFlowNodeId, OwnershipDrop)> {
-    let is_non_copy_storage = |ty: &Type| {
-        matches!(ty, Type::List(_) | Type::Set(_) | Type::Map(_, _))
-            || matches!(
-                ty,
-                Type::Optional(inner)
-                    if matches!(
-                        inner.as_ref(),
-                        Type::List(_) | Type::Set(_) | Type::Map(_, _)
-                    )
-            )
-    };
     let mut drops = Vec::new();
 
     for node in &graph.nodes {
@@ -9348,10 +9469,10 @@ fn compute_drop_facts(graph: &ControlFlowGraph) -> Vec<(ControlFlowNodeId, Owner
                 continue;
             }
 
-            let Some((name, ty, span)) = definition_details(graph, definition) else {
+            let Some((name, _ty, span)) = definition_details(graph, definition) else {
                 continue;
             };
-            if !is_non_copy_storage(&ty) {
+            if graph.definition_ownership(definition) != Some(ControlFlowValueOwnership::Owned) {
                 continue;
             }
             let consumed_on_reachable_path = graph.nodes.iter().any(|move_node| {
