@@ -10309,13 +10309,32 @@ static inline struct flux__net_i64_error flux__tls_listen(int64_t socket_handle,
     for (int index = 0; index < 64; index += 1) if (!flux__tls_slots[index].used) { flux__tls_slots[index] = (struct flux__tls_slot){ .context = context, .session = session, .socket = (int)socket_handle, .used = true }; flux__net_unregister_socket((int)socket_handle); flux__tls_register_cleanup(); return flux__tls_result((int64_t)index + 1, NULL); }
     SSL_shutdown(session); SSL_free(session); SSL_CTX_free(context); flux__net_unregister_socket((int)socket_handle); close((int)socket_handle); return flux__tls_result(-1, "too many active TLS sessions");
 }
-static inline const char *flux__tls_close(int64_t handle) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL) return "invalid or closed TLS session"; SSL_shutdown(slot->session); SSL_free(slot->session); SSL_CTX_free(slot->context); flux__net_unregister_socket(slot->socket); close(slot->socket); slot->used = false; return NULL; }
 static inline int flux__tls_wait_retry(struct flux__tls_slot *slot, int ssl_error) {
     struct pollfd descriptor = { .fd = slot->socket, .events = ssl_error == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT, .revents = 0 };
     int ready = flux__net_poll_cancellable(&descriptor, 1, -1);
     if (ready == -2) return -2;
     if (ready <= 0 || (descriptor.revents & (POLLNVAL | POLLERR)) != 0) return -1;
     return 1;
+}
+static inline const char *flux__tls_close(int64_t handle) {
+    struct flux__tls_slot *slot = flux__tls_slot_for(handle);
+    if (slot == NULL) return "invalid or closed TLS session";
+    const char *error = NULL;
+    for (;;) {
+        int shutdown = SSL_shutdown(slot->session);
+        if (shutdown >= 0) break;
+        int ssl_error = SSL_get_error(slot->session, shutdown);
+        if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE) { error = "TLS close failed"; break; }
+        int ready = flux__tls_wait_retry(slot, ssl_error);
+        if (ready == -2) { error = "TLS close cancelled by worker scope"; break; }
+        if (ready < 0) { error = "TLS close readiness failed"; break; }
+    }
+    SSL_free(slot->session);
+    SSL_CTX_free(slot->context);
+    flux__net_unregister_socket(slot->socket);
+    close(slot->socket);
+    slot->used = false;
+    return error;
 }
 static inline const char *flux__tls_write(int64_t handle, const char *value) {
     struct flux__tls_slot *slot = flux__tls_slot_for(handle);

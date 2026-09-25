@@ -26966,6 +26966,8 @@ fn main() -> i64 {
     assert!(generated.contains("flux__net_poll_cancellable(&descriptor, 1, -1)"));
     assert!(generated.contains("TLS requires a TCP stream socket"));
     assert!(generated.contains("TLS requires a connected TCP socket"));
+    assert!(generated.contains("TLS close cancelled by worker scope"));
+    assert!(generated.contains("TLS close readiness failed"));
     assert!(generated.contains("TLS read cancelled by worker scope"));
     assert!(generated.contains("TLS write cancelled by worker scope"));
     assert!(generated.contains("TLS readBytes cancelled by worker scope"));
