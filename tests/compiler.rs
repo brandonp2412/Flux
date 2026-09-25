@@ -17136,19 +17136,33 @@ fn main() -> i64 {
     );
 
     let returned = r#"
-fn values() -> i64[] {
+fn listValues() -> i64[] {
     return [1, 2]
+}
+fn setValues() -> set<i64> {
+    return {1, 2}
+}
+fn mapValues() -> map<i64, i64> {
+    return map{1: 2}
 }
 fn main() -> i64 {
     return 0
 }
 "#;
-    let errors = check_source_all(returned).expect_err("list returns must remain blocked");
-    assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("list values cannot be returned from functions")
-    }));
+    let errors = check_source_all(returned)
+        .expect_err("stack-backed collection returns must remain blocked");
+    let collection_return_errors = errors
+        .iter()
+        .filter(|error| {
+            error
+                .message
+                .contains("collection values cannot be returned from functions")
+        })
+        .count();
+    assert_eq!(
+        collection_return_errors, 3,
+        "unexpected diagnostics: {errors:?}"
+    );
 
     let mutable = r#"
 fn main() -> i64 {
@@ -20949,7 +20963,7 @@ fn main() -> i64 {
         .expect_err("stack-backed lists must not escape anonymous function bodies");
     assert!(error
         .message
-        .contains("list values cannot be returned from anonymous functions until collection ownership is implemented"));
+        .contains("collection values cannot be returned from anonymous functions until collection ownership is implemented"));
 }
 
 #[test]
@@ -68354,7 +68368,7 @@ fn main() -> i64 {
     assert!(
         errors.iter().any(|error| error
             .message
-            .contains("list values cannot be returned from functions until collection ownership is implemented")),
+            .contains("collection values cannot be returned from functions until collection ownership is implemented")),
         "optional list returns must remain ownership-gated: {errors:?}"
     );
 

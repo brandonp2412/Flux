@@ -81628,12 +81628,14 @@ fn buildMap(value: i64) -> i64 {
     return 0
 }
 
-fn buildSet() -> set<i64?> {
-    return {1, none, 1, 2}
+fn buildSet() -> i64 {
+    let values: set<i64?> = {1, none, 1, 2}
+    return values.count
 }
 
-fn buildEnumSet() -> set<Choice> {
-    return {Choice.Ready(), Choice.Waiting(), Choice.Ready()}
+fn buildEnumSet() -> i64 {
+    let values: set<Choice> = {Choice.Ready(), Choice.Waiting(), Choice.Ready()}
+    return values.count
 }
 
 fn buildEnumList(value: i64) -> i64 {
