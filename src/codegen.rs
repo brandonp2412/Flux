@@ -43177,12 +43177,15 @@ fn emit_cfg_list_builder_binding(
             }
             CfgListItemShape::Optional { value, .. } => {
                 let optional_ty = Type::Optional(element.clone());
-                let optional = emit_cfg_aggregate_shape_child_direct(
+                let optional = emit_cfg_list_child_direct(
+                    out,
+                    pad,
                     *value,
                     &optional_ty,
                     env,
                     signatures,
                     rewrite_facts,
+                    temp_counter,
                 )?;
                 let optional_ty = signatures.canonical_type(&optional_ty);
                 let Type::Optional(inner) = &optional_ty else {
@@ -56364,6 +56367,100 @@ fn main() -> i64 {
             "guard sequence must be evaluated before branch selection: {out}"
         );
         assert!(out.contains("__flux_sequence_projection_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(!out.contains("999"), "{out}");
+    }
+
+    #[test]
+    fn list_builder_optional_sequence_projection_lowers_from_typed_ir() {
+        let source = r#"
+fn maybe(value: i64) -> i64? {
+    return value
+}
+
+fn exercise(values: i64[]) -> i64 {
+    let built: i64[] = [?map(values, maybe).first]
+    return built.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("optional sequence-projection list item fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let list_ty = Type::List(Box::new(Type::I64));
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(value.kind, crate::ir::ControlFlowValueKind::List { .. })
+                    && database.signatures().canonical_type(&value.ty) == list_ty
+            })
+            .expect("typed IR should retain the null-aware list root");
+        let facts = cfg_rewrite_facts(graph);
+        let shape = facts
+            .aggregates
+            .get(&source_span_key(root.span))
+            .expect("null-aware list root should retain aggregate shape");
+        let CfgAggregateShape::List(items) = shape else {
+            panic!("null-aware list root should retain list item shape");
+        };
+        let value = items
+            .iter()
+            .find_map(|item| match item {
+                CfgListItemShape::Optional { value, .. } => Some(*value),
+                _ => None,
+            })
+            .expect("list should retain its null-aware item");
+        assert!(matches!(
+            facts.scalar_exprs.get(&value).map(|expr| &expr.kind),
+            Some(CfgScalarExprKind::Field {
+                base,
+                optional: false,
+                ..
+            }) if matches!(
+                &base.kind,
+                CfgScalarExprKind::Call { callee, .. }
+                    if crate::builtin_names::global_impl(callee) == "map"
+            )
+        ));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Int(999),
+        };
+        let mut env = HashMap::from([("values".to_string(), list_ty.clone())]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_builder_binding(
+            &mut out,
+            "",
+            ("built", &list_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("optional sequence projection should lower from typed IR");
+
+        let projection = out
+            .find("__flux_sequence_projection_")
+            .expect("null-aware item should materialize the sequence projection");
+        let presence = out
+            .find(".has_value")
+            .expect("null-aware item should retain its presence check");
+        assert!(
+            projection < presence,
+            "sequence projection must be evaluated before the null-aware presence check: {out}"
+        );
+        assert!(out.contains("flux__list_build_optional_"), "{out}");
         assert!(out.contains(&local_c_name("values")), "{out}");
         assert!(!out.contains("999"), "{out}");
     }
