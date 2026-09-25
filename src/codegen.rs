@@ -43071,13 +43071,40 @@ fn emit_cfg_list_builder_binding(
                 } else {
                     Type::List(element.clone())
                 };
-                let spread = emit_cfg_aggregate_shape_child_direct(
-                    *value,
-                    &spread_ty,
-                    env,
-                    signatures,
-                    rewrite_facts,
-                )?;
+                let spread = if !*optional {
+                    if let Some(sequence) = rewrite_facts.sequence_exprs.get(value) {
+                        let emitted = emit_cfg_sequence_list_value(
+                            out,
+                            pad,
+                            sequence,
+                            env,
+                            signatures,
+                            temp_counter,
+                        )?;
+                        if signatures.canonical_type(&emitted.ty)
+                            != signatures.canonical_type(&spread_ty)
+                        {
+                            return None;
+                        }
+                        emitted.code
+                    } else {
+                        emit_cfg_aggregate_shape_child_direct(
+                            *value,
+                            &spread_ty,
+                            env,
+                            signatures,
+                            rewrite_facts,
+                        )?
+                    }
+                } else {
+                    emit_cfg_aggregate_shape_child_direct(
+                        *value,
+                        &spread_ty,
+                        env,
+                        signatures,
+                        rewrite_facts,
+                    )?
+                };
                 if *optional {
                     let optional_ty = signatures.canonical_type(&spread_ty);
                     let Type::Optional(inner) = &optional_ty else {
@@ -55928,6 +55955,91 @@ fn main() -> i64 {
         assert!(out.contains(&local_c_name("maybeValue")), "{out}");
         assert!(out.contains(&local_c_name("include")), "{out}");
         assert!(out.contains(&local_c_name("bound")), "{out}");
+        assert!(!out.contains("999"), "{out}");
+    }
+
+    #[test]
+    fn list_builder_spread_accepts_sequence_child_without_checked_ast_root() {
+        let source = r#"
+fn exercise(values: i64[]) -> i64 {
+    let built: i64[] = [...sorted(values)]
+    return built.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("sequence spread list builder fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::List { items }
+                        if items.iter().any(|item| {
+                            graph.value(*item).is_some_and(|value| matches!(
+                                value.kind,
+                                crate::ir::ControlFlowValueKind::ListSpread { .. }
+                            ))
+                        })
+                )
+            })
+            .expect("typed IR should retain the list spread root");
+        let facts = cfg_rewrite_facts(graph);
+        let shape = facts
+            .aggregates
+            .get(&source_span_key(root.span))
+            .expect("list spread root should retain aggregate shape");
+        let CfgAggregateShape::List(items) = shape else {
+            panic!("list spread root should retain list item shape");
+        };
+        let spread = items
+            .iter()
+            .find_map(|item| match item {
+                CfgListItemShape::Spread {
+                    value,
+                    optional: false,
+                    ..
+                } => Some(*value),
+                _ => None,
+            })
+            .expect("list should retain its non-optional spread");
+        assert!(
+            facts.sequence_exprs.contains_key(&spread),
+            "sorted spread should be retained as a typed sequence child"
+        );
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Int(999),
+        };
+        let list_ty = Type::List(Box::new(Type::I64));
+        let mut env = HashMap::from([("values".to_string(), list_ty.clone())]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_builder_binding(
+            &mut out,
+            "",
+            ("built", &list_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("sequence-valued spread should lower from typed IR");
+
+        assert!(out.contains("flux__sorted_source_"), "{out}");
+        assert!(out.contains("flux__list_build_source_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
         assert!(!out.contains("999"), "{out}");
     }
 
