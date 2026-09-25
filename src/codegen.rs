@@ -56261,19 +56261,17 @@ fn emit_cfg_scalar_expr_direct(
                 },
             ),
             "writeBytes" if arguments.len() == 2 => {
-                let (rendered, bytes) =
-                    emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-                        &arguments[..1],
-                        &[Type::I64],
-                        &arguments[1],
-                        &Type::I64,
-                        env,
-                        signatures,
-                    )?;
-                Some(format!(
-                    "flux__websocket_write_bytes({}, {bytes})",
-                    rendered[0]
-                ))
+                emit_cfg_ordered_call_with_borrowed_list_direct(
+                    &arguments[..1],
+                    &[Type::I64],
+                    &arguments[1],
+                    &Type::I64,
+                    env,
+                    signatures,
+                    |rendered, bytes| {
+                        format!("flux__websocket_write_bytes({}, {bytes})", rendered[0])
+                    },
+                )
             }
             "ping" | "pong" if arguments.len() == 2 => {
                 let helper = if name == "ping" {
@@ -76255,6 +76253,92 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-sqlite-call"));
         }
+    }
+
+    #[test]
+    fn effectful_temporary_websocket_bytes_emit_from_ordered_typed_ir() {
+        let source = r#"
+fn firstWsByte(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn secondWsByte(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn send(session: i64, first: i64, second: i64) -> error {
+    return websocket.writeBytes(session, [firstWsByte(first), secondWsByte(second)])
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4253))
+            .expect("effectful WebSocket byte-list fixture should analyze");
+        let graph = database
+            .control_flow_graph("send")
+            .expect("send CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall {
+                        namespace,
+                        name,
+                        ..
+                    } if namespace == "websocket" && name == "writeBytes"
+                )
+            })
+            .expect("WebSocket byte write should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("WebSocket byte write should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("session".to_string(), Type::I64),
+            ("first".to_string(), Type::I64),
+            ("second".to_string(), Type::I64),
+        ]);
+
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("effectful temporary WebSocket bytes should emit inside call scope");
+        let first = direct
+            .find(&function_c_name("firstWsByte"))
+            .expect("first byte effect should be emitted");
+        let second = direct
+            .find(&function_c_name("secondWsByte"))
+            .expect("second byte effect should be emitted");
+        let call = direct
+            .rfind("flux__websocket_write_bytes")
+            .expect("WebSocket byte write should be emitted");
+        assert!(first < second && second < call, "{direct}");
+        assert!(
+            direct.contains("flux__typed_borrowed_list_storage"),
+            "{direct}"
+        );
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-effectful-websocket-bytes".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Error,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("effectful WebSocket byte write should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-effectful-websocket-bytes"));
     }
 
     #[test]
