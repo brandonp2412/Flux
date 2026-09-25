@@ -27345,6 +27345,62 @@ fn main() -> i64 {
 }
 
 #[test]
+fn view_property_function_reachability_uses_normalized_ir() {
+    let source = r#"
+interface Tool {
+    fn apply(value: i64) -> i64
+}
+
+struct Used {
+    amount: i64
+}
+
+struct Dead {
+    amount: i64
+}
+
+fn usedApply(receiver: Used, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+fn deadApply(receiver: Dead, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+impl Tool for Used {
+    apply: usedApply
+}
+
+impl Tool for Dead {
+    apply: deadApply
+}
+
+fn handle() -> void {
+    let _result: i64 = Tool.apply(Used { amount: 2 }, 40)
+}
+
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Run"
+        on_press: handle
+}
+
+app Counter
+"#;
+
+    check_source(source).expect("view reachability fixture should typecheck");
+    let generated = compile_to_c(source).expect("view reachability fixture should lower");
+    assert!(generated.contains("flux__fn_handle"));
+    assert!(generated.contains("flux__fn_usedApply"));
+    assert!(generated.contains("flux__type_Used"));
+    assert!(!generated.contains("flux__fn_deadApply"));
+    assert!(!generated.contains("flux__type_Dead"));
+    assert!(!generated.contains("flux__iface_call_Tool_apply"));
+}
+
+#[test]
 fn tree_shakes_metadata_from_views_the_native_backend_does_not_emit() {
     let source = r#"
 fn unusedViewAction() -> void {
