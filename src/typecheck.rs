@@ -6831,19 +6831,23 @@ pub fn type_of_expr(
                                 ));
                             }
                         };
-                        let scalar_or_optional =
+                        let supported_element =
                             json_map_value_type_is_supported(&element, signatures);
-                        if !scalar_or_optional
-                            || values
-                                .iter()
-                                .any(|value| !json_map_literal_value_is_constant(value, signatures))
+                        let dynamic_copy_aggregate_list = !is_set
+                            && (json_record_type_is_supported(&element, signatures)
+                                || json_enum_type_is_supported(&element, signatures));
+                        if !supported_element
+                            || (!dynamic_copy_aggregate_list
+                                && values.iter().any(|value| {
+                                    !json_map_literal_value_is_constant(value, signatures)
+                                }))
                         {
                             return Err(diag(
                                 item.span,
                                 if is_set {
                                     "map literal sets must contain compile-time scalar values"
                                 } else {
-                                    "map literal lists must contain compile-time scalar values"
+                                    "map literal lists must contain compile-time scalar values or supported Copy aggregates"
                                 },
                             ));
                         }
