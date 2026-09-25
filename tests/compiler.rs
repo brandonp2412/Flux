@@ -61857,6 +61857,91 @@ app Screen(onConfigurationChanged: configurationChanged)
 }
 
 #[test]
+fn windows_lifecycle_callbacks_follow_native_activation_and_shutdown() {
+    let source = r#"
+fn started() -> void {
+    print("started")
+}
+
+fn resumed() -> void {
+    print("resumed")
+}
+
+fn paused() -> void {
+    print("paused")
+}
+
+fn stopped() -> void {
+    print("stopped")
+}
+
+fn exited() -> void {
+    print("exited")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+
+app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped, onExit: exited)
+"#;
+    check_source(source).expect("Windows lifecycle callbacks should typecheck");
+    let program = fluxc::parser::parse(source).expect("Windows lifecycle source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows lifecycle source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows lifecycle callbacks should lower to native Win32 C");
+
+    let activation_start = generated
+        .find("case WM_ACTIVATE:")
+        .expect("Windows lifecycle lowering should observe activation changes");
+    let activation_end = generated[activation_start..]
+        .find("case WM_SIZE:")
+        .map(|offset| activation_start + offset)
+        .expect("activation dispatch should precede size dispatch");
+    let activation = &generated[activation_start..activation_end];
+    assert!(activation.contains("LOWORD(wparam) == WA_INACTIVE"));
+    assert!(activation.contains("flux__fn_paused();"));
+    assert!(activation.contains("flux__fn_resumed();"));
+    assert!(
+        activation.contains("} break;"),
+        "activation lifecycle dispatch must retain default Win32 processing: {activation}"
+    );
+
+    let destroy_start = generated
+        .find("case WM_DESTROY:")
+        .expect("Windows lifecycle lowering should own shutdown");
+    let destroy_end = generated[destroy_start..]
+        .find("default: break;")
+        .map(|offset| destroy_start + offset)
+        .expect("destroy dispatch should end before the default case");
+    let destroy = &generated[destroy_start..destroy_end];
+    let stop = destroy
+        .find("flux__fn_stopped();")
+        .expect("onStop should run during Windows destruction");
+    let exit = destroy
+        .find("flux__fn_exited();")
+        .expect("onExit should run during Windows destruction");
+    assert!(stop < exit, "onStop must run before onExit: {destroy}");
+
+    let start = generated
+        .find("flux__fn_started();")
+        .expect("onStart should run before presentation");
+    let show = generated
+        .find("ShowWindow(flux__windows_active_window, SW_SHOW)")
+        .expect("Windows application should present its window");
+    assert!(start < show, "onStart must run before the window is shown");
+}
+
+#[test]
 fn windows_configuration_lifecycle_callback_dispatches_native_system_messages() {
     let source = r#"
 fn configurationChanged() -> void {

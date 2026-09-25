@@ -14736,6 +14736,9 @@ fn emit_windows_native_application(
         .unwrap_or_else(|| "app.flux.bootstrap".to_string());
     let on_save_state = application_metadata_function(application, "on_save_state");
     let on_restore_state = application_metadata_function(application, "on_restore_state");
+    let on_resume = application_metadata_function(application, "on_resume");
+    let on_pause = application_metadata_function(application, "on_pause");
+    let on_stop = application_metadata_function(application, "on_stop");
     let on_exit = application_metadata_function(application, "on_exit");
     let on_configuration_changed =
         application_metadata_function(application, "on_configuration_changed");
@@ -16973,9 +16976,25 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
     } else {
         ""
     };
+    let stop_callback = on_stop
+        .map(|function| format!("{}();", function_c_name(function)))
+        .unwrap_or_default();
     let exit_callback = on_exit
         .map(|function| format!("{}();", function_c_name(function)))
         .unwrap_or_default();
+    let resume_callback = on_resume
+        .map(|function| format!("{}();", function_c_name(function)))
+        .unwrap_or_default();
+    let pause_callback = on_pause
+        .map(|function| format!("{}();", function_c_name(function)))
+        .unwrap_or_default();
+    let activation_messages = if on_resume.is_some() || on_pause.is_some() {
+        format!(
+            " case WM_ACTIVATE: {{ if (LOWORD(wparam) == WA_INACTIVE) {{ {pause_callback} }} else {{ {resume_callback} }} }} break;"
+        )
+    } else {
+        String::new()
+    };
     let configuration_callback = on_configuration_changed
         .map(|function| format!("{}();", function_c_name(function)))
         .unwrap_or_default();
@@ -17015,7 +17034,7 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
     } else {
         String::new()
     };
-    out.push_str(&format!("default: break; }} break;{context_menu_messages}{input_scope_close} case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER);{dpi_font_refresh} RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }} flux__win_refresh(); }}{configuration_messages} return 0; case WM_DESTROY: {save} {exit} flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcW(hwnd, message, wparam, lparam); }}\n",
+    out.push_str(&format!("default: break; }} break;{context_menu_messages}{input_scope_close}{activation_messages} case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER);{dpi_font_refresh} RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }} flux__win_refresh(); }}{configuration_messages} return 0; case WM_DESTROY: {save} {stop_callback} {exit} flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcW(hwnd, message, wparam, lparam); }}\n",
         save = save_callback,
         exit = exit_callback,
     ));
