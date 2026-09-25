@@ -58277,7 +58277,22 @@ fn emit_cfg_scalar_expr_direct(
                 let nested_scalar_collection_element =
                     matches!(&element, Type::List(_) | Type::Set(_))
                         && json_array_encoding_shape(&element, signatures).is_ok();
-                if is_literal && !scalar_element && !nested_scalar_collection_element {
+                let aggregate_element = json_record_supported(&element, signatures)
+                    || json_enum_supported(&element, signatures)
+                    || matches!(
+                        &element,
+                        Type::Optional(inner)
+                            if json_record_supported(inner, signatures)
+                                || json_enum_supported(inner, signatures)
+                    )
+                    || json_array_contains_aggregate(&element, signatures)
+                    || (matches!(&element, Type::Map(_, _))
+                        && json_map_array_type_is_supported(&element, signatures));
+                if is_literal
+                    && !scalar_element
+                    && !nested_scalar_collection_element
+                    && !aggregate_element
+                {
                     return None;
                 }
                 let call_scoped = match &value_ty {
@@ -58296,19 +58311,7 @@ fn emit_cfg_scalar_expr_direct(
                     env,
                     signatures,
                 )?;
-                if is_named
-                    && (json_record_supported(&element, signatures)
-                        || json_enum_supported(&element, signatures)
-                        || matches!(
-                            &element,
-                            Type::Optional(inner)
-                                if json_record_supported(inner, signatures)
-                                    || json_enum_supported(inner, signatures)
-                        )
-                        || json_array_contains_aggregate(&element, signatures)
-                        || (matches!(&element, Type::Map(_, _))
-                            && json_map_array_type_is_supported(&element, signatures)))
-                {
+                if (is_named || is_literal) && aggregate_element {
                     let array_ty = Type::List(Box::new(element.clone()));
                     let helper = json_array_aggregate_helper_name(&array_ty, signatures);
                     return Some(format!("{helper}({value}, {callback})"));
@@ -78357,6 +78360,83 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-json-named-nested"));
         }
+    }
+
+    #[test]
+    fn json_record_list_temporary_emits_from_typed_ir() {
+        let source = r#"
+struct JsonTemporaryUser {
+    name: str
+    age: i64
+}
+
+fn jsonTemporaryRecordText(_value: str) -> void {
+}
+
+fn encodeRecordListTemporary(value: i64) -> error {
+    return json.encode([JsonTemporaryUser { name: "Flux", age: value }], jsonTemporaryRecordText)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("record-list JSON temporary fixture should typecheck");
+        let graph = database
+            .control_flow_graph("encodeRecordListTemporary")
+            .expect("record-list JSON temporary CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall {
+                        namespace,
+                        name,
+                        ..
+                    } if namespace == "json" && name == "encode"
+                )
+            })
+            .expect("record-list JSON call should remain in typed IR");
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("record-list JSON call should have scalar typed-IR facts");
+        let CfgScalarExprKind::QualifiedCall { arguments, .. } = &scalar.kind else {
+            panic!("record-list JSON root should preserve qualified facts");
+        };
+        assert!(matches!(arguments[0].kind, CfgScalarExprKind::Aggregate(_)));
+        let value_ty = database.signatures().canonical_type(&arguments[0].ty);
+        let helper = json_array_aggregate_helper_name(&value_ty, database.signatures());
+        let env = HashMap::from([("value".to_string(), Type::I64)]);
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("record-list JSON temporary should emit directly from typed IR");
+        assert!(direct.contains(&helper), "{direct}");
+        assert!(direct.contains(&local_c_name("value")), "{direct}");
+        assert!(
+            direct.contains(&function_c_name("jsonTemporaryRecordText")),
+            "{direct}"
+        );
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-json-record-list-temporary".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Error,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("record-list JSON temporary should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-json-record-list-temporary"));
     }
 
     #[test]
