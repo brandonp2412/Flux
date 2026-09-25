@@ -293,6 +293,52 @@ fn main() -> i64 {
 }
 
 #[test]
+fn function_value_calls_with_temporary_maps_use_ordered_typed_ir_storage() {
+    let source = r#"
+fn observeBefore(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeMap(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeAfter(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn consume(before: i64, values: map<str, (value: i64)>, after: i64) -> i64 {
+    return before + values.count + after
+}
+
+fn apply(transform: fn(i64, map<str, (value: i64)>, i64) -> i64, first: i64, second: i64, third: i64) -> i64 {
+    return transform(observeBefore(first), map{"value": (value: observeMap(second))}, observeAfter(third))
+}
+
+fn main() -> i64 {
+    return apply(consume, 1, 2, 3)
+}
+"#;
+    let generated = compile_to_c(source)
+        .expect("function-value temporary-map calls should lower through typed IR");
+    assert!(
+        generated.contains("flux__typed_borrowed_map_values"),
+        "{generated}"
+    );
+    assert!(
+        generated.contains("flux__typed_function_arg_0"),
+        "{generated}"
+    );
+    assert!(
+        generated.contains("flux__typed_function_arg_2"),
+        "{generated}"
+    );
+}
+
+#[test]
 fn typed_ir_proves_short_circuit_result_from_left_constant() {
     let source = r#"
 fn choose(value: bool) -> bool {
