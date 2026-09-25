@@ -14368,6 +14368,22 @@ fn emit_windows_native_application(
                 "bootstrap Windows selectable Text does not yet support letterSpacing or lineHeightPercent",
             ));
         }
+        if selectable && windows_text_has_padding(element) {
+            let property = [
+                "padding",
+                "padding_top",
+                "padding_bottom",
+                "padding_start",
+                "padding_end",
+            ]
+            .iter()
+            .find_map(|property_name| view_property(element, property_name))
+            .expect("Text padding property exists");
+            return Err(diag(
+                property.value.span,
+                "bootstrap Windows selectable Text does not yet support padding",
+            ));
+        }
         if let Some(property) = view_property(element, "letter_spacing")
             && let Some(value) = static_expr_i64(&property.value, signatures)
             && !(i64::from(i32::MIN) / 1024..=i64::from(i32::MAX) / 1024).contains(&value)
@@ -14469,6 +14485,7 @@ fn emit_windows_native_application(
             None
         };
         let text_uses_custom_painter = uses_custom_text_layout
+            || windows_text_has_padding(element)
             || wrap_is_dynamic
             || wrap_mode_uses_custom_painter
             || ellipsize_is_dynamic
@@ -14531,11 +14548,6 @@ fn emit_windows_native_application(
     for element in &view.elements {
         for (property_name, source_name) in [
             ("clip", "clip"),
-            ("padding", "padding"),
-            ("padding_top", "paddingTop"),
-            ("padding_bottom", "paddingBottom"),
-            ("padding_start", "paddingStart"),
-            ("padding_end", "paddingEnd"),
             ("shadow_color", "shadowColor"),
             ("shadow_blur", "shadowBlur"),
             ("shadow_offset_x", "shadowOffsetX"),
@@ -14562,6 +14574,44 @@ fn emit_windows_native_application(
                         "bootstrap Windows {source_name} is not yet supported by the native Win32 backend"
                     ),
                 ));
+            }
+        }
+        if element.kind != "Text" {
+            for (property_name, source_name) in [
+                ("padding", "padding"),
+                ("padding_top", "paddingTop"),
+                ("padding_bottom", "paddingBottom"),
+                ("padding_start", "paddingStart"),
+                ("padding_end", "paddingEnd"),
+            ] {
+                if let Some(property) = view_property(element, property_name) {
+                    return Err(diag(
+                        property.value.span,
+                        &format!(
+                            "bootstrap Windows {source_name} is not yet supported by the native Win32 backend"
+                        ),
+                    ));
+                }
+            }
+        } else {
+            for (property_name, source_name) in [
+                ("padding", "padding"),
+                ("padding_top", "paddingTop"),
+                ("padding_bottom", "paddingBottom"),
+                ("padding_start", "paddingStart"),
+                ("padding_end", "paddingEnd"),
+            ] {
+                if let Some(property) = view_property(element, property_name)
+                    && let Some(value) = static_expr_i64(&property.value, signatures)
+                    && !(0..=i64::from(i32::MAX)).contains(&value)
+                {
+                    return Err(diag(
+                        property.value.span,
+                        &format!(
+                            "{source_name} must be non-negative and fit within a 32-bit signed integer"
+                        ),
+                    ));
+                }
             }
         }
         for (property_name, source_name) in [
@@ -14658,6 +14708,7 @@ fn emit_windows_native_application(
         element.kind == "Text"
             && (view_property(element, "letter_spacing").is_some()
                 || view_property(element, "line_height_percent").is_some()
+                || windows_text_has_padding(element)
                 || view_property(element, "wrap").is_some_and(|property| {
                     static_expr_bool(&property.value, signatures).is_none()
                 })
@@ -14676,6 +14727,11 @@ fn emit_windows_native_application(
                 "max_lines",
                 "letter_spacing",
                 "line_height_percent",
+                "padding",
+                "padding_top",
+                "padding_bottom",
+                "padding_start",
+                "padding_end",
             ]
             .iter()
             .any(|property_name| {
@@ -14809,7 +14865,17 @@ typedef struct {
     bool wrap;
     int wrap_mode;
     int ellipsize_mode;
+    int64_t padding_top;
+    int64_t padding_bottom;
+    int64_t padding_start;
+    int64_t padding_end;
+    bool rtl;
 } flux__win_text_layout_state;
+
+static int flux__win_padding_extent(int64_t first, int64_t second) {
+    int64_t extent = (int64_t)flux__win_scale(first) + flux__win_scale(second);
+    return extent > INT32_MAX ? INT32_MAX : (int)extent;
+}
 
 static bool flux__win_text_space(wchar_t value) {
     return value == L' ' || value == L'\t';
@@ -15074,6 +15140,23 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
     if (brush == NULL) brush = GetSysColorBrush(COLOR_WINDOW);
     FillRect(dc, &bounds, brush);
     SetBkMode(dc, TRANSPARENT);
+
+    int physical_padding_top = flux__win_scale(state->padding_top);
+    int physical_padding_bottom = flux__win_scale(state->padding_bottom);
+    int physical_padding_start = flux__win_scale(state->padding_start);
+    int physical_padding_end = flux__win_scale(state->padding_end);
+    int physical_padding_left = state->rtl ? physical_padding_end : physical_padding_start;
+    int physical_padding_right = state->rtl ? physical_padding_start : physical_padding_end;
+    int64_t content_left = (int64_t)bounds.left + physical_padding_left;
+    int64_t content_top = (int64_t)bounds.top + physical_padding_top;
+    int64_t content_right = (int64_t)bounds.right - physical_padding_right;
+    int64_t content_bottom = (int64_t)bounds.bottom - physical_padding_bottom;
+    bounds.left = content_left < INT32_MIN ? INT32_MIN : (content_left > INT32_MAX ? INT32_MAX : (LONG)content_left);
+    bounds.top = content_top < INT32_MIN ? INT32_MIN : (content_top > INT32_MAX ? INT32_MAX : (LONG)content_top);
+    bounds.right = content_right < INT32_MIN ? INT32_MIN : (content_right > INT32_MAX ? INT32_MAX : (LONG)content_right);
+    bounds.bottom = content_bottom < INT32_MIN ? INT32_MIN : (content_bottom > INT32_MAX ? INT32_MAX : (LONG)content_bottom);
+    if (bounds.right < bounds.left) bounds.right = bounds.left;
+    if (bounds.bottom < bounds.top) bounds.bottom = bounds.top;
 
     HFONT font = (HFONT)SendMessageW(control, WM_GETFONT, 0, 0);
     HGDIOBJ previous_font = font != NULL ? SelectObject(dc, font) : NULL;
@@ -15372,6 +15455,7 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
         if element.kind == "Text"
             && (view_property(element, "letter_spacing").is_some()
                 || view_property(element, "line_height_percent").is_some()
+                || windows_text_has_padding(element)
                 || view_property(element, "wrap").is_some_and(|property| {
                     static_expr_bool(&property.value, signatures).is_none()
                 })
@@ -15409,14 +15493,27 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
                 Some("end") => "FLUX__WIN_ELLIPSIZE_END",
                 _ => "FLUX__WIN_ELLIPSIZE_NONE",
             };
+            let initial_padding_top =
+                windows_text_padding_initial_value(element, "padding_top", signatures);
+            let initial_padding_bottom =
+                windows_text_padding_initial_value(element, "padding_bottom", signatures);
+            let initial_padding_start =
+                windows_text_padding_initial_value(element, "padding_start", signatures);
+            let initial_padding_end =
+                windows_text_padding_initial_value(element, "padding_end", signatures);
             out.push_str(&format!(
-                "static flux__win_text_layout_state flux__win_text_layout_{} = {{ INT64_C({}), INT64_C({}), {}, {}, {} }};\n",
+                "static flux__win_text_layout_state flux__win_text_layout_{} = {{ INT64_C({}), INT64_C({}), {}, {}, {}, INT64_C({}), INT64_C({}), INT64_C({}), INT64_C({}), {} }};\n",
                 element.name,
                 initial_letter_spacing,
                 initial_line_height_percent,
                 if wrap { "true" } else { "false" },
                 wrap_mode,
                 ellipsize_mode,
+                initial_padding_top,
+                initial_padding_bottom,
+                initial_padding_start,
+                initial_padding_end,
+                if layout_direction == "rtl" { "true" } else { "false" },
             ));
         }
         if element.kind == "Button"
@@ -16707,19 +16804,37 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         let (align_x_setup, align_x_value) = alignment_value("align_x", "alignX")?;
         let (align_y_setup, align_y_value) = alignment_value("align_y", "alignY")?;
         let alignment_setup = format!("{align_x_setup}{align_y_setup}");
-        let (preferred_horizontal_padding, preferred_vertical_padding) = match element.kind.as_str()
+        let (preferred_horizontal_padding, preferred_vertical_padding) = if element.kind == "Text"
+            && windows_text_has_padding(element)
         {
-            "Button" => (24, 12),
-            "TextInput" => (16, 12),
-            "Toggle" | "Radio" => (28, 8),
-            _ => (0, 0),
+            (
+                format!(
+                    "flux__win_padding_extent(flux__win_text_layout_{}.padding_start, flux__win_text_layout_{}.padding_end)",
+                    element.name, element.name
+                ),
+                format!(
+                    "flux__win_padding_extent(flux__win_text_layout_{}.padding_top, flux__win_text_layout_{}.padding_bottom)",
+                    element.name, element.name
+                ),
+            )
+        } else {
+            let (horizontal, vertical) = match element.kind.as_str() {
+                "Button" => (24, 12),
+                "TextInput" => (16, 12),
+                "Toggle" | "Radio" => (28, 8),
+                _ => (0, 0),
+            };
+            (
+                format!("flux__win_scale(INT64_C({horizontal}))"),
+                format!("flux__win_scale(INT64_C({vertical}))"),
+            )
         };
         let preferred_size = if view_property(element, "align_x").is_some()
             || view_property(element, "align_y").is_some()
         {
             let bitmap_content = element.kind == "Image";
             format!(
-                "if ({align_x_value} != FLUX__WIN_ALIGN_FILL || {align_y_value} != FLUX__WIN_ALIGN_FILL) {{ int preferred_width = control_width; int preferred_height = control_height; flux__win_preferred_size({variable}, {bitmap_content}, flux__win_scale(INT64_C({preferred_horizontal_padding})), flux__win_scale(INT64_C({preferred_vertical_padding})), &preferred_width, &preferred_height); if ({align_x_value} != FLUX__WIN_ALIGN_FILL && preferred_width < control_width) control_width = preferred_width; if ({align_y_value} != FLUX__WIN_ALIGN_FILL && preferred_height < control_height) control_height = preferred_height; }} "
+                "if ({align_x_value} != FLUX__WIN_ALIGN_FILL || {align_y_value} != FLUX__WIN_ALIGN_FILL) {{ int preferred_width = control_width; int preferred_height = control_height; flux__win_preferred_size({variable}, {bitmap_content}, {preferred_horizontal_padding}, {preferred_vertical_padding}, &preferred_width, &preferred_height); if ({align_x_value} != FLUX__WIN_ALIGN_FILL && preferred_width < control_width) control_width = preferred_width; if ({align_y_value} != FLUX__WIN_ALIGN_FILL && preferred_height < control_height) control_height = preferred_height; }} "
             )
         } else {
             String::new()
@@ -16848,8 +16963,21 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             "INT64_C(0)".to_string()
         };
         let text_width_limit = if element.kind == "Text" {
+            let padding_width = if windows_text_has_padding(element) {
+                format!(
+                    "int64_t text_padding_width = (int64_t)flux__win_scale(flux__win_text_layout_{}.padding_start) + flux__win_scale(flux__win_text_layout_{}.padding_end); if (text_padding_width > INT32_MAX) text_padding_width = INT32_MAX; ",
+                    element.name, element.name
+                )
+            } else {
+                String::new()
+            };
+            let padded_width = if windows_text_has_padding(element) {
+                "if (text_maximum_width < INT32_MAX) { int64_t padded_text_maximum_width = (int64_t)text_maximum_width + text_padding_width; text_maximum_width = padded_text_maximum_width > INT32_MAX ? INT32_MAX : (int)padded_text_maximum_width; } "
+            } else {
+                ""
+            };
             format!(
-                "int text_maximum_width = flux__win_text_width_for_chars({variable}, {text_width_chars}); if (control_width > text_maximum_width) control_width = text_maximum_width; "
+                "{padding_width}int text_maximum_width = flux__win_text_width_for_chars({variable}, {text_width_chars}); {padded_width}if (control_width > text_maximum_width) control_width = text_maximum_width; "
             )
         } else {
             String::new()
@@ -16880,7 +17008,22 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 "INT64_C(100)".to_string()
             };
         let text_height_limit = text_max_lines
-            .map(|lines| format!("int text_maximum_height = flux__win_text_height_for_lines({variable}, {lines}, {text_line_height_percent}); if (control_height > text_maximum_height) control_height = text_maximum_height; "))
+            .map(|lines| {
+                let padding_height = if windows_text_has_padding(element) {
+                    format!(
+                        "int64_t text_padding_height = (int64_t)flux__win_scale(flux__win_text_layout_{}.padding_top) + flux__win_scale(flux__win_text_layout_{}.padding_bottom); if (text_padding_height > INT32_MAX) text_padding_height = INT32_MAX; ",
+                        element.name, element.name
+                    )
+                } else {
+                    String::new()
+                };
+                let padded_height = if windows_text_has_padding(element) {
+                    "if (text_maximum_height < INT32_MAX) { int64_t padded_text_maximum_height = (int64_t)text_maximum_height + text_padding_height; text_maximum_height = padded_text_maximum_height > INT32_MAX ? INT32_MAX : (int)padded_text_maximum_height; } "
+                } else {
+                    ""
+                };
+                format!("{padding_height}int text_maximum_height = flux__win_text_height_for_lines({variable}, {lines}, {text_line_height_percent}); {padded_height}if (control_height > text_maximum_height) control_height = text_maximum_height; ")
+            })
             .unwrap_or_default();
         let width_relationship = if min_width.is_some() && max_width.is_some() {
             "if (requested_max_width < requested_min_width) { fputs(\"Flux runtime error: maxWidth must be greater than or equal to minWidth\\n\", stderr); abort(); } "
@@ -16909,6 +17052,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         let uses_text_layout_state = element.kind == "Text"
             && (view_property(element, "letter_spacing").is_some()
                 || view_property(element, "line_height_percent").is_some()
+                || windows_text_has_padding(element)
                 || view_property(element, "wrap").is_some_and(|property| {
                     static_expr_bool(&property.value, signatures).is_none()
                 })
@@ -16938,6 +17082,44 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "int64_t flux__win_next_line_height_{0} = {value}; if (flux__win_next_line_height_{0} <= 0 || flux__win_next_line_height_{0} > INT32_MAX) {{ fputs(\"Flux runtime error: Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (flux__win_text_layout_{0}.line_height_percent != flux__win_next_line_height_{0}) {{ flux__win_text_layout_{0}.line_height_percent = flux__win_next_line_height_{0}; if ({variable} != NULL) InvalidateRect({variable}, NULL, TRUE); }}\n",
+                element.name
+            ));
+        }
+        let padding_is_dynamic = [
+            "padding",
+            "padding_top",
+            "padding_bottom",
+            "padding_start",
+            "padding_end",
+        ]
+        .iter()
+        .any(|property_name| {
+            view_property(element, property_name)
+                .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
+        });
+        if padding_is_dynamic {
+            let padding_property = view_property(element, "padding");
+            let padding_value = |property_name: &str| -> Result<String, Diagnostic> {
+                if let Some(property) = view_property(element, property_name) {
+                    if let Some(value) = static_expr_i64(&property.value, signatures) {
+                        return Ok(format!("INT64_C({value})"));
+                    }
+                    return ui_expr_c(&property.value, view, signatures);
+                }
+                if let Some(property) = padding_property {
+                    if let Some(value) = static_expr_i64(&property.value, signatures) {
+                        return Ok(format!("INT64_C({value})"));
+                    }
+                    return ui_expr_c(&property.value, view, signatures);
+                }
+                Ok("INT64_C(0)".to_string())
+            };
+            let padding_top = padding_value("padding_top")?;
+            let padding_bottom = padding_value("padding_bottom")?;
+            let padding_start = padding_value("padding_start")?;
+            let padding_end = padding_value("padding_end")?;
+            out.push_str(&format!(
+                "int64_t flux__win_next_padding_top_{0} = {padding_top}; int64_t flux__win_next_padding_bottom_{0} = {padding_bottom}; int64_t flux__win_next_padding_start_{0} = {padding_start}; int64_t flux__win_next_padding_end_{0} = {padding_end}; if (flux__win_next_padding_top_{0} < 0 || flux__win_next_padding_top_{0} > INT32_MAX || flux__win_next_padding_bottom_{0} < 0 || flux__win_next_padding_bottom_{0} > INT32_MAX || flux__win_next_padding_start_{0} < 0 || flux__win_next_padding_start_{0} > INT32_MAX || flux__win_next_padding_end_{0} < 0 || flux__win_next_padding_end_{0} > INT32_MAX) {{ fputs(\"Flux runtime error: Text padding must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (flux__win_text_layout_{0}.padding_top != flux__win_next_padding_top_{0} || flux__win_text_layout_{0}.padding_bottom != flux__win_next_padding_bottom_{0} || flux__win_text_layout_{0}.padding_start != flux__win_next_padding_start_{0} || flux__win_text_layout_{0}.padding_end != flux__win_next_padding_end_{0}) {{ flux__win_text_layout_{0}.padding_top = flux__win_next_padding_top_{0}; flux__win_text_layout_{0}.padding_bottom = flux__win_next_padding_bottom_{0}; flux__win_text_layout_{0}.padding_start = flux__win_next_padding_start_{0}; flux__win_text_layout_{0}.padding_end = flux__win_next_padding_end_{0}; if ({variable} != NULL) InvalidateRect({variable}, NULL, TRUE); }}\n",
                 element.name
             ));
         }
@@ -17860,6 +18042,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         if element.kind == "Text"
             && (view_property(element, "letter_spacing").is_some()
                 || view_property(element, "line_height_percent").is_some()
+                || windows_text_has_padding(element)
                 || view_property(element, "wrap").is_some_and(|property| {
                     static_expr_bool(&property.value, signatures).is_none()
                 })
@@ -25560,6 +25743,32 @@ fn static_rich_text_markup(
         ));
     }
     Ok(Some(markup))
+}
+
+fn windows_text_has_padding(element: &crate::ast::ViewElement) -> bool {
+    [
+        "padding",
+        "padding_top",
+        "padding_bottom",
+        "padding_start",
+        "padding_end",
+    ]
+    .iter()
+    .any(|property_name| view_property(element, property_name).is_some())
+}
+
+fn windows_text_padding_initial_value(
+    element: &crate::ast::ViewElement,
+    property_name: &str,
+    signatures: &Signatures,
+) -> i64 {
+    view_property(element, property_name)
+        .and_then(|property| static_expr_i64(&property.value, signatures))
+        .or_else(|| {
+            view_property(element, "padding")
+                .and_then(|property| static_expr_i64(&property.value, signatures))
+        })
+        .unwrap_or(0)
 }
 
 fn windows_layout_margin_value(

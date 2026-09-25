@@ -2334,11 +2334,6 @@ app Screen
 fn windows_rejects_unimplemented_portable_styles_instead_of_silently_dropping_them() {
     for (property, source_name) in [
         ("clip: true", "clip"),
-        ("padding: 4", "padding"),
-        ("paddingTop: 4", "paddingTop"),
-        ("paddingBottom: 4", "paddingBottom"),
-        ("paddingStart: 4", "paddingStart"),
-        ("paddingEnd: 4", "paddingEnd"),
         ("shadowColor: \"shadow\"", "shadowColor"),
         ("shadowBlur: 8", "shadowBlur"),
         ("shadowOffsetX: 2", "shadowOffsetX"),
@@ -2380,6 +2375,137 @@ fn windows_rejects_unimplemented_portable_styles_instead_of_silently_dropping_th
             error.message
         );
     }
+
+    for (property, source_name) in [
+        ("padding: 4", "padding"),
+        ("paddingTop: 4", "paddingTop"),
+        ("paddingBottom: 4", "paddingBottom"),
+        ("paddingStart: 4", "paddingStart"),
+        ("paddingEnd: 4", "paddingEnd"),
+    ] {
+        let source = format!(
+            "view Screen {{\n    grid columns: 1fr\n    grid rows: auto\n    Button action at 1,1\n        text: \"Styled\"\n        {property}\n}}\napp Screen\n"
+        );
+        let program =
+            fluxc::parser::parse(&source).expect("unsupported Windows padding source should parse");
+        let signatures = fluxc::typecheck::check(&program)
+            .expect("unsupported Windows padding source should remain portable and typecheck");
+        let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+            &program,
+            &signatures,
+            &std::collections::HashMap::new(),
+            fluxc::codegen::NativeTarget::Windows,
+        )
+        .expect_err("non-Text Windows padding must fail target lowering");
+        assert!(
+            error.message.contains(&format!(
+                "bootstrap Windows {source_name} is not yet supported by the native Win32 backend"
+            )),
+            "{source_name} should remain explicit for non-Text controls, got: {}",
+            error.message
+        );
+    }
+}
+
+#[test]
+fn windows_text_padding_insets_native_paint_and_refreshes_dynamic_edges() {
+    let source = r#"
+view Screen {
+    state inset: i64 = 6
+    state trailing: i64 = 10
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Padded"
+        padding: inset
+        paddingTop: 4
+        paddingEnd: trailing
+        alignX: "center"
+        maxWidthChars: 20
+        maxLines: 2
+}
+app Screen(layoutDirection: "rtl")
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows Text padding source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows Text padding source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows Text padding should lower through the compiler-owned text painter");
+
+    assert!(windows.contains("int64_t padding_top;"));
+    assert!(windows.contains("int64_t padding_bottom;"));
+    assert!(windows.contains("int64_t padding_start;"));
+    assert!(windows.contains("int64_t padding_end;"));
+    assert!(windows.contains("bool rtl;"));
+    assert!(windows.contains("state->rtl ? physical_padding_end : physical_padding_start"));
+    assert!(windows.contains("state->rtl ? physical_padding_start : physical_padding_end"));
+    assert!(windows.contains("flux__win_next_padding_top_label = INT64_C(4)"));
+    assert!(windows.contains("flux__win_next_padding_bottom_label = flux__ui_state_inset"));
+    assert!(windows.contains("flux__win_next_padding_start_label = flux__ui_state_inset"));
+    assert!(windows.contains("flux__win_next_padding_end_label = flux__ui_state_trailing"));
+    assert!(
+        windows
+            .contains("Text padding must be non-negative and fit within a 32-bit signed integer")
+    );
+    assert!(windows.contains("flux__win_text_layout_label.padding_start"));
+    assert!(windows.contains("text_padding_width"));
+    assert!(windows.contains("text_padding_height"));
+    assert!(windows.contains("SetWindowSubclass(flux__ui_label, flux__win_text_layout_proc"));
+    assert!(windows.contains("INT64_C(4), INT64_C(0), INT64_C(0), INT64_C(0), true"));
+
+    let invalid_source = source.replace("paddingTop: 4", "paddingTop: -1");
+    let invalid_program =
+        fluxc::parser::parse(&invalid_source).expect("invalid Windows Text padding should parse");
+    let invalid_signatures = fluxc::typecheck::check(&invalid_program)
+        .expect("invalid Windows Text padding should typecheck before target validation");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &invalid_program,
+        &invalid_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("negative Windows Text padding must fail target lowering");
+    assert!(
+        error
+            .message
+            .contains("paddingTop must be non-negative and fit within a 32-bit signed integer")
+    );
+}
+
+#[test]
+fn windows_selectable_text_padding_remains_explicitly_unsupported() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Selectable"
+        selectable: true
+        padding: 4
+}
+app Screen
+"#;
+    let program =
+        fluxc::parser::parse(source).expect("selectable Text padding source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("selectable Text padding source should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("selectable Text padding must not replace native Windows selection semantics");
+    assert!(
+        error
+            .message
+            .contains("selectable Text does not yet support padding")
+    );
 }
 
 #[test]
@@ -2740,7 +2866,7 @@ app Screen
     )
     .expect("Windows wordChar wrapping should lower through the native text painter");
     assert!(word_char_windows.contains(
-        "static flux__win_text_layout_state flux__win_text_layout_label = { INT64_C(0), INT64_C(100), true, FLUX__WIN_WRAP_WORD_CHAR, FLUX__WIN_ELLIPSIZE_NONE }"
+        "static flux__win_text_layout_state flux__win_text_layout_label = { INT64_C(0), INT64_C(100), true, FLUX__WIN_WRAP_WORD_CHAR, FLUX__WIN_ELLIPSIZE_NONE, INT64_C(0), INT64_C(0), INT64_C(0), INT64_C(0), false }"
     ));
     assert!(word_char_windows.contains("else if (state->wrap_mode == FLUX__WIN_WRAP_WORD_CHAR)"));
 
@@ -2805,7 +2931,7 @@ app Screen
     )
     .expect("dynamic Windows Text overflow should lower through the native text painter");
     assert!(dynamic_overflow_windows.contains(
-        "static flux__win_text_layout_state flux__win_text_layout_label = { INT64_C(0), INT64_C(100), true, FLUX__WIN_WRAP_WORD, FLUX__WIN_ELLIPSIZE_NONE }"
+        "static flux__win_text_layout_state flux__win_text_layout_label = { INT64_C(0), INT64_C(100), true, FLUX__WIN_WRAP_WORD, FLUX__WIN_ELLIPSIZE_NONE, INT64_C(0), INT64_C(0), INT64_C(0), INT64_C(0), false }"
     ));
     assert!(dynamic_overflow_windows.contains("flux__win_next_wrap_label"));
     assert!(
@@ -3554,6 +3680,7 @@ view Screen {
     state extent: i64 = 80
     state count: i64 = 0
     state horizontal: str = "center"
+    state inset: i64 = 6
     state wraps: bool = true
     state wrapping: str = "wordChar"
     state overflow: str = "middle"
@@ -3562,6 +3689,9 @@ view Screen {
     Text title at 1,1
         text: "Cross target"
         status: "loading"
+        padding: inset
+        paddingTop: 4
+        paddingEnd: 10
         wrap: wraps
         ellipsize: overflow
         radius: 6
@@ -3603,7 +3733,7 @@ view Screen {
         fit: "cover"
         dragText: "logo"
 }
-app Screen(title: "Windows syntax", onStart: stopAfterStart)
+app Screen(title: "Windows syntax", layoutDirection: "rtl", onStart: stopAfterStart)
 "#;
     let program = fluxc::parser::parse(source).expect("Windows cross-target source should parse");
     let signatures =
