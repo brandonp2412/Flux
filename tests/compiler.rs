@@ -40,6 +40,32 @@ fn android_stable_view_id(view_name: &str, element_name: &str) -> u32 {
 }
 
 #[test]
+fn effectful_copy_map_binding_uses_ordered_typed_ir_storage() {
+    let source = r#"
+fn observeLeft(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeRight(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn main() -> i64 {
+    let mapping: map<str, (value: i64)> = map{"left": (value: observeLeft(7)), "right": (value: observeRight(8))}
+    return mapping.count
+}
+"#;
+    let generated =
+        compile_to_c(source).expect("effectful Copy map binding should lower through typed IR");
+    assert!(generated.contains("flux__map_build_key_"), "{generated}");
+    assert!(generated.contains("flux__map_build_value_"), "{generated}");
+    assert!(generated.contains("flux__map_build_keys_"), "{generated}");
+    assert!(generated.contains("flux__map_build_values_"), "{generated}");
+}
+
+#[test]
 fn typed_ir_proves_short_circuit_result_from_left_constant() {
     let source = r#"
 fn choose(value: bool) -> bool {

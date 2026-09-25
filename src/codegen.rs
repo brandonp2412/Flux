@@ -41142,6 +41142,26 @@ fn emit_block(
                 )?;
             }
             StmtKind::Let { name, ty, expr, .. }
+                if map_literal_needs_ordered_binding(
+                    expr,
+                    ty,
+                    env,
+                    signatures,
+                    context.cfg_rewrite_facts,
+                ) =>
+            {
+                emit_ordered_map_binding(
+                    out,
+                    &pad,
+                    (name, ty),
+                    expr,
+                    env,
+                    signatures,
+                    context.cfg_rewrite_facts,
+                    temp_counter,
+                )?;
+            }
+            StmtKind::Let { name, ty, expr, .. }
                 if list_literal_needs_builder(expr, context.cfg_rewrite_facts) =>
             {
                 emit_list_builder_binding(
@@ -46341,6 +46361,118 @@ fn emit_cfg_list_builder_binding(
         local_c_name(name)
     ));
     Some(())
+}
+
+fn map_literal_needs_ordered_binding(
+    expr: &Expr,
+    declared_ty: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+) -> bool {
+    let Some(CfgAggregateShape::Map(entries)) =
+        rewrite_facts.aggregates.get(&source_span_key(expr.span))
+    else {
+        return false;
+    };
+    if entries.is_empty() {
+        return false;
+    }
+    let Type::Map(key, value) = signatures.canonical_type(declared_ty) else {
+        return false;
+    };
+    if !signatures.is_copy_type(&key) || !signatures.is_copy_type(&value) {
+        return false;
+    }
+    if !entries.iter().any(|(key_span, value_span)| {
+        !cfg_aggregate_shape_child_is_direct_safe(*key_span, rewrite_facts)
+            || !cfg_aggregate_shape_child_is_direct_safe(*value_span, rewrite_facts)
+    }) {
+        return false;
+    }
+    entries.iter().all(|(key_span, value_span)| {
+        emit_cfg_aggregate_shape_child_direct(*key_span, &key, env, signatures, rewrite_facts)
+            .is_some()
+            && emit_cfg_aggregate_shape_child_direct(
+                *value_span,
+                &value,
+                env,
+                signatures,
+                rewrite_facts,
+            )
+            .is_some()
+    })
+}
+
+fn emit_ordered_map_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let (name, declared_ty) = target;
+    let Some(CfgAggregateShape::Map(entries)) =
+        rewrite_facts.aggregates.get(&source_span_key(expr.span))
+    else {
+        unreachable!("ordered map binding requires normalized map facts");
+    };
+    let result_ty = signatures.canonical_type(declared_ty);
+    let Type::Map(key, value) = &result_ty else {
+        return Err(diag(
+            expr.span,
+            "constructed map binding requires a map type",
+        ));
+    };
+    let key_c = c_type(key, signatures);
+    let value_c = c_type(value, signatures);
+    let mut key_names = Vec::with_capacity(entries.len());
+    let mut value_names = Vec::with_capacity(entries.len());
+
+    for (key_span, value_span) in entries {
+        let key_code =
+            emit_cfg_aggregate_shape_child_direct(*key_span, key, env, signatures, rewrite_facts)
+                .expect("ordered map binding preflight should render every key");
+        let value_code = emit_cfg_aggregate_shape_child_direct(
+            *value_span,
+            value,
+            env,
+            signatures,
+            rewrite_facts,
+        )
+        .expect("ordered map binding preflight should render every value");
+        let key_name = format!("flux__map_build_key_{}", *temp_counter);
+        *temp_counter += 1;
+        let value_name = format!("flux__map_build_value_{}", *temp_counter);
+        *temp_counter += 1;
+        out.push_str(&format!("{pad}{key_c} {key_name} = {key_code};\n"));
+        out.push_str(&format!("{pad}{value_c} {value_name} = {value_code};\n"));
+        key_names.push(key_name);
+        value_names.push(value_name);
+    }
+
+    let key_buffer = format!("flux__map_build_keys_{}", *temp_counter);
+    *temp_counter += 1;
+    let value_buffer = format!("flux__map_build_values_{}", *temp_counter);
+    *temp_counter += 1;
+    let len = entries.len();
+    out.push_str(&format!(
+        "{pad}{key_c} {key_buffer}[{len}] = {{ {} }};\n",
+        key_names.join(", ")
+    ));
+    out.push_str(&format!(
+        "{pad}{value_c} {value_buffer}[{len}] = {{ {} }};\n",
+        value_names.join(", ")
+    ));
+    out.push_str(&format!(
+        "{pad}struct flux__map {} = (struct flux__map){{ .keys = (struct flux__list){{ .data = (void *){key_buffer}, .len = {len}, .stride = sizeof({key_c}) }}, .values = (struct flux__list){{ .data = (void *){value_buffer}, .len = {len}, .stride = sizeof({value_c}) }} }};\n",
+        local_c_name(name)
+    ));
+    env.insert(name.to_string(), result_ty);
+    Ok(())
 }
 
 fn emit_list_builder_binding(
@@ -61831,6 +61963,95 @@ fn main() -> i64 {
             !struct_code.contains("checked-ast-struct-root"),
             "{struct_code}"
         );
+    }
+
+    #[test]
+    fn effectful_copy_map_binding_emits_from_ordered_typed_ir() {
+        let source = r#"
+fn observeLeft(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeRight(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn exercise(first: i64, second: i64) -> i64 {
+    let mapping: map<str, (value: i64)> = map{"left": (value: observeLeft(first)), "right": (value: observeRight(second))}
+    return mapping.count
+}
+
+fn main() -> i64 {
+    return exercise(7, 8)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4255))
+            .expect("effectful map typed-IR fixture should analyze");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Map { entries } if entries.len() == 2
+                )
+            })
+            .expect("map literal should have a typed-IR root");
+        let facts = cfg_rewrite_facts(graph);
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-effectful-map".to_string()),
+        };
+        let mut env = HashMap::from([
+            ("first".to_string(), Type::I64),
+            ("second".to_string(), Type::I64),
+        ]);
+        assert!(
+            map_literal_needs_ordered_binding(&fake, &root.ty, &env, database.signatures(), &facts,),
+            "effectful typed map should use the ordered binding path"
+        );
+
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_ordered_map_binding(
+            &mut out,
+            "",
+            ("mapping", &root.ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("effectful Copy map binding should emit from ordered typed IR");
+
+        let left = out
+            .find(&function_c_name("observeLeft"))
+            .expect("left effect should be emitted");
+        let right = out
+            .find(&function_c_name("observeRight"))
+            .expect("right effect should be emitted");
+        assert!(left < right, "{out}");
+        assert_eq!(
+            out.matches(&function_c_name("observeLeft")).count(),
+            1,
+            "{out}"
+        );
+        assert_eq!(
+            out.matches(&function_c_name("observeRight")).count(),
+            1,
+            "{out}"
+        );
+        assert!(out.contains("flux__map_build_keys_"), "{out}");
+        assert!(out.contains("flux__map_build_values_"), "{out}");
+        assert!(out.contains(&local_c_name("mapping")), "{out}");
+        assert!(!out.contains("checked-ast-effectful-map"), "{out}");
     }
 
     #[test]
