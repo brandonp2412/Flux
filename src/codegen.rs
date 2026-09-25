@@ -54589,9 +54589,6 @@ fn emit_cfg_call_scoped_borrowed_map_direct_indexed(
     let CfgScalarExprKind::Aggregate(aggregate) = &argument.kind else {
         return None;
     };
-    if cfg_aggregate_constant_is_reorder_safe(aggregate) {
-        return None;
-    }
     let CfgAggregateConstantKind::Map(entries) = &aggregate.kind else {
         return None;
     };
@@ -54645,6 +54642,12 @@ fn emit_cfg_call_scoped_borrowed_map_direct(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Option<(String, String)> {
+    let CfgScalarExprKind::Aggregate(aggregate) = &argument.kind else {
+        return None;
+    };
+    if cfg_aggregate_constant_is_reorder_safe(aggregate) {
+        return None;
+    }
     emit_cfg_call_scoped_borrowed_map_direct_indexed(argument, key, value, env, signatures, None)
 }
 
@@ -54987,18 +54990,14 @@ where
             if let Type::Map(key, value) = &expected
                 && matches!(argument.kind, CfgScalarExprKind::Aggregate(_))
             {
-                let scoped = if scoped_map_count == 0 {
-                    emit_cfg_call_scoped_borrowed_map_direct(argument, key, value, env, signatures)
-                } else {
-                    emit_cfg_call_scoped_borrowed_map_direct_indexed(
-                        argument,
-                        key,
-                        value,
-                        env,
-                        signatures,
-                        Some(scoped_map_count),
-                    )
-                };
+                let scoped = emit_cfg_call_scoped_borrowed_map_direct_indexed(
+                    argument,
+                    key,
+                    value,
+                    env,
+                    signatures,
+                    (scoped_map_count != 0).then_some(scoped_map_count),
+                );
                 if let Some((map_prelude, borrowed)) = scoped {
                     prelude.push_str(&map_prelude);
                     ordered.push(borrowed);
@@ -55160,18 +55159,14 @@ where
         if let Type::Map(key, value) = &expected
             && matches!(argument.kind, CfgScalarExprKind::Aggregate(_))
         {
-            let scoped = if scoped_map_count == 0 {
-                emit_cfg_call_scoped_borrowed_map_direct(argument, key, value, env, signatures)
-            } else {
-                emit_cfg_call_scoped_borrowed_map_direct_indexed(
-                    argument,
-                    key,
-                    value,
-                    env,
-                    signatures,
-                    Some(scoped_map_count),
-                )
-            };
+            let scoped = emit_cfg_call_scoped_borrowed_map_direct_indexed(
+                argument,
+                key,
+                value,
+                env,
+                signatures,
+                (scoped_map_count != 0).then_some(scoped_map_count),
+            );
             if let Some((map_prelude, borrowed)) = scoped {
                 prelude.push_str(&map_prelude);
                 source_rendered.push(borrowed);
@@ -69213,6 +69208,111 @@ fn main() -> i64 {
         .expect("multiple temporary-map named call should bypass checked AST");
         assert_eq!(emitted, direct);
         assert!(!emitted.contains("checked-ast-multiple-named-map-call"));
+    }
+
+    #[test]
+    fn pure_temporary_map_calls_use_call_scoped_typed_ir_storage() {
+        let source = r#"
+fn consume(values: map<str, i64>) -> i64 {
+    return values.count
+}
+
+fn consumeNamed(seed: i64, *, values: map<str, i64>) -> i64 {
+    return seed + values.count
+}
+
+fn positional() -> i64 {
+    return consume(map{"left": 1, "right": 2})
+}
+
+fn named() -> i64 {
+    return consumeNamed(3, values: map{"value": 4})
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4263))
+            .expect("pure temporary-map call fixture should typecheck");
+
+        for (function, callee) in [("positional", "consume"), ("named", "consumeNamed")] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("pure temporary-map call CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let call = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        facts.scalar_exprs.get(&source_span_key(value.span)),
+                        Some(CfgScalarExpr {
+                            kind: CfgScalarExprKind::Call {
+                                callee: found,
+                                arguments,
+                            },
+                            ..
+                        }) if found == callee
+                            && arguments
+                                .iter()
+                                .any(|argument| matches!(argument.kind, CfgScalarExprKind::Aggregate(_)))
+                    ) || matches!(
+                        facts.scalar_exprs.get(&source_span_key(value.span)),
+                        Some(CfgScalarExpr {
+                            kind: CfgScalarExprKind::NamedCall {
+                                callee: found,
+                                arguments,
+                            },
+                            ..
+                        }) if found == callee
+                            && arguments
+                                .iter()
+                                .any(|(_, argument)| matches!(argument.kind, CfgScalarExprKind::Aggregate(_)))
+                    )
+                })
+                .expect("pure temporary-map call should preserve typed-IR aggregate facts");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(call.span))
+                .expect("pure temporary-map call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(
+                scalar,
+                &HashMap::new(),
+                database.signatures(),
+            )
+            .unwrap_or_else(|| {
+                panic!("pure temporary-map call should emit directly for {function}: {scalar:?}")
+            });
+            assert!(
+                direct.contains("flux__typed_borrowed_map_values"),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains(&function_c_name(callee)),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: call.span.line,
+                span: call.span,
+                kind: ExprKind::Str(format!("checked-ast-pure-map-{function}")),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &HashMap::new(),
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("pure temporary-map call should bypass checked AST");
+            assert_eq!(emitted, direct);
+            assert!(
+                !emitted.contains(&format!("checked-ast-pure-map-{function}")),
+                "{emitted}"
+            );
+        }
     }
 
     #[test]

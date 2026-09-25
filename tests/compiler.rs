@@ -267,6 +267,32 @@ fn main() -> i64 {
 }
 
 #[test]
+fn pure_temporary_map_calls_use_call_scoped_typed_ir_storage() {
+    let source = r#"
+fn consume(values: map<str, i64>) -> i64 {
+    return values.count
+}
+
+fn consumeNamed(seed: i64, *, values: map<str, i64>) -> i64 {
+    return seed + values.count
+}
+
+fn main() -> i64 {
+    let positional: i64 = consume(map{"left": 1, "right": 2})
+    return positional + consumeNamed(3, values: map{"value": 4})
+}
+"#;
+    let generated =
+        compile_to_c(source).expect("pure temporary-map calls should lower through typed IR");
+    assert!(
+        generated.contains("flux__typed_borrowed_map_values"),
+        "{generated}"
+    );
+    assert!(generated.contains("flux__fn_consume"), "{generated}");
+    assert!(generated.contains("flux__fn_consumeNamed"), "{generated}");
+}
+
+#[test]
 fn typed_ir_proves_short_circuit_result_from_left_constant() {
     let source = r#"
 fn choose(value: bool) -> bool {
