@@ -78440,6 +78440,83 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn json_record_map_temporary_emits_from_typed_ir() {
+        let source = r#"
+struct JsonTemporaryMapUser {
+    name: str
+    age: i64
+}
+
+fn jsonTemporaryRecordMapText(_value: str) -> void {
+}
+
+fn encodeRecordMapTemporary(value: i64) -> error {
+    return json.encode(map{"user": JsonTemporaryMapUser { name: "Flux", age: value }}, jsonTemporaryRecordMapText)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("record-map JSON temporary fixture should typecheck");
+        let graph = database
+            .control_flow_graph("encodeRecordMapTemporary")
+            .expect("record-map JSON temporary CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall {
+                        namespace,
+                        name,
+                        ..
+                    } if namespace == "json" && name == "encode"
+                )
+            })
+            .expect("record-map JSON call should remain in typed IR");
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("record-map JSON call should have scalar typed-IR facts");
+        let CfgScalarExprKind::QualifiedCall { arguments, .. } = &scalar.kind else {
+            panic!("record-map JSON root should preserve qualified facts");
+        };
+        assert!(matches!(arguments[0].kind, CfgScalarExprKind::Aggregate(_)));
+        let value_ty = database.signatures().canonical_type(&arguments[0].ty);
+        let helper = json_map_aggregate_helper_name(&value_ty, database.signatures());
+        let env = HashMap::from([("value".to_string(), Type::I64)]);
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("record-map JSON temporary should emit directly from typed IR");
+        assert!(direct.contains(&helper), "{direct}");
+        assert!(direct.contains(&local_c_name("value")), "{direct}");
+        assert!(
+            direct.contains(&function_c_name("jsonTemporaryRecordMapText")),
+            "{direct}"
+        );
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-json-record-map-temporary".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Error,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("record-map JSON temporary should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-json-record-map-temporary"));
+    }
+
+    #[test]
     fn json_scalar_collection_temporaries_emit_from_typed_ir() {
         let source = r#"
 fn jsonTemporaryText(_value: str) -> void {
