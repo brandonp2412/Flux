@@ -515,7 +515,8 @@ fn ownership_ir_classifies_each_typed_value_without_ast_reinspection() {
     let source = r#"
 fn main() -> i64 {
     let values: i64[] = [4, 8]
-    let count: i64 = values.count
+    let selected: i64[] = [value for value in values if value > 4]
+    let count: i64 = values.count + selected.count
     return count
 }
 "#;
@@ -534,8 +535,40 @@ fn main() -> i64 {
         !list_values.is_empty(),
         "the list producer should be in typed IR"
     );
+    let owned_list_values = list_values
+        .iter()
+        .filter(|value| {
+            matches!(
+                value.kind,
+                ControlFlowValueKind::List { .. } | ControlFlowValueKind::ListComprehension { .. }
+            )
+        })
+        .collect::<Vec<_>>();
     assert!(
-        list_values
+        !owned_list_values.is_empty(),
+        "the list literal should retain its local storage ownership"
+    );
+    assert!(
+        owned_list_values
+            .iter()
+            .all(|value| value.ownership == ControlFlowValueOwnership::Owned)
+    );
+
+    let borrowed_list_values = list_values
+        .iter()
+        .filter(|value| {
+            !matches!(
+                value.kind,
+                ControlFlowValueKind::List { .. } | ControlFlowValueKind::ListComprehension { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !borrowed_list_values.is_empty(),
+        "list reads/projections should remain non-owning descriptors"
+    );
+    assert!(
+        borrowed_list_values
             .iter()
             .all(|value| value.ownership == ControlFlowValueOwnership::ImmutableBorrow)
     );
@@ -555,7 +588,16 @@ fn main() -> i64 {
             .all(|value| value.ownership == ControlFlowValueOwnership::Copy)
     );
     assert!(scalar_values.iter().all(|value| value.ownership.is_copy()));
-    assert!(list_values.iter().all(|value| value.ownership.is_borrow()));
+    assert!(
+        owned_list_values
+            .iter()
+            .all(|value| value.ownership.is_owned())
+    );
+    assert!(
+        borrowed_list_values
+            .iter()
+            .all(|value| value.ownership.is_borrow())
+    );
 }
 
 #[test]
@@ -19035,6 +19077,25 @@ fn main() -> i64 {
 "#;
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1218))
         .expect("set and map call ownership facts should analyze");
+    let main_graph = database
+        .control_flow_graph("main")
+        .expect("main should expose collection literal ownership");
+    let owned_collections = main_graph
+        .values()
+        .iter()
+        .filter(|value| {
+            matches!(
+                value.kind,
+                ControlFlowValueKind::Set { .. } | ControlFlowValueKind::Map { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(owned_collections.len(), 2);
+    assert!(
+        owned_collections
+            .iter()
+            .all(|value| value.ownership == ControlFlowValueOwnership::Owned)
+    );
 
     for (function, expected) in [
         ("inspectSet", Type::Set(Box::new(Type::I64))),
