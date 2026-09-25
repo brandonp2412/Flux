@@ -7487,6 +7487,22 @@ fn record_expr_types(
             } else {
                 None
             };
+            let sequence_empty_source_type = if named_args.is_empty()
+                && args.len() == 2
+                && matches!(name.as_str(), "map" | "filter" | "where")
+            {
+                typecheck::type_of_sequence_callback(&args[1], env, signatures)
+                    .ok()
+                    .and_then(|callback_type| {
+                        typecheck::contextual_empty_sequence_source_type(
+                            &args[0],
+                            &callback_type,
+                            signatures,
+                        )
+                    })
+            } else {
+                None
+            };
             let concat_empty_argument_type = if named_args.is_empty()
                 && args.len() == 2
                 && crate::builtin_names::global_impl(name) == "concat"
@@ -7528,7 +7544,9 @@ fn record_expr_types(
                 } else {
                     record_expr_types(arg, env, signatures, evaluations);
                     let expected = if index == 0 {
-                        contains_empty_collection_type.clone()
+                        contains_empty_collection_type
+                            .clone()
+                            .or_else(|| sequence_empty_source_type.clone())
                     } else {
                         None
                     }

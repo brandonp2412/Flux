@@ -662,6 +662,28 @@ fn main() -> i64 {
 }
 
 #[test]
+fn empty_sequence_sources_inherit_callback_parameter_types() {
+    let source = r#"
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+
+fn keepText(value: str) -> bool {
+    return value != ""
+}
+
+fn main() -> i64 {
+    let ints: i64[] = map([], double)
+    let texts: str[] = where([], keepText)
+    let bools: bool[] = filter([], fn(value: bool) { value })
+    return ints.length + texts.length + bools.length
+}
+"#;
+    compile_to_c(source)
+        .expect("empty map/filter sources should inherit their callback parameter types");
+}
+
+#[test]
 fn map_calls_with_computed_copy_peers_use_ordered_typed_ir_storage() {
     let source = r#"
 fn observeBefore(value: i64) -> i64 {
@@ -36053,6 +36075,44 @@ fn main() -> i64 {
 "#;
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1319))
         .expect("empty concat operands should analyze from the typed sibling");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    assert!(graph.values().iter().any(|value| {
+        value.ty == Type::List(Box::new(Type::I64))
+            && matches!(
+                &value.kind,
+                ControlFlowValueKind::List { items } if items.is_empty()
+            )
+    }));
+    assert!(graph.values().iter().any(|value| {
+        value.ty == Type::List(Box::new(Type::Str))
+            && matches!(
+                &value.kind,
+                ControlFlowValueKind::List { items } if items.is_empty()
+            )
+    }));
+}
+
+#[test]
+fn semantic_cfg_records_contextual_empty_sequence_source_types() {
+    let source = r#"
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+
+fn keepText(value: str) -> bool {
+    return value != ""
+}
+
+fn main() -> i64 {
+    let ints: i64[] = map([], double)
+    let texts: str[] = where([], keepText)
+    return ints.length + texts.length
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1320))
+        .expect("empty sequence sources should analyze from callback parameter types");
     let graph = database
         .control_flow_graph("main")
         .expect("main should have a control-flow graph");

@@ -7373,15 +7373,34 @@ pub fn type_of_expr(
                     &format!("{name} expects exactly two arguments: a list and a callback"),
                 ));
             }
-            let list_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            let source_empty = matches!(&args[0].kind, ExprKind::List(items) if items.is_empty());
+            let callback_context = if source_empty {
+                Some(
+                    signatures
+                        .canonical_type(&type_of_sequence_callback(&args[1], env, signatures)?),
+                )
+            } else {
+                None
+            };
+            let list_ty = if let Some(expected) =
+                callback_context.as_ref().and_then(|callback_ty| {
+                    contextual_empty_sequence_source_type(&args[0], callback_ty, signatures)
+                }) {
+                type_of_call_argument(&args[0], &expected, env, signatures)?
+            } else {
+                signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?)
+            };
             let Type::List(element) = list_ty else {
                 return Err(diag(
                     args[0].span,
                     &format!("{name} expects a list as its first argument"),
                 ));
             };
-            let callback_ty =
-                signatures.canonical_type(&type_of_sequence_callback(&args[1], env, signatures)?);
+            let callback_ty = if let Some(callback_ty) = callback_context {
+                callback_ty
+            } else {
+                signatures.canonical_type(&type_of_sequence_callback(&args[1], env, signatures)?)
+            };
             if name == "map" {
                 let Type::Function { params, returns } = callback_ty else {
                     return Err(diag(args[1].span, "map callback must be a function"));
@@ -15329,6 +15348,26 @@ pub(crate) fn contextual_empty_concat_argument_type(
     }
     match &argument.kind {
         ExprKind::List(items) if items.is_empty() => Some(sibling_type),
+        _ => None,
+    }
+}
+
+pub(crate) fn contextual_empty_sequence_source_type(
+    source: &Expr,
+    callback_type: &Type,
+    signatures: &Signatures,
+) -> Option<Type> {
+    let callback_type = signatures.canonical_type(callback_type);
+    let Type::Function { params, .. } = callback_type else {
+        return None;
+    };
+    if params.len() != 1 {
+        return None;
+    }
+    match &source.kind {
+        ExprKind::List(items) if items.is_empty() => {
+            Some(Type::List(Box::new(signatures.canonical_type(&params[0]))))
+        }
         _ => None,
     }
 }
