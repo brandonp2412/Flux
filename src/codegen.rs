@@ -34147,6 +34147,20 @@ fn cfg_rewrite_root_type(span: SourceSpan, rewrite_facts: &CfgRewriteFacts) -> O
                 .get(&span)
                 .map(|value| value.ty.clone())
         })
+        .or_else(|| {
+            rewrite_facts
+                .match_exprs
+                .get(&span)
+                .and_then(|value| value.arms.first())
+                .map(|arm| arm.value.ty.clone())
+        })
+        .or_else(|| {
+            rewrite_facts
+                .list_match_exprs
+                .get(&span)
+                .and_then(|value| value.arms.first())
+                .map(|arm| arm.value.ty.clone())
+        })
 }
 
 fn cfg_rewrite_required_root_type(
@@ -78748,6 +78762,73 @@ fn main() -> i64 {
             emitted.contains("return flux_add_i64(flux__local_value, INT64_C(1));"),
             "{emitted}"
         );
+    }
+
+    #[test]
+    fn match_result_types_derive_from_typed_ir_arms_without_root_entries() {
+        let source = r#"
+enum Choice {
+    One(i64)
+    None
+}
+
+fn chooseEnum(choice: Choice) -> i64 {
+    return match choice:
+        Choice.One(value): value + 1
+        Choice.None(): 0
+}
+
+fn chooseList(values: i64[]) -> i64 {
+    return match values:
+        []: 0
+        [first, ..._]: first + 1
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("match result-type fixture should typecheck");
+
+        for function_name in ["chooseEnum", "chooseList"] {
+            let graph = database
+                .control_flow_graph(function_name)
+                .unwrap_or_else(|| panic!("{function_name} CFG should exist"));
+            let matched = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    if function_name == "chooseEnum" {
+                        matches!(value.kind, crate::ir::ControlFlowValueKind::Match { .. })
+                    } else {
+                        matches!(
+                            value.kind,
+                            crate::ir::ControlFlowValueKind::ListMatch { .. }
+                        )
+                    }
+                })
+                .unwrap_or_else(|| panic!("{function_name} should retain its match root"));
+            let span = source_span_key(matched.span);
+            let mut facts = cfg_rewrite_facts(graph);
+
+            if function_name == "chooseEnum" {
+                assert!(facts.match_exprs.contains_key(&span));
+            } else {
+                assert!(facts.list_match_exprs.contains_key(&span));
+            }
+            facts.root_types.remove(&span);
+            facts.scalar_exprs.remove(&span);
+            facts.sequence_exprs.remove(&span);
+            facts.multi_exprs.remove(&span);
+            facts.aggregate_constants.remove(&span);
+
+            assert_eq!(
+                cfg_rewrite_root_type(matched.span, &facts),
+                Some(Type::I64),
+                "{function_name} should derive its result type from typed-IR arm values"
+            );
+        }
     }
 
     #[test]
