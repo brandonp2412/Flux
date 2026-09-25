@@ -9195,9 +9195,12 @@ fn normalized(value: str) -> void {
     print(value)
 }
 fn main() -> i64 {
-    print(uri.normalize("CuStOm://host/a%2fb", normalized))
-    print(uri.normalize("HTTP://host/a/./b/../c?x=1#frag", normalized))
-    print(uri.normalize("mailto:alice/./../example.test", normalized))
+    print(uri.normalize("CuStOm://Example.COM/%7euser/a%2fb", normalized))
+    print(uri.normalize("HTTP://HOST.Example/a/./b/../c?x=%7E1#%41", normalized))
+    print(uri.normalize("mailto:alice%2Esmith/./../example.test", normalized))
+    print(uri.normalize("custom://User@[2001:DB8::A]:99/%41", normalized))
+    print(uri.normalize("custom://HOST/a/%2e/b/%2E%2E/c", normalized))
+    print(uri.normalize("custom://[FE80::1%25Eth0]/", normalized))
     print(uri.normalize("custom://host/%ZZ", normalized))
     print(uri.normalize("custom://host/é", normalized))
     return 0
@@ -9234,7 +9237,7 @@ fn main() -> i64 {
     assert!(run.status.success());
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
-        "custom://host/a%2Fb\nnil\nhttp://host/a/c?x=1#frag\nnil\nmailto:alice/./../example.test\nnil\nURI contains an invalid percent escape\nURI contains raw non-ASCII bytes; percent-encode UTF-8\n"
+        "custom://example.com/~user/a%2Fb\nnil\nhttp://host.example/a/c?x=~1#A\nnil\nmailto:alice.smith/./../example.test\nnil\ncustom://User@[2001:db8::a]:99/A\nnil\ncustom://host/a/c\nnil\ncustom://[FE80::1%25Eth0]/\nnil\nURI contains an invalid percent escape\nURI contains raw non-ASCII bytes; percent-encode UTF-8\n"
     );
     let _ = fs::remove_dir_all(&root);
 }

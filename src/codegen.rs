@@ -5852,24 +5852,90 @@ static inline const char *flux__json_encode_optional_str(struct flux__optional_s
         if (!valid) return "URI scheme is invalid";
         if (byte >= 'A' && byte <= 'Z') *part = (char)(byte - 'A' + 'a');
     }
+    size_t normalized_length = 0;
     for (size_t index = 0; index < length; index += 1) {
         unsigned char byte = (unsigned char)buffer[index];
         if (byte <= 0x20 || byte == 0x7f) return "URI contains whitespace or control characters";
         if (byte >= 0x80) return "URI contains raw non-ASCII bytes; percent-encode UTF-8";
-        if (byte != '%') continue;
+        if (byte != '%') {
+            buffer[normalized_length++] = (char)byte;
+            continue;
+        }
         if (index + 2 >= length) return "URI contains an incomplete percent escape";
         unsigned char high = (unsigned char)buffer[index + 1];
         unsigned char low = (unsigned char)buffer[index + 2];
         bool high_hex = (high >= '0' && high <= '9') || (high >= 'a' && high <= 'f') || (high >= 'A' && high <= 'F');
         bool low_hex = (low >= '0' && low <= '9') || (low >= 'a' && low <= 'f') || (low >= 'A' && low <= 'F');
         if (!high_hex || !low_hex) return "URI contains an invalid percent escape";
-        if (high >= 'a' && high <= 'f') buffer[index + 1] = (char)(high - 'a' + 'A');
-        if (low >= 'a' && low <= 'f') buffer[index + 2] = (char)(low - 'a' + 'A');
+        unsigned char high_value = high <= '9' ? high - '0' : (high <= 'F' ? high - 'A' + 10 : high - 'a' + 10);
+        unsigned char low_value = low <= '9' ? low - '0' : (low <= 'F' ? low - 'A' + 10 : low - 'a' + 10);
+        unsigned char decoded = (unsigned char)((high_value << 4) | low_value);
+        bool unreserved = (decoded >= 'a' && decoded <= 'z') || (decoded >= 'A' && decoded <= 'Z')
+            || (decoded >= '0' && decoded <= '9') || decoded == '-' || decoded == '.' || decoded == '_' || decoded == '~';
+        if (unreserved) {
+            buffer[normalized_length++] = (char)decoded;
+        } else {
+            buffer[normalized_length++] = '%';
+            buffer[normalized_length++] = (char)(high >= 'a' && high <= 'f' ? high - 'a' + 'A' : high);
+            buffer[normalized_length++] = (char)(low >= 'a' && low <= 'f' ? low - 'a' + 'A' : low);
+        }
         index += 2;
     }
+    length = normalized_length;
+    buffer[length] = '\0';
+
+    char *hierarchy = strstr(buffer, "://");
+    if (hierarchy != NULL) {
+        char *authority_start = hierarchy + 3;
+        char *authority_end = strpbrk(authority_start, "/?#");
+        if (authority_end == NULL) authority_end = buffer + length;
+        char *host_start = authority_start;
+        for (char *part = authority_start; part < authority_end; part += 1) {
+            if (*part == '@') host_start = part + 1;
+        }
+        char *host_end = authority_end;
+        bool registered_name = true;
+        bool plain_ipv6_literal = false;
+        if (host_start < authority_end && *host_start == '[') {
+            registered_name = false;
+            char *closing = NULL;
+            for (char *part = host_start + 1; part < authority_end; part += 1) {
+                if (*part == ']') {
+                    closing = part;
+                    host_end = part + 1;
+                    break;
+                }
+            }
+            if (closing != NULL) {
+                plain_ipv6_literal = true;
+                for (char *part = host_start + 1; part < closing; part += 1) {
+                    unsigned char byte = (unsigned char)*part;
+                    bool ipv6_byte = (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f')
+                        || (byte >= 'A' && byte <= 'F') || byte == ':' || byte == '.';
+                    if (!ipv6_byte) {
+                        plain_ipv6_literal = false;
+                        break;
+                    }
+                }
+            }
+        } else {
+            for (char *part = host_start; part < authority_end; part += 1) {
+                if (*part == ':') {
+                    host_end = part;
+                    break;
+                }
+            }
+        }
+        for (char *part = host_start; part < host_end; part += 1) {
+            unsigned char byte = (unsigned char)*part;
+            bool uppercase_host = registered_name && byte >= 'A' && byte <= 'Z';
+            bool uppercase_ipv6_hex = plain_ipv6_literal && byte >= 'A' && byte <= 'F';
+            if (uppercase_host || uppercase_ipv6_hex) *part = (char)(byte - 'A' + 'a');
+        }
+    }
+
     // Dot segments are syntax only for hierarchical URIs. Keep opaque
     // schemes untouched while canonicalizing a bounded path in place.
-    char *hierarchy = strstr(buffer, "://");
     if (hierarchy != NULL) {
         char *path_start = strchr(hierarchy + 3, '/');
         if (path_start != NULL) {
