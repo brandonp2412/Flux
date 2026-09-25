@@ -6623,7 +6623,9 @@ static inline void flux__net_unregister_socket(int socket_handle) {
         || runtime_usage.contains("flux__net_wait_ready_many(");
     let uses_cancellable_http = runtime_usage
         .contains("flux__net_http_receive_request_with_text_body_v2(")
+        || runtime_usage.contains("flux__net_http_receive_request_with_binary_body_v2(")
         || runtime_usage.contains("flux__net_http_receive_response_with_text_body_v2(")
+        || runtime_usage.contains("flux__net_http_receive_response_with_binary_body_v2(")
         || runtime_usage.contains("flux__net_http_serve_once(")
         || runtime_usage.contains("flux__net_http_serve(")
         || runtime_usage.contains("flux__net_http_serve_concurrent(")
@@ -7233,6 +7235,214 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
 }
 "#);
     }
+    if runtime_usage.contains("flux__net_http_receive_request_with_binary_body_v2(")
+        || runtime_usage.contains("flux__net_http_receive_response_with_binary_body_v2(")
+    {
+        out.push_str("#ifndef FLUX_LIST_DEFINED\n#define FLUX_LIST_DEFINED\nstruct flux__list { void *data; size_t len; ptrdiff_t stride; };\n#endif\n");
+    }
+    if runtime_usage.contains("flux__net_http_receive_request_with_binary_body_v2(") {
+        out.push_str(r#"static inline struct flux__net_i64_error flux__net_http_receive_request_with_binary_body_v2(int64_t socket_handle, int64_t max_head_bytes, int64_t max_body_bytes, void (*request_callback)(int64_t, const char *, const char *, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, struct flux__list)) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
+    if (max_head_bytes < 1 || max_head_bytes > 65536) return flux__net_result(-1, "receiveRequestWithBinaryBody maxHeadBytes must be between 1 and 65536");
+    if (max_body_bytes < 0 || max_body_bytes > 65536) return flux__net_result(-1, "receiveRequestWithBinaryBody maxBodyBytes must be between 0 and 65536");
+    int socket_type = 0;
+    socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, "failed to inspect socket type");
+    if (socket_type != SOCK_STREAM) return flux__net_result(-1, "HTTP request requires a TCP socket");
+    char head[65537];
+    size_t head_length = 0;
+    bool complete = false;
+    while (head_length < (size_t)max_head_bytes) {
+        ssize_t received = flux__net_recv_cancellable((int)socket_handle, head + head_length, 1, 0);
+        if (received == -2) return flux__net_result(-1, "HTTP request receive cancelled by worker scope");
+        if (received < 0) return flux__net_result(-1, "failed to receive HTTP request head");
+        if (received == 0) return flux__net_result(-1, "connection closed before HTTP request head completed");
+        if (head[head_length] == '\0') return flux__net_result(-1, "HTTP request head contains a NUL byte");
+        head_length += 1;
+        if (head_length >= 4 && memcmp(head + head_length - 4, "\r\n\r\n", 4) == 0) { complete = true; break; }
+    }
+    if (!complete) return flux__net_result(-1, "HTTP request head exceeds maxHeadBytes");
+    head[head_length] = '\0';
+    char *line_end = strstr(head, "\r\n");
+    if (line_end == NULL) return flux__net_result(-1, "malformed HTTP request line");
+    *line_end = '\0';
+    char *method = head;
+    char *first_space = strchr(method, ' ');
+    if (first_space == NULL || first_space == method) return flux__net_result(-1, "malformed HTTP request line");
+    *first_space = '\0';
+    char *target = first_space + 1;
+    char *second_space = strchr(target, ' ');
+    if (second_space == NULL || second_space == target) return flux__net_result(-1, "malformed HTTP request line");
+    *second_space = '\0';
+    char *version = second_space + 1;
+    if (version[0] == '\0' || strchr(version, ' ') != NULL) return flux__net_result(-1, "malformed HTTP request line");
+    for (const unsigned char *part = (const unsigned char *)method; *part != '\0'; part += 1) if (*part <= 0x20 || *part == 0x7f) return flux__net_result(-1, "invalid HTTP method");
+    for (const unsigned char *part = (const unsigned char *)target; *part != '\0'; part += 1) if (*part <= 0x20 || *part == 0x7f) return flux__net_result(-1, "invalid HTTP request target");
+    if (strcmp(version, "HTTP/1.1") != 0 && strcmp(version, "HTTP/1.0") != 0) return flux__net_result(-1, "unsupported HTTP version");
+    char *headers = line_end + 2;
+    char *cursor = headers;
+    size_t body_length = 0;
+    bool content_length_seen = false;
+    bool chunked = false;
+    while (!(cursor[0] == '\r' && cursor[1] == '\n')) {
+        char *next = strstr(cursor, "\r\n");
+        if (next == NULL) return flux__net_result(-1, "malformed HTTP header line");
+        if (cursor[0] == ' ' || cursor[0] == '\t') return flux__net_result(-1, "folded HTTP headers are not supported");
+        char *colon = memchr(cursor, ':', (size_t)(next - cursor));
+        if (colon == NULL || colon == cursor) return flux__net_result(-1, "malformed HTTP header field");
+        for (const unsigned char *part = (const unsigned char *)cursor; part < (const unsigned char *)colon; part += 1) {
+            bool token = (*part >= '0' && *part <= '9') || (*part >= 'A' && *part <= 'Z') || (*part >= 'a' && *part <= 'z') || strchr("!#$%&'*+-.^_`|~", *part) != NULL;
+            if (!token) return flux__net_result(-1, "invalid HTTP header name");
+        }
+        for (const unsigned char *part = (const unsigned char *)(colon + 1); part < (const unsigned char *)next; part += 1) if ((*part < 0x20 && *part != '\t') || *part == 0x7f) return flux__net_result(-1, "invalid HTTP header value");
+        size_t name_length = (size_t)(colon - cursor);
+        char *value = colon + 1;
+        while (value < next && (*value == ' ' || *value == '\t')) value += 1;
+        char *value_end = next;
+        while (value_end > value && (value_end[-1] == ' ' || value_end[-1] == '\t')) value_end -= 1;
+        if (name_length == 17 && strncasecmp(cursor, "Transfer-Encoding", 17) == 0) {
+            if (chunked) return flux__net_result(-1, "duplicate Transfer-Encoding is not supported");
+            if (content_length_seen) return flux__net_result(-1, "Content-Length with Transfer-Encoding is not supported");
+            if ((size_t)(value_end - value) != 7 || strncasecmp(value, "chunked", 7) != 0) return flux__net_result(-1, "unsupported HTTP Transfer-Encoding");
+            if (strcmp(version, "HTTP/1.1") != 0) return flux__net_result(-1, "chunked request bodies require HTTP/1.1");
+            chunked = true;
+        }
+        if (name_length == 14 && strncasecmp(cursor, "Content-Length", 14) == 0) {
+            if (chunked) return flux__net_result(-1, "Content-Length with Transfer-Encoding is not supported");
+            if (content_length_seen) return flux__net_result(-1, "duplicate Content-Length is not supported");
+            if (value == value_end) return flux__net_result(-1, "invalid Content-Length");
+            body_length = 0;
+            for (char *digit = value; digit < value_end; digit += 1) {
+                if (*digit < '0' || *digit > '9') return flux__net_result(-1, "invalid Content-Length");
+                size_t digit_value = (size_t)(*digit - '0');
+                if (body_length > ((size_t)max_body_bytes - digit_value) / 10u) return flux__net_result(-1, "HTTP request body exceeds maxBodyBytes");
+                body_length = body_length * 10u + digit_value;
+            }
+            content_length_seen = true;
+        }
+        cursor = next + 2;
+    }
+    char body[65537];
+    size_t body_offset = 0;
+    size_t body_wire_length = 0;
+    if (chunked) {
+        for (;;) {
+            char chunk_line[1025];
+            size_t chunk_line_length = 0;
+            for (;;) {
+                if (chunk_line_length >= 1024) return flux__net_result(-1, "HTTP chunk size line is too long");
+                ssize_t received = flux__net_recv_cancellable((int)socket_handle, chunk_line + chunk_line_length, 1, 0);
+                if (received == -2) return flux__net_result(-1, "HTTP request receive cancelled by worker scope");
+                if (received < 0) return flux__net_result(-1, "failed to receive HTTP chunk size");
+                if (received == 0) return flux__net_result(-1, "connection closed before HTTP chunk size completed");
+                body_wire_length += 1;
+                if (chunk_line[chunk_line_length] == '\0') return flux__net_result(-1, "HTTP chunk size contains a NUL byte");
+                chunk_line_length += 1;
+                if (chunk_line_length >= 2 && chunk_line[chunk_line_length - 2] == '\r' && chunk_line[chunk_line_length - 1] == '\n') break;
+            }
+            chunk_line[chunk_line_length - 2] = '\0';
+            char *extension = strchr(chunk_line, ';');
+            if (extension != NULL) *extension = '\0';
+            if (chunk_line[0] == '\0') return flux__net_result(-1, "invalid HTTP chunk size");
+            size_t chunk_size = 0;
+            size_t remaining_capacity = (size_t)max_body_bytes - body_offset;
+            for (char *digit = chunk_line; *digit != '\0'; digit += 1) {
+                unsigned value;
+                if (*digit >= '0' && *digit <= '9') value = (unsigned)(*digit - '0');
+                else if (*digit >= 'a' && *digit <= 'f') value = (unsigned)(*digit - 'a' + 10);
+                else if (*digit >= 'A' && *digit <= 'F') value = (unsigned)(*digit - 'A' + 10);
+                else return flux__net_result(-1, "invalid HTTP chunk size");
+                if (chunk_size > remaining_capacity / 16u) return flux__net_result(-1, "HTTP request body exceeds maxBodyBytes");
+                chunk_size = chunk_size * 16u + value;
+                if (chunk_size > remaining_capacity) return flux__net_result(-1, "HTTP request body exceeds maxBodyBytes");
+            }
+            if (chunk_size == 0) {
+                size_t trailer_bytes = 0;
+                for (;;) {
+                    char trailer_line[1025];
+                    size_t trailer_line_length = 0;
+                    for (;;) {
+                        if (trailer_line_length >= 1024 || trailer_bytes >= (size_t)max_head_bytes) return flux__net_result(-1, "HTTP request trailers exceed maxHeadBytes");
+                        ssize_t received = flux__net_recv_cancellable((int)socket_handle, trailer_line + trailer_line_length, 1, 0);
+                        if (received == -2) return flux__net_result(-1, "HTTP request receive cancelled by worker scope");
+                        if (received < 0) return flux__net_result(-1, "failed to receive HTTP request trailers");
+                        if (received == 0) return flux__net_result(-1, "connection closed before HTTP request trailers completed");
+                        if (trailer_line[trailer_line_length] == '\0') return flux__net_result(-1, "HTTP request trailer contains a NUL byte");
+                        trailer_line_length += 1;
+                        trailer_bytes += 1;
+                        body_wire_length += 1;
+                        if (trailer_line_length >= 2 && trailer_line[trailer_line_length - 2] == '\r' && trailer_line[trailer_line_length - 1] == '\n') break;
+                    }
+                    if (trailer_line_length == 2) break;
+                    trailer_line[trailer_line_length - 2] = '\0';
+                    if (trailer_line[0] == ' ' || trailer_line[0] == '\t') return flux__net_result(-1, "folded HTTP request trailers are not supported");
+                    char *colon = strchr(trailer_line, ':');
+                    if (colon == NULL || colon == trailer_line) return flux__net_result(-1, "malformed HTTP request trailer field");
+                    for (const unsigned char *part = (const unsigned char *)trailer_line; part < (const unsigned char *)colon; part += 1) {
+                        bool token = (*part >= '0' && *part <= '9') || (*part >= 'A' && *part <= 'Z') || (*part >= 'a' && *part <= 'z') || strchr("!#$%&'*+-.^_`|~", *part) != NULL;
+                        if (!token) return flux__net_result(-1, "invalid HTTP request trailer name");
+                    }
+                    for (const unsigned char *part = (const unsigned char *)(colon + 1); *part != '\0'; part += 1) if ((*part < 0x20 && *part != '\t') || *part == 0x7f) return flux__net_result(-1, "invalid HTTP request trailer value");
+                    size_t name_length = (size_t)(colon - trailer_line);
+                    if ((name_length == 14 && strncasecmp(trailer_line, "Content-Length", 14) == 0) || (name_length == 17 && strncasecmp(trailer_line, "Transfer-Encoding", 17) == 0)) return flux__net_result(-1, "HTTP framing fields are not allowed in trailers");
+                }
+                break;
+            }
+            size_t chunk_offset = 0;
+            while (chunk_offset < chunk_size) {
+                ssize_t received = flux__net_recv_cancellable((int)socket_handle, body + body_offset + chunk_offset, chunk_size - chunk_offset, 0);
+                if (received == -2) return flux__net_result(-1, "HTTP request receive cancelled by worker scope");
+                if (received < 0) return flux__net_result(-1, "failed to receive HTTP request chunk");
+                if (received == 0) return flux__net_result(-1, "connection closed before HTTP request chunk completed");
+                chunk_offset += (size_t)received;
+                body_wire_length += (size_t)received;
+            }
+            body_offset += chunk_size;
+            char ending[2];
+            size_t ending_offset = 0;
+            while (ending_offset < 2) {
+                ssize_t received = flux__net_recv_cancellable((int)socket_handle, ending + ending_offset, 2 - ending_offset, 0);
+                if (received == -2) return flux__net_result(-1, "HTTP request receive cancelled by worker scope");
+                if (received < 0) return flux__net_result(-1, "failed to receive HTTP chunk terminator");
+                if (received == 0) return flux__net_result(-1, "connection closed before HTTP chunk completed");
+                ending_offset += (size_t)received;
+                body_wire_length += (size_t)received;
+            }
+            if (ending[0] != '\r' || ending[1] != '\n') return flux__net_result(-1, "malformed HTTP chunk terminator");
+        }
+        body_length = body_offset;
+    } else {
+        while (body_offset < body_length) {
+            ssize_t received = flux__net_recv_cancellable((int)socket_handle, body + body_offset, body_length - body_offset, 0);
+            if (received == -2) return flux__net_result(-1, "HTTP request receive cancelled by worker scope");
+            if (received < 0) return flux__net_result(-1, "failed to receive HTTP request body");
+            if (received == 0) return flux__net_result(-1, "connection closed before HTTP request body completed");
+            body_offset += (size_t)received;
+            body_wire_length += (size_t)received;
+        }
+    }
+    body[body_length] = '\0';
+    request_callback(socket_handle, method, target, version);
+    cursor = headers;
+    while (!(cursor[0] == '\r' && cursor[1] == '\n')) {
+        char *next = strstr(cursor, "\r\n");
+        char *colon = memchr(cursor, ':', (size_t)(next - cursor));
+        *colon = '\0';
+        char *value = colon + 1;
+        while (*value == ' ' || *value == '\t') value += 1;
+        char *value_end = next;
+        while (value_end > value && (value_end[-1] == ' ' || value_end[-1] == '\t')) value_end -= 1;
+        *value_end = '\0';
+        header_callback(socket_handle, cursor, value);
+        cursor = next + 2;
+    }
+    int64_t binary_body[body_length == 0 ? 1 : body_length];
+    for (size_t index = 0; index < body_length; index += 1) binary_body[index] = (int64_t)(unsigned char)body[index];
+    body_callback(socket_handle, (struct flux__list){ .data = binary_body, .len = body_length, .stride = sizeof(int64_t) });
+    return flux__net_result((int64_t)(head_length + body_wire_length), NULL);
+}
+"#);
+    }
     if runtime_usage.contains("flux__net_http_serve_once(")
         || runtime_usage.contains("flux__net_http_serve(")
     {
@@ -7505,6 +7715,227 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
         cursor = next + 2;
     }
     body_callback(socket_handle, body);
+    return flux__net_result((int64_t)(head_length + body_wire_length), NULL);
+}
+"#);
+    }
+    if runtime_usage.contains("flux__net_http_receive_response_with_binary_body_v2(") {
+        out.push_str(r#"static inline struct flux__net_i64_error flux__net_http_receive_response_with_binary_body_v2(int64_t socket_handle, int64_t max_head_bytes, int64_t max_body_bytes, void (*response_callback)(int64_t, const char *, int64_t, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, struct flux__list)) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
+    if (max_head_bytes < 1 || max_head_bytes > 65536) return flux__net_result(-1, "receiveResponseWithBinaryBody maxHeadBytes must be between 1 and 65536");
+    if (max_body_bytes < 0 || max_body_bytes > 65536) return flux__net_result(-1, "receiveResponseWithBinaryBody maxBodyBytes must be between 0 and 65536");
+    int socket_type = 0;
+    socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, "failed to inspect socket type");
+    if (socket_type != SOCK_STREAM) return flux__net_result(-1, "HTTP response requires a TCP socket");
+    char head[65537];
+    size_t head_length = 0;
+    bool complete = false;
+    while (head_length < (size_t)max_head_bytes) {
+        ssize_t received = flux__net_recv_cancellable((int)socket_handle, head + head_length, 1, 0);
+        if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
+        if (received < 0) return flux__net_result(-1, "failed to receive HTTP response head");
+        if (received == 0) return flux__net_result(-1, "connection closed before HTTP response head completed");
+        if (head[head_length] == '\0') return flux__net_result(-1, "HTTP response head contains a NUL byte");
+        head_length += 1;
+        if (head_length >= 4 && memcmp(head + head_length - 4, "\r\n\r\n", 4) == 0) { complete = true; break; }
+    }
+    if (!complete) return flux__net_result(-1, "HTTP response head exceeds maxHeadBytes");
+    head[head_length] = '\0';
+    char *line_end = strstr(head, "\r\n");
+    if (line_end == NULL) return flux__net_result(-1, "malformed HTTP status line");
+    *line_end = '\0';
+    char *version = head;
+    char *first_space = strchr(version, ' ');
+    if (first_space == NULL || first_space == version) return flux__net_result(-1, "malformed HTTP status line");
+    *first_space = '\0';
+    char *status_text = first_space + 1;
+    char *second_space = strchr(status_text, ' ');
+    if (second_space == NULL || second_space - status_text != 3) return flux__net_result(-1, "malformed HTTP status line");
+    *second_space = '\0';
+    char *reason = second_space + 1;
+    if (strcmp(version, "HTTP/1.1") != 0 && strcmp(version, "HTTP/1.0") != 0) return flux__net_result(-1, "unsupported HTTP version");
+    if (status_text[0] < '0' || status_text[0] > '9' || status_text[1] < '0' || status_text[1] > '9' || status_text[2] < '0' || status_text[2] > '9') return flux__net_result(-1, "invalid HTTP status code");
+    int64_t status = (int64_t)(status_text[0] - '0') * 100 + (int64_t)(status_text[1] - '0') * 10 + (int64_t)(status_text[2] - '0');
+    if (status < 100 || status > 599) return flux__net_result(-1, "invalid HTTP status code");
+    for (const unsigned char *part = (const unsigned char *)reason; *part != '\0'; part += 1) if ((*part < 0x20 && *part != '\t') || *part == 0x7f) return flux__net_result(-1, "invalid HTTP reason phrase");
+    char *headers = line_end + 2;
+    char *cursor = headers;
+    size_t body_length = 0;
+    bool content_length_seen = false;
+    bool chunked = false;
+    while (!(cursor[0] == '\r' && cursor[1] == '\n')) {
+        char *next = strstr(cursor, "\r\n");
+        if (next == NULL) return flux__net_result(-1, "malformed HTTP header line");
+        if (cursor[0] == ' ' || cursor[0] == '\t') return flux__net_result(-1, "folded HTTP headers are not supported");
+        char *colon = memchr(cursor, ':', (size_t)(next - cursor));
+        if (colon == NULL || colon == cursor) return flux__net_result(-1, "malformed HTTP header field");
+        for (const unsigned char *part = (const unsigned char *)cursor; part < (const unsigned char *)colon; part += 1) {
+            bool token = (*part >= '0' && *part <= '9') || (*part >= 'A' && *part <= 'Z') || (*part >= 'a' && *part <= 'z') || strchr("!#$%&'*+-.^_`|~", *part) != NULL;
+            if (!token) return flux__net_result(-1, "invalid HTTP header name");
+        }
+        for (const unsigned char *part = (const unsigned char *)(colon + 1); part < (const unsigned char *)next; part += 1) if ((*part < 0x20 && *part != '\t') || *part == 0x7f) return flux__net_result(-1, "invalid HTTP header value");
+        size_t name_length = (size_t)(colon - cursor);
+        char *value = colon + 1;
+        while (value < next && (*value == ' ' || *value == '\t')) value += 1;
+        char *value_end = next;
+        while (value_end > value && (value_end[-1] == ' ' || value_end[-1] == '\t')) value_end -= 1;
+        if (name_length == 17 && strncasecmp(cursor, "Transfer-Encoding", 17) == 0) {
+            if (chunked) return flux__net_result(-1, "duplicate Transfer-Encoding is not supported");
+            if (content_length_seen) return flux__net_result(-1, "Content-Length with Transfer-Encoding is not supported");
+            if ((size_t)(value_end - value) != 7 || strncasecmp(value, "chunked", 7) != 0) return flux__net_result(-1, "unsupported HTTP Transfer-Encoding");
+            chunked = true;
+        }
+        if (name_length == 14 && strncasecmp(cursor, "Content-Length", 14) == 0) {
+            if (chunked) return flux__net_result(-1, "Content-Length with Transfer-Encoding is not supported");
+            if (content_length_seen) return flux__net_result(-1, "duplicate Content-Length is not supported");
+            if (value == value_end) return flux__net_result(-1, "invalid Content-Length");
+            body_length = 0;
+            for (char *digit = value; digit < value_end; digit += 1) {
+                if (*digit < '0' || *digit > '9') return flux__net_result(-1, "invalid Content-Length");
+                size_t digit_value = (size_t)(*digit - '0');
+                if (body_length > ((size_t)max_body_bytes - digit_value) / 10u) return flux__net_result(-1, "HTTP response body exceeds maxBodyBytes");
+                body_length = body_length * 10u + digit_value;
+            }
+            content_length_seen = true;
+        }
+        cursor = next + 2;
+    }
+    char body[65537];
+    size_t body_offset = 0;
+    size_t body_wire_length = 0;
+    if (chunked) {
+        for (;;) {
+            char chunk_line[1025];
+            size_t chunk_line_length = 0;
+            for (;;) {
+                if (chunk_line_length >= 1024) return flux__net_result(-1, "HTTP chunk size line is too long");
+                ssize_t received = flux__net_recv_cancellable((int)socket_handle, chunk_line + chunk_line_length, 1, 0);
+                if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
+                if (received < 0) return flux__net_result(-1, "failed to receive HTTP chunk size");
+                if (received == 0) return flux__net_result(-1, "connection closed before HTTP chunk size completed");
+                body_wire_length += 1;
+                if (chunk_line[chunk_line_length] == '\0') return flux__net_result(-1, "HTTP chunk size contains a NUL byte");
+                chunk_line_length += 1;
+                if (chunk_line_length >= 2 && chunk_line[chunk_line_length - 2] == '\r' && chunk_line[chunk_line_length - 1] == '\n') break;
+            }
+            chunk_line[chunk_line_length - 2] = '\0';
+            char *extension = strchr(chunk_line, ';');
+            if (extension != NULL) *extension = '\0';
+            if (chunk_line[0] == '\0') return flux__net_result(-1, "invalid HTTP chunk size");
+            size_t chunk_size = 0;
+            size_t remaining_capacity = (size_t)max_body_bytes - body_offset;
+            for (char *digit = chunk_line; *digit != '\0'; digit += 1) {
+                unsigned value;
+                if (*digit >= '0' && *digit <= '9') value = (unsigned)(*digit - '0');
+                else if (*digit >= 'a' && *digit <= 'f') value = (unsigned)(*digit - 'a' + 10);
+                else if (*digit >= 'A' && *digit <= 'F') value = (unsigned)(*digit - 'A' + 10);
+                else return flux__net_result(-1, "invalid HTTP chunk size");
+                if (chunk_size > remaining_capacity / 16u) return flux__net_result(-1, "HTTP response body exceeds maxBodyBytes");
+                chunk_size = chunk_size * 16u + value;
+                if (chunk_size > remaining_capacity) return flux__net_result(-1, "HTTP response body exceeds maxBodyBytes");
+            }
+            if (chunk_size == 0) {
+                size_t trailer_bytes = 0;
+                for (;;) {
+                    char trailer_line[1025];
+                    size_t trailer_line_length = 0;
+                    for (;;) {
+                        if (trailer_line_length >= 1024 || trailer_bytes >= (size_t)max_head_bytes) return flux__net_result(-1, "HTTP response trailers exceed maxHeadBytes");
+                        ssize_t received = flux__net_recv_cancellable((int)socket_handle, trailer_line + trailer_line_length, 1, 0);
+                        if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
+                        if (received < 0) return flux__net_result(-1, "failed to receive HTTP response trailers");
+                        if (received == 0) return flux__net_result(-1, "connection closed before HTTP response trailers completed");
+                        if (trailer_line[trailer_line_length] == '\0') return flux__net_result(-1, "HTTP response trailer contains a NUL byte");
+                        trailer_line_length += 1;
+                        trailer_bytes += 1;
+                        body_wire_length += 1;
+                        if (trailer_line_length >= 2 && trailer_line[trailer_line_length - 2] == '\r' && trailer_line[trailer_line_length - 1] == '\n') break;
+                    }
+                    if (trailer_line_length == 2) break;
+                    trailer_line[trailer_line_length - 2] = '\0';
+                    if (trailer_line[0] == ' ' || trailer_line[0] == '\t') return flux__net_result(-1, "folded HTTP response trailers are not supported");
+                    char *colon = strchr(trailer_line, ':');
+                    if (colon == NULL || colon == trailer_line) return flux__net_result(-1, "malformed HTTP response trailer field");
+                    for (const unsigned char *part = (const unsigned char *)trailer_line; part < (const unsigned char *)colon; part += 1) {
+                        bool token = (*part >= '0' && *part <= '9') || (*part >= 'A' && *part <= 'Z') || (*part >= 'a' && *part <= 'z') || strchr("!#$%&'*+-.^_`|~", *part) != NULL;
+                        if (!token) return flux__net_result(-1, "invalid HTTP response trailer name");
+                    }
+                    for (const unsigned char *part = (const unsigned char *)(colon + 1); *part != '\0'; part += 1) if ((*part < 0x20 && *part != '\t') || *part == 0x7f) return flux__net_result(-1, "invalid HTTP response trailer value");
+                    size_t name_length = (size_t)(colon - trailer_line);
+                    if ((name_length == 14 && strncasecmp(trailer_line, "Content-Length", 14) == 0) || (name_length == 17 && strncasecmp(trailer_line, "Transfer-Encoding", 17) == 0)) return flux__net_result(-1, "HTTP framing fields are not allowed in trailers");
+                }
+                break;
+            }
+            size_t chunk_offset = 0;
+            while (chunk_offset < chunk_size) {
+                ssize_t received = flux__net_recv_cancellable((int)socket_handle, body + body_offset + chunk_offset, chunk_size - chunk_offset, 0);
+                if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
+                if (received < 0) return flux__net_result(-1, "failed to receive HTTP response chunk");
+                if (received == 0) return flux__net_result(-1, "connection closed before HTTP response chunk completed");
+                chunk_offset += (size_t)received;
+                body_wire_length += (size_t)received;
+            }
+            body_offset += chunk_size;
+            char ending[2];
+            size_t ending_offset = 0;
+            while (ending_offset < 2) {
+                ssize_t received = flux__net_recv_cancellable((int)socket_handle, ending + ending_offset, 2 - ending_offset, 0);
+                if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
+                if (received < 0) return flux__net_result(-1, "failed to receive HTTP chunk terminator");
+                if (received == 0) return flux__net_result(-1, "connection closed before HTTP chunk completed");
+                ending_offset += (size_t)received;
+                body_wire_length += (size_t)received;
+            }
+            if (ending[0] != '\r' || ending[1] != '\n') return flux__net_result(-1, "malformed HTTP chunk terminator");
+        }
+        body_length = body_offset;
+    } else if (content_length_seen) {
+        while (body_offset < body_length) {
+            ssize_t received = flux__net_recv_cancellable((int)socket_handle, body + body_offset, body_length - body_offset, 0);
+            if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
+            if (received < 0) return flux__net_result(-1, "failed to receive HTTP response body");
+            if (received == 0) return flux__net_result(-1, "connection closed before HTTP response body completed");
+            body_offset += (size_t)received;
+            body_wire_length += (size_t)received;
+        }
+    } else {
+        for (;;) {
+            if (body_offset >= (size_t)max_body_bytes) {
+                char overflow_probe;
+                ssize_t received = flux__net_recv_cancellable((int)socket_handle, &overflow_probe, 1, 0);
+                if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
+                if (received < 0) return flux__net_result(-1, "failed to receive HTTP response body");
+                if (received == 0) break;
+                return flux__net_result(-1, "HTTP response body exceeds maxBodyBytes");
+            }
+            ssize_t received = flux__net_recv_cancellable((int)socket_handle, body + body_offset, (size_t)max_body_bytes - body_offset, 0);
+            if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
+            if (received < 0) return flux__net_result(-1, "failed to receive HTTP response body");
+            if (received == 0) break;
+            body_offset += (size_t)received;
+            body_wire_length += (size_t)received;
+        }
+        body_length = body_offset;
+    }
+    body[body_length] = '\0';
+    response_callback(socket_handle, version, status, reason);
+    cursor = headers;
+    while (!(cursor[0] == '\r' && cursor[1] == '\n')) {
+        char *next = strstr(cursor, "\r\n");
+        char *colon = memchr(cursor, ':', (size_t)(next - cursor));
+        *colon = '\0';
+        char *value = colon + 1;
+        while (*value == ' ' || *value == '\t') value += 1;
+        char *value_end = next;
+        while (value_end > value && (value_end[-1] == ' ' || value_end[-1] == '\t')) value_end -= 1;
+        *value_end = '\0';
+        header_callback(socket_handle, cursor, value);
+        cursor = next + 2;
+    }
+    int64_t binary_body[body_length == 0 ? 1 : body_length];
+    for (size_t index = 0; index < body_length; index += 1) binary_body[index] = (int64_t)(unsigned char)body[index];
+    body_callback(socket_handle, (struct flux__list){ .data = binary_body, .len = body_length, .stride = sizeof(int64_t) });
     return flux__net_result((int64_t)(head_length + body_wire_length), NULL);
 }
 "#);
@@ -49155,6 +49586,34 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
+            "receiveRequestWithBinaryBody" => {
+                if args.len() != 6 {
+                    return Err(diag(span, "invalid HTTP call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let max_head_bytes = emit_expr(&args[1], env, signatures)?;
+                let max_body_bytes = emit_expr(&args[2], env, signatures)?;
+                let request_callback = emit_expr(&args[3], env, signatures)?;
+                let header_callback = emit_expr(&args[4], env, signatures)?;
+                let body_callback = emit_expr(&args[5], env, signatures)?;
+                return Ok((
+                    profiled_timeline_call(
+                        "network",
+                        "http.receiveRequestWithBinaryBody",
+                        format!(
+                            "flux__net_http_receive_request_with_binary_body_v2({}, {}, {}, {}, {}, {})",
+                            socket_handle.code,
+                            max_head_bytes.code,
+                            max_body_bytes.code,
+                            request_callback.code,
+                            header_callback.code,
+                            body_callback.code
+                        ),
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
             "serve" | "serveOnce" | "serveConcurrent" | "serveConcurrentLimit" => {
                 let limited_concurrency = name == "serveConcurrentLimit";
                 let expected_args = if limited_concurrency { 7 } else { 6 };
@@ -49234,6 +49693,34 @@ fn emit_qualified_call(
                         "http.receiveResponseWithTextBody",
                         format!(
                             "flux__net_http_receive_response_with_text_body_v2({}, {}, {}, {}, {}, {})",
+                            socket_handle.code,
+                            max_head_bytes.code,
+                            max_body_bytes.code,
+                            response_callback.code,
+                            header_callback.code,
+                            body_callback.code
+                        ),
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "receiveResponseWithBinaryBody" => {
+                if args.len() != 6 {
+                    return Err(diag(span, "invalid HTTP call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let max_head_bytes = emit_expr(&args[1], env, signatures)?;
+                let max_body_bytes = emit_expr(&args[2], env, signatures)?;
+                let response_callback = emit_expr(&args[3], env, signatures)?;
+                let header_callback = emit_expr(&args[4], env, signatures)?;
+                let body_callback = emit_expr(&args[5], env, signatures)?;
+                return Ok((
+                    profiled_timeline_call(
+                        "network",
+                        "http.receiveResponseWithBinaryBody",
+                        format!(
+                            "flux__net_http_receive_response_with_binary_body_v2({}, {}, {}, {}, {}, {})",
                             socket_handle.code,
                             max_head_bytes.code,
                             max_body_bytes.code,
@@ -79297,6 +79784,9 @@ fn header(_socket: i64, _name: str, _value: str) -> void {
 fn body(_socket: i64, _value: str) -> void {
 }
 
+fn binaryBody(_socket: i64, _value: i64[]) -> void {
+}
+
 fn multiI64(value: i64) -> i64 {
     return value
 }
@@ -79305,9 +79795,11 @@ fn exercise(socket: i64, maxHead: i64, maxBody: i64) -> i64 {
     let (requestBytes, _) = http.readRequest(multiI64(socket), maxHead, request)
     let (requestHeaderBytes, _) = http.readRequestHeaders(multiI64(socket), maxHead, request, header)
     let (requestBodyBytes, _) = http.readRequestBody(multiI64(socket), maxHead, maxBody, request, header, body)
+    let (requestBinaryBytes, _) = http.readRequestBytes(multiI64(socket), maxHead, maxBody, request, header, binaryBody)
     let (responseHeaderBytes, _) = http.readResponse(multiI64(socket), maxHead, response, header)
     let (responseBodyBytes, _) = http.readResponseBody(multiI64(socket), maxHead, maxBody, response, header, body)
-    return requestBytes + requestHeaderBytes + requestBodyBytes + responseHeaderBytes + responseBodyBytes
+    let (responseBinaryBytes, _) = http.readResponseBytes(multiI64(socket), maxHead, maxBody, response, header, binaryBody)
+    return requestBytes + requestHeaderBytes + requestBodyBytes + requestBinaryBytes + responseHeaderBytes + responseBodyBytes + responseBinaryBytes
 }
 
 fn main() -> i64 {
@@ -79365,6 +79857,23 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "readRequestBytes".to_string(),
+                profiled_timeline_call(
+                    "network",
+                    "http.receiveRequestWithBinaryBody",
+                    format!(
+                        "flux__net_http_receive_request_with_binary_body_v2({}({}), {}, {}, {}, {}, {})",
+                        function_c_name("multiI64"),
+                        local_c_name("socket"),
+                        local_c_name("maxHead"),
+                        local_c_name("maxBody"),
+                        function_c_name("request"),
+                        function_c_name("header"),
+                        function_c_name("binaryBody")
+                    ),
+                ),
+            ),
+            (
                 "readResponse".to_string(),
                 format!(
                     "flux__net_http_receive_response_head_with_headers({}({}), {}, {}, {})",
@@ -79389,6 +79898,23 @@ fn main() -> i64 {
                         function_c_name("response"),
                         function_c_name("header"),
                         function_c_name("body")
+                    ),
+                ),
+            ),
+            (
+                "readResponseBytes".to_string(),
+                profiled_timeline_call(
+                    "network",
+                    "http.receiveResponseWithBinaryBody",
+                    format!(
+                        "flux__net_http_receive_response_with_binary_body_v2({}({}), {}, {}, {}, {}, {})",
+                        function_c_name("multiI64"),
+                        local_c_name("socket"),
+                        local_c_name("maxHead"),
+                        local_c_name("maxBody"),
+                        function_c_name("response"),
+                        function_c_name("header"),
+                        function_c_name("binaryBody")
                     ),
                 ),
             ),
@@ -84151,6 +84677,43 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
+                    "receiveRequestWithBinaryBody" if arguments.len() == 6 => {
+                        let request_callback = emit_cfg_callback_argument_direct(
+                            &arguments[3],
+                            &[Type::I64, Type::Str, Type::Str, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        let header_callback = emit_cfg_callback_argument_direct(
+                            &arguments[4],
+                            &[Type::I64, Type::Str, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        let body_callback = emit_cfg_callback_argument_direct(
+                            &arguments[5],
+                            &[Type::I64, Type::List(Box::new(Type::I64))],
+                            env,
+                            signatures,
+                        )?;
+                        let call = emit_cfg_ordered_call_expression_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::I64, Type::I64],
+                            env,
+                            signatures,
+                            |rendered| {
+                                profiled_timeline_call(
+                                    "network",
+                                    "http.receiveRequestWithBinaryBody",
+                                    format!(
+                                        "flux__net_http_receive_request_with_binary_body_v2({}, {}, {}, {request_callback}, {header_callback}, {body_callback})",
+                                        rendered[0], rendered[1], rendered[2]
+                                    ),
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
+                    }
                     "receiveResponseHeadWithHeaders" if arguments.len() == 4 => {
                         let response_callback = emit_cfg_callback_argument_direct(
                             &arguments[2],
@@ -84208,6 +84771,43 @@ fn emit_cfg_multi_expr_direct(
                                     "http.receiveResponseWithTextBody",
                                     format!(
                                         "flux__net_http_receive_response_with_text_body_v2({}, {}, {}, {response_callback}, {header_callback}, {body_callback})",
+                                        rendered[0], rendered[1], rendered[2]
+                                    ),
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
+                    }
+                    "receiveResponseWithBinaryBody" if arguments.len() == 6 => {
+                        let response_callback = emit_cfg_callback_argument_direct(
+                            &arguments[3],
+                            &[Type::I64, Type::Str, Type::I64, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        let header_callback = emit_cfg_callback_argument_direct(
+                            &arguments[4],
+                            &[Type::I64, Type::Str, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        let body_callback = emit_cfg_callback_argument_direct(
+                            &arguments[5],
+                            &[Type::I64, Type::List(Box::new(Type::I64))],
+                            env,
+                            signatures,
+                        )?;
+                        let call = emit_cfg_ordered_call_expression_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::I64, Type::I64],
+                            env,
+                            signatures,
+                            |rendered| {
+                                profiled_timeline_call(
+                                    "network",
+                                    "http.receiveResponseWithBinaryBody",
+                                    format!(
+                                        "flux__net_http_receive_response_with_binary_body_v2({}, {}, {}, {response_callback}, {header_callback}, {body_callback})",
                                         rendered[0], rendered[1], rendered[2]
                                     ),
                                 )

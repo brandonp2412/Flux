@@ -7843,6 +7843,119 @@ fn main() -> i64 {
 }
 
 #[test]
+fn http_binary_request_body_preserves_arbitrary_bytes_and_does_not_overread() {
+    let source = r#"
+fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {
+}
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+fn body(_socket: i64, bytes: i64[]) -> void {
+    print(bytes.count)
+}
+fn main() -> i64 {
+    let (received, failure) = http.readRequestBytes(1, 4096, 1024, request, header, body)
+    print(received)
+    print(failure)
+    return 0
+}
+"#;
+    check_source(source).expect("HTTP binary request body should typecheck");
+    let generated = compile_to_c(source).expect("HTTP binary request body should lower on Linux");
+    assert!(generated.contains("flux__net_http_receive_request_with_binary_body_v2("));
+    assert!(generated.contains("body_callback(socket_handle, (struct flux__list)"));
+    assert!(!generated.contains("HTTP request body contains a NUL byte"));
+    assert!(!generated.contains("HTTP request body contains invalid UTF-8"));
+
+    let invalid_callback = check_source(
+        "fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn main() -> i64 {\n    let (_received, _failure) = http.readRequestBytes(1, 4096, 1024, request, header, body)\n    return 0\n}\n",
+    )
+    .expect_err("HTTP binary request body callback must receive bytes");
+    assert!(
+        invalid_callback
+            .message
+            .contains("http.readRequestBytes bodyCallback")
+    );
+
+    let invalid_limit = check_source(
+        "fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: i64[]) -> void {\n}\nfn main() -> i64 {\n    let (_received, _failure) = http.readRequestBytes(1, 4096, 65537, request, header, body)\n    return 0\n}\n",
+    )
+    .expect_err("HTTP binary request body limit must remain bounded");
+    assert!(
+        invalid_limit
+            .message
+            .contains("http.readRequestBytes maxBodyBytes must be between 0 and 65536")
+    );
+
+    let unused = source.replace(
+        "fn main() -> i64 {\n    let (received, failure) = http.readRequestBytes(1, 4096, 1024, request, header, body)\n    print(received)\n    print(failure)\n    return 0\n}",
+        "fn hidden() -> void {\n    let (received, failure) = http.readRequestBytes(1, 4096, 1024, request, header, body)\n    print(received)\n    print(failure)\n}\nfn main() -> i64 {\n    return 0\n}",
+    );
+    let unused_generated =
+        compile_to_c(&unused).expect("dead HTTP binary request helper should tree-shake");
+    assert!(!unused_generated.contains("flux__net_http_receive_request_with_binary_body_v2("));
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("HTTP binary request listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let root =
+        std::env::temp_dir().join(format!("flux-http-binary-request-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP binary request fixture should be writable");
+    let source_path = root.join("request.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {{\n}}\nfn header(_socket: i64, _name: str, _value: str) -> void {{\n}}\nfn body(_socket: i64, bytes: i64[]) -> void {{\n    print(bytes.count)\n    for index in 0..bytes.count:\n        print(bytes[index])\n}}\nfn tail(_socket: i64, value: str) -> void {{\n    print(value)\n}}\nfn main() -> i64 {{\n    let (socket, connectError) = net.connect(\"127.0.0.1\", {port})\n    print(connectError)\n    let (received, receiveError) = http.readRequestBytes(socket, 4096, 1024, request, header, body)\n    print(received > 0)\n    print(receiveError)\n    let (tailBytes, tailError) = net.read(socket, 4, tail)\n    print(tailBytes)\n    print(tailError)\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP binary request Flux source should be writable");
+    let binary = root.join("request");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP binary request Flux binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP binary request fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let child = Command::new(&binary)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("HTTP binary request Flux binary should start");
+    let (mut stream, _) = listener
+        .accept()
+        .expect("HTTP binary request connection should accept");
+    stream
+        .write_all(b"POST /binary HTTP/1.1\r\nHost: example.test\r\nContent-Length: 4\r\n\r\n")
+        .expect("HTTP binary request head should be writable");
+    stream
+        .write_all(&[0, 127, 128, 255])
+        .expect("HTTP binary request body should be writable");
+    stream
+        .write_all(b"TAIL")
+        .expect("HTTP binary request tail should be writable");
+    let output = child
+        .wait_with_output()
+        .expect("HTTP binary request Flux binary should finish");
+    assert!(
+        output.status.success(),
+        "HTTP binary request run failed: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "nil\n4\n0\n127\n128\n255\ntrue\nnil\nTAIL\n4\nnil\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn http_serve_once_owns_one_connection_lifecycle_and_tree_shakes() {
     let source = r#"
 fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {
@@ -9836,6 +9949,110 @@ fn main() -> i64 {
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
         "nil\nnil\ntrue\nHTTP/1.1\n200\nOK\ntrue\nContent-Length\n5\ntrue\nX-Trace\nabc\ntrue\nhello\ntrue\nnil\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn http_binary_response_body_decodes_chunked_arbitrary_bytes_without_overread() {
+    let source = r#"
+fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {
+}
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+fn body(_socket: i64, bytes: i64[]) -> void {
+    print(bytes.count)
+}
+fn main() -> i64 {
+    let (received, failure) = http.readResponseBytes(1, 4096, 1024, response, header, body)
+    print(received)
+    print(failure)
+    return 0
+}
+"#;
+    check_source(source).expect("HTTP binary response body should typecheck");
+    let generated = compile_to_c(source).expect("HTTP binary response body should lower on Linux");
+    assert!(generated.contains("flux__net_http_receive_response_with_binary_body_v2("));
+    assert!(generated.contains("body_callback(socket_handle, (struct flux__list)"));
+    assert!(!generated.contains("HTTP response body contains a NUL byte"));
+    assert!(!generated.contains("HTTP response body contains invalid UTF-8"));
+
+    let invalid_callback = check_source(
+        "fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn main() -> i64 {\n    let (_received, _failure) = http.readResponseBytes(1, 4096, 1024, response, header, body)\n    return 0\n}\n",
+    )
+    .expect_err("HTTP binary response body callback must receive bytes");
+    assert!(
+        invalid_callback
+            .message
+            .contains("http.readResponseBytes bodyCallback")
+    );
+
+    let unused = source.replace(
+        "fn main() -> i64 {\n    let (received, failure) = http.readResponseBytes(1, 4096, 1024, response, header, body)\n    print(received)\n    print(failure)\n    return 0\n}",
+        "fn hidden() -> void {\n    let (received, failure) = http.readResponseBytes(1, 4096, 1024, response, header, body)\n    print(received)\n    print(failure)\n}\nfn main() -> i64 {\n    return 0\n}",
+    );
+    let unused_generated =
+        compile_to_c(&unused).expect("dead HTTP binary response helper should tree-shake");
+    assert!(!unused_generated.contains("flux__net_http_receive_response_with_binary_body_v2("));
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("HTTP binary response listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("HTTP binary response client should connect");
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\n")
+            .expect("HTTP binary response head should be writable");
+        stream
+            .write_all(&[0, 128, 255])
+            .expect("HTTP binary response chunk should be writable");
+        stream
+            .write_all(b"\r\n0\r\n\r\nTAIL")
+            .expect("HTTP binary response trailer should be writable");
+    });
+
+    let root =
+        std::env::temp_dir().join(format!("flux-http-binary-response-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP binary response fixture should be writable");
+    let source_path = root.join("response.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {{\n}}\nfn header(_socket: i64, _name: str, _value: str) -> void {{\n}}\nfn body(_socket: i64, bytes: i64[]) -> void {{\n    print(bytes.count)\n    for index in 0..bytes.count:\n        print(bytes[index])\n}}\nfn tail(_socket: i64, value: str) -> void {{\n    print(value)\n}}\nfn main() -> i64 {{\n    let (socket, connectError) = net.connect(\"127.0.0.1\", {port})\n    print(connectError)\n    let (received, receiveError) = http.readResponseBytes(socket, 4096, 1024, response, header, body)\n    print(received > 0)\n    print(receiveError)\n    let (tailBytes, tailError) = net.read(socket, 4, tail)\n    print(tailBytes)\n    print(tailError)\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP binary response Flux source should be writable");
+    let binary = root.join("response");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP binary response Flux binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP binary response fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("HTTP binary response Flux binary should run");
+    server
+        .join()
+        .expect("HTTP binary response server should finish");
+    assert!(
+        run.status.success(),
+        "HTTP binary response run failed: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\n3\n0\n128\n255\ntrue\nnil\nTAIL\n4\nnil\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }
