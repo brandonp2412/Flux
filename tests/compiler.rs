@@ -3355,6 +3355,36 @@ app Screen(title: "Windows syntax", onStart: stopAfterStart)
 #[cfg(target_os = "windows")]
 #[test]
 fn windows_native_gui_runtime_smoke_uses_host_target_by_default() {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn FindWindowW(class_name: *const u16, window_name: *const u16) -> *mut std::ffi::c_void;
+        fn FindWindowExW(
+            parent: *mut std::ffi::c_void,
+            child_after: *mut std::ffi::c_void,
+            class_name: *const u16,
+            window_name: *const u16,
+        ) -> *mut std::ffi::c_void;
+        fn PostMessageW(
+            window: *mut std::ffi::c_void,
+            message: u32,
+            wparam: usize,
+            lparam: isize,
+        ) -> i32;
+    }
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn terminate(child: &mut std::process::Child) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    const BM_CLICK: u32 = 0x00F5;
+    const WINDOW_TITLE: &str = "Flux Windows runtime smoke";
+    const BUTTON_TEXT: &str = "Exit through Flux";
+
     let root = std::env::temp_dir().join(format!(
         "flux-windows-runtime-smoke-{}-{}",
         std::process::id(),
@@ -3369,18 +3399,19 @@ fn windows_native_gui_runtime_smoke_uses_host_target_by_default() {
     fs::write(
         &source,
         r#"
-fn stopAfterStart() -> void {
+fn clicked() -> void {
     process.exit(23)
 }
 
 view Screen {
     grid columns: 1fr
     grid rows: auto
-    Text title at 1,1
-        text: "Windows runtime smoke"
+    Button action at 1,1
+        text: "Exit through Flux"
+        onPress: clicked
 }
 
-app Screen(title: "Flux Windows runtime smoke", onStart: stopAfterStart)
+app Screen(title: "Flux Windows runtime smoke")
 "#,
     )
     .expect("Windows runtime smoke source should be writable");
@@ -3396,7 +3427,11 @@ app Screen(title: "Flux Windows runtime smoke", onStart: stopAfterStart)
         .expect("fluxc should launch for native Windows runtime smoke");
     assert!(
         build.status.success(),
-        "native Windows smoke build failed:\nstdout:\n{}\nstderr:\n{}",
+        "native Windows smoke build failed:
+stdout:
+{}
+stderr:
+{}",
         String::from_utf8_lossy(&build.stdout),
         String::from_utf8_lossy(&build.stderr)
     );
@@ -3405,17 +3440,94 @@ app Screen(title: "Flux Windows runtime smoke", onStart: stopAfterStart)
         "native Windows smoke build should publish an executable"
     );
 
-    let run = Command::new(&binary)
-        .output()
+    let mut child = Command::new(&binary)
+        .spawn()
         .expect("native Windows smoke executable should launch");
-    let exit_code = run.status.code();
+    let window_title = wide(WINDOW_TITLE);
+    let button_class = wide("BUTTON");
+    let button_text = wide(BUTTON_TEXT);
+    let find_deadline = Instant::now() + Duration::from_secs(15);
+
+    let window = loop {
+        if let Some(status) = child
+            .try_wait()
+            .expect("native Windows smoke process status should be readable")
+        {
+            let _ = fs::remove_dir_all(&root);
+            panic!(
+                "native Windows smoke exited before creating its window: {:?}",
+                status.code()
+            );
+        }
+        let found = unsafe { FindWindowW(std::ptr::null(), window_title.as_ptr()) };
+        if !found.is_null() {
+            break found;
+        }
+        if Instant::now() >= find_deadline {
+            terminate(&mut child);
+            let _ = fs::remove_dir_all(&root);
+            panic!("native Windows smoke did not create its top-level HWND");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+
+    let button = loop {
+        let found = unsafe {
+            FindWindowExW(
+                window,
+                std::ptr::null_mut(),
+                button_class.as_ptr(),
+                button_text.as_ptr(),
+            )
+        };
+        if !found.is_null() {
+            break found;
+        }
+        if let Some(status) = child
+            .try_wait()
+            .expect("native Windows smoke process status should be readable")
+        {
+            let _ = fs::remove_dir_all(&root);
+            panic!(
+                "native Windows smoke exited before creating its button: {:?}",
+                status.code()
+            );
+        }
+        if Instant::now() >= find_deadline {
+            terminate(&mut child);
+            let _ = fs::remove_dir_all(&root);
+            panic!("native Windows smoke did not create its BUTTON HWND");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+
+    let posted = unsafe { PostMessageW(button, BM_CLICK, 0, 0) };
+    if posted == 0 {
+        terminate(&mut child);
+        let _ = fs::remove_dir_all(&root);
+        panic!("BM_CLICK should post successfully to the generated native BUTTON");
+    }
+
+    let exit_deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .expect("native Windows smoke process status should be readable")
+        {
+            break status;
+        }
+        if Instant::now() >= exit_deadline {
+            terminate(&mut child);
+            let _ = fs::remove_dir_all(&root);
+            panic!("native BUTTON click did not reach the typed Flux callback");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
     let _ = fs::remove_dir_all(&root);
     assert_eq!(
-        exit_code,
+        status.code(),
         Some(23),
-        "Windows onStart callback should execute before the message loop; stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&run.stdout),
-        String::from_utf8_lossy(&run.stderr)
+        "native BUTTON click should dispatch WM_COMMAND into the typed Flux onPress callback"
     );
 }
 
