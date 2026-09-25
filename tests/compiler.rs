@@ -25777,6 +25777,74 @@ fn main() -> i64 {
 }
 
 #[test]
+fn tls_binary_io_is_typed_bounded_and_tree_shaken() {
+    let source = r#"
+fn consume(_bytes: i64[]) -> void {
+}
+fn main() -> i64 {
+    let write_error: error = tls.writeBytes(1, [0, 128, 255])
+    let (received, read_error) = tls.readBytes(1, 1024, consume)
+    print(write_error)
+    print(received)
+    print(read_error)
+    return 0
+}
+"#;
+    check_source(source).expect("TLS binary I/O should typecheck");
+    let generated = compile_to_c(source).expect("TLS binary I/O should lower natively");
+    assert!(generated.contains("flux__tls_write_bytes("));
+    assert!(generated.contains("flux__tls_read_bytes("));
+    assert!(generated.contains("TLS writeBytes byte values must be between 0 and 255"));
+    assert!(generated.contains("TLS writeBytes byte list has an invalid element stride"));
+    assert!(generated.contains("invalid TLS readBytes arguments"));
+    assert!(generated.contains("callback((struct flux__list)"));
+    assert!(generated.contains("unsigned char buffer[4096]"));
+
+    let invalid_byte = check_source(
+        "fn main() -> i64 {\n    print(tls.writeBytes(1, [0, 256]))\n    return 0\n}\n",
+    )
+    .expect_err("TLS byte literals outside 0..255 should be rejected");
+    assert!(
+        invalid_byte
+            .message
+            .contains("tls.writeBytes byte values must be between 0 and 255")
+    );
+
+    let invalid_limit = check_source(
+        "fn consume(_bytes: i64[]) -> void {\n}\nfn main() -> i64 {\n    let (_received, _failure) = tls.readBytes(1, 65537, consume)\n    return 0\n}\n",
+    )
+    .expect_err("TLS binary reads must remain bounded");
+    assert!(
+        invalid_limit
+            .message
+            .contains("tls.readBytes maxBytes must be between 1 and 65536")
+    );
+
+    let invalid_callback = check_source(
+        "fn consume(_value: str) -> void {\n}\nfn main() -> i64 {\n    let (_received, _failure) = tls.readBytes(1, 64, consume)\n    return 0\n}\n",
+    )
+    .expect_err("TLS binary reads require a byte callback");
+    assert!(invalid_callback.message.contains("tls.readBytes callback"));
+
+    let unused = r#"
+fn consume(_bytes: i64[]) -> void {
+}
+fn hidden(session: i64, bytes: i64[]) -> void {
+    print(tls.writeBytes(session, bytes))
+    let (received, failure) = tls.readBytes(session, 64, consume)
+    print(received)
+    print(failure)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead TLS binary helpers should tree-shake");
+    assert!(!unused_generated.contains("flux__tls_write_bytes("));
+    assert!(!unused_generated.contains("flux__tls_read_bytes("));
+}
+
+#[test]
 fn tls_rejects_non_tcp_socket_before_handshake() {
     let source = r#"
 fn main() -> i64 {
@@ -25943,6 +26011,140 @@ fn main() -> i64 {{
     assert!(
         stdout.contains("nil\n"),
         "TLS error result missing: {stdout}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn tls_binary_io_round_trips_arbitrary_bytes_against_openssl_client() {
+    if Command::new("openssl").arg("version").output().is_err() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("flux-tls-binary-e2e-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("TLS binary fixture should be writable");
+    let key = root.join("server.key");
+    let certificate = root.join("server.crt");
+    let generated = Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=127.0.0.1",
+            "-keyout",
+        ])
+        .arg(&key)
+        .args(["-out"])
+        .arg(&certificate)
+        .output()
+        .expect("OpenSSL should generate the TLS binary certificate");
+    assert!(
+        generated.status.success(),
+        "TLS binary certificate generation failed: {}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).expect("TLS binary fixture port should bind");
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let source = format!(
+        r#"
+fn handle(bytes: i64[]) -> void {{
+    print(bytes.count)
+    for index in 0..bytes.count:
+        print(bytes[index])
+}}
+
+fn main() -> i64 {{
+    let (listener, listen_error) = net.listen("127.0.0.1", {port}, 4)
+    if listen_error != nil:
+        return 1
+    let (socket, accept_error) = net.accept(listener)
+    if accept_error != nil:
+        return 2
+    let (session, tls_error) = tls.listen(socket, "{}", "{}")
+    if tls_error != nil:
+        return 3
+    let (received, read_error) = tls.readBytes(session, 1024, handle)
+    if read_error != nil:
+        return 4
+    print(received)
+    let values: i64[] = [0, 77, 128, 77, 255]
+    let response: i64[] = values[::2]
+    let write_error: error = tls.writeBytes(session, response)
+    if write_error != nil:
+        return 5
+    let close_error: error = tls.close(session)
+    if close_error != nil:
+        return 6
+    print(net.close(listener))
+    return 0
+}}
+"#,
+        certificate.display(),
+        key.display()
+    );
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("TLS binary server source should be writable");
+    let binary = root.join("tls-binary-e2e");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("TLS binary Flux server should build");
+    assert!(
+        built.status.success(),
+        "TLS binary Flux server build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let flux = Command::new(&binary)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("TLS binary Flux server should start");
+    thread::sleep(Duration::from_millis(80));
+    let mut client = Command::new("openssl")
+        .args(["s_client", "-quiet", "-connect"])
+        .arg(format!("127.0.0.1:{port}"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("OpenSSL TLS binary client should start");
+    client
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&[0, 127, 128, 255])
+        .expect("TLS binary client payload should write");
+    let client_output = client
+        .wait_with_output()
+        .expect("OpenSSL TLS binary client should finish");
+    let server_output = flux
+        .wait_with_output()
+        .expect("TLS binary Flux server should finish");
+    assert!(
+        client_output.status.success(),
+        "TLS binary client failed: {}",
+        String::from_utf8_lossy(&client_output.stderr)
+    );
+    assert!(
+        server_output.status.success(),
+        "TLS binary server failed: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&server_output.stdout),
+        String::from_utf8_lossy(&server_output.stderr)
+    );
+    assert_eq!(client_output.stdout, vec![0, 128, 255]);
+    assert_eq!(
+        String::from_utf8_lossy(&server_output.stdout),
+        "4\n0\n127\n128\n255\n4\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }

@@ -9838,6 +9838,13 @@ static const char *flux__preferences_remove(const char *key) {
 "#);
     }
     if runtime_usage.contains("flux__tls_") {
+        out.push_str(
+            "#ifndef FLUX_LIST_DEFINED
+#define FLUX_LIST_DEFINED
+struct flux__list { void *data; size_t len; ptrdiff_t stride; };
+#endif
+",
+        );
         out.push_str(r#"struct flux__tls_slot { SSL_CTX *context; SSL *session; int socket; bool used; };
 struct flux__tls_resumption_slot { SSL_SESSION *session; char *server_name; char *ca_file; bool used; };
 #ifndef FLUX_NET_I64_BOOL_ERROR_DEFINED
@@ -9905,8 +9912,59 @@ static inline struct flux__net_i64_error flux__tls_listen(int64_t socket_handle,
 }
 static inline const char *flux__tls_close(int64_t handle) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL) return "invalid or closed TLS session"; SSL_shutdown(slot->session); SSL_free(slot->session); SSL_CTX_free(slot->context); flux__net_unregister_socket(slot->socket); close(slot->socket); slot->used = false; return NULL; }
 static inline const char *flux__tls_write(int64_t handle, const char *value) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || value == NULL) return "invalid TLS write arguments"; size_t length = 0; if (!flux__tls_bounded_length(value, 65536, &length)) return "TLS write value exceeds 65536 bytes"; size_t offset = 0; while (offset < length) { int written = SSL_write(slot->session, value + offset, (int)(length - offset > INT_MAX ? INT_MAX : length - offset)); if (written <= 0) return "TLS write failed"; offset += (size_t)written; } return NULL; }
+static inline const char *flux__tls_validate_bytes(struct flux__list bytes) {
+    if (bytes.len > 65536) return "TLS writeBytes bytes exceed 65536 bytes";
+    if (bytes.len != 0 && bytes.data == NULL) return "TLS writeBytes byte list has missing storage";
+    if (bytes.stride < 0 || (bytes.stride != 0 && (uintmax_t)bytes.stride < (uintmax_t)sizeof(int64_t))) return "TLS writeBytes byte list has an invalid element stride";
+    ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride;
+    uint64_t stride_magnitude = (uint64_t)stride;
+    if (bytes.len > 1 && (uint64_t)(bytes.len - 1) > (uint64_t)PTRDIFF_MAX / stride_magnitude) return "TLS writeBytes byte list has an invalid element stride";
+    for (size_t index = 0; index < bytes.len; index += 1) {
+        int64_t value;
+        memcpy(&value, (const char *)bytes.data + (ptrdiff_t)index * stride, sizeof(value));
+        if (value < 0 || value > 255) return "TLS writeBytes byte values must be between 0 and 255";
+    }
+    return NULL;
+}
+static inline const char *flux__tls_write_bytes(int64_t handle, struct flux__list bytes) {
+    struct flux__tls_slot *slot = flux__tls_slot_for(handle);
+    if (slot == NULL) return "invalid TLS writeBytes session";
+    const char *validation = flux__tls_validate_bytes(bytes);
+    if (validation != NULL) return validation;
+    ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride;
+    unsigned char buffer[4096];
+    size_t offset = 0;
+    while (offset < bytes.len) {
+        size_t chunk = bytes.len - offset;
+        if (chunk > sizeof(buffer)) chunk = sizeof(buffer);
+        for (size_t index = 0; index < chunk; index += 1) {
+            int64_t value;
+            memcpy(&value, (const char *)bytes.data + (ptrdiff_t)(offset + index) * stride, sizeof(value));
+            buffer[index] = (unsigned char)value;
+        }
+        size_t chunk_offset = 0;
+        while (chunk_offset < chunk) {
+            int written = SSL_write(slot->session, buffer + chunk_offset, (int)(chunk - chunk_offset));
+            if (written <= 0) return "TLS writeBytes failed";
+            chunk_offset += (size_t)written;
+        }
+        offset += chunk;
+    }
+    return NULL;
+}
 static inline struct flux__net_i64_bool_error flux__tls_write_timeout(int64_t handle, const char *value, int64_t timeout_millis) { struct flux__net_i64_bool_error result = { .v0 = 0, .v1 = false, .v2 = NULL }; struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || value == NULL) { result.v0 = -1; result.v2 = "invalid TLS writeTimeout arguments"; return result; } size_t length = 0; if (!flux__tls_bounded_length(value, 65536, &length)) { result.v0 = -1; result.v2 = "TLS writeTimeout value exceeds 65536 bytes"; return result; } if (timeout_millis < -1 || timeout_millis > INT_MAX) { result.v0 = -1; result.v2 = "TLS writeTimeout timeoutMillis must be -1 or between 0 and 2147483647"; return result; } int64_t deadline = -1; if (timeout_millis >= 0) { struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) { result.v0 = -1; result.v2 = "TLS writeTimeout clock failed"; return result; } deadline = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + timeout_millis; } size_t offset = 0; short events = POLLOUT; while (offset < length) { if (flux__worker_cancelled()) { result.v0 = (int64_t)offset; result.v2 = "TLS writeTimeout cancelled by worker scope"; return result; } int64_t remaining = -1; if (deadline >= 0) { struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) { result.v0 = (int64_t)offset; result.v2 = "TLS writeTimeout clock failed"; return result; } int64_t current = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000; if (current >= deadline) return result; remaining = deadline - current; } int written = SSL_write(slot->session, value + offset, (int)(length - offset > INT_MAX ? INT_MAX : length - offset)); if (written > 0) { offset += (size_t)written; continue; } int ssl_error = SSL_get_error(slot->session, written); if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE) { result.v0 = (int64_t)offset; result.v2 = "TLS writeTimeout failed"; return result; } events = ssl_error == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT; struct pollfd descriptor = { .fd = slot->socket, .events = events, .revents = 0 }; int wait_millis = remaining < 0 || remaining > INT_MAX ? INT_MAX : (int)remaining; int ready = flux__net_poll_cancellable(&descriptor, 1, wait_millis); if (ready == -2) { result.v0 = (int64_t)offset; result.v2 = "TLS writeTimeout cancelled by worker scope"; return result; } if (ready == 0) { result.v0 = (int64_t)offset; return result; } if (ready < 0 || (descriptor.revents & (POLLNVAL | POLLERR)) != 0) { result.v0 = (int64_t)offset; result.v2 = "TLS writeTimeout readiness failed"; return result; } } result.v0 = (int64_t)offset; result.v1 = true; return result; }
 static inline struct flux__net_i64_error flux__tls_read(int64_t handle, int64_t max_bytes, void (*callback)(const char *)) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || callback == NULL || max_bytes < 1 || max_bytes > 65536) return flux__tls_result(-1, "invalid TLS read arguments"); char buffer[65537]; int received = SSL_read(slot->session, buffer, (int)max_bytes); if (received <= 0) return flux__tls_result(-1, "TLS read failed or reached end of stream"); for (int index = 0; index < received; index += 1) if (buffer[index] == '\0') return flux__tls_result(-1, "TLS read contained NUL in text payload"); buffer[received] = '\0'; callback(buffer); return flux__tls_result((int64_t)received, NULL); }
+static inline struct flux__net_i64_error flux__tls_read_bytes(int64_t handle, int64_t max_bytes, void (*callback)(struct flux__list)) {
+    struct flux__tls_slot *slot = flux__tls_slot_for(handle);
+    if (slot == NULL || callback == NULL || max_bytes < 1 || max_bytes > 65536) return flux__tls_result(-1, "invalid TLS readBytes arguments");
+    unsigned char buffer[65536];
+    int received = SSL_read(slot->session, buffer, (int)max_bytes);
+    if (received <= 0) return flux__tls_result(-1, "TLS readBytes failed or reached end of stream");
+    int64_t values[received];
+    for (int index = 0; index < received; index += 1) values[index] = (int64_t)buffer[index];
+    callback((struct flux__list){ .data = values, .len = (size_t)received, .stride = sizeof(int64_t) });
+    return flux__tls_result((int64_t)received, NULL);
+}
 static inline struct flux__net_i64_bool_error flux__tls_read_timeout(int64_t handle, int64_t max_bytes, int64_t timeout_millis, void (*callback)(const char *)) { struct flux__net_i64_bool_error result = { .v0 = 0, .v1 = false, .v2 = NULL }; struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || callback == NULL || max_bytes < 1 || max_bytes > 65536) { result.v0 = -1; result.v2 = "invalid TLS readTimeout arguments"; return result; } if (timeout_millis < -1 || timeout_millis > INT_MAX) { result.v0 = -1; result.v2 = "TLS readTimeout timeoutMillis must be -1 or between 0 and 2147483647"; return result; } int64_t deadline = -1; if (timeout_millis >= 0) { struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) { result.v0 = -1; result.v2 = "TLS readTimeout clock failed"; return result; } deadline = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + timeout_millis; } char buffer[65537]; short events = POLLIN; for (;;) { if (flux__worker_cancelled()) { result.v0 = -1; result.v2 = "TLS readTimeout cancelled by worker scope"; return result; } int64_t remaining = -1; if (deadline >= 0) { struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) { result.v0 = -1; result.v2 = "TLS readTimeout clock failed"; return result; } int64_t current = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000; if (current >= deadline) return result; remaining = deadline - current; } if (SSL_pending(slot->session) == 0) { struct pollfd descriptor = { .fd = slot->socket, .events = events, .revents = 0 }; int wait_millis = remaining < 0 || remaining > INT_MAX ? INT_MAX : (int)remaining; int ready = flux__net_poll_cancellable(&descriptor, 1, wait_millis); if (ready == -2) { result.v0 = -1; result.v2 = "TLS readTimeout cancelled by worker scope"; return result; } if (ready == 0) return result; if (ready < 0 || (descriptor.revents & (POLLNVAL | POLLERR)) != 0) { result.v0 = -1; result.v2 = "TLS readTimeout readiness failed"; return result; } } int received = SSL_read(slot->session, buffer, (int)max_bytes); if (received > 0) { for (int index = 0; index < received; index += 1) if (buffer[index] == '\0') { result.v0 = -1; result.v2 = "TLS read contained NUL in text payload"; return result; } buffer[received] = '\0'; callback(buffer); result.v0 = (int64_t)received; result.v1 = true; return result; } int ssl_error = SSL_get_error(slot->session, received); if (ssl_error == SSL_ERROR_WANT_READ) { events = POLLIN; continue; } if (ssl_error == SSL_ERROR_WANT_WRITE) { events = POLLOUT; continue; } result.v0 = -1; result.v2 = "TLS read failed or reached end of stream"; return result; } }
 "#);
     }
@@ -48673,6 +48731,19 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
+            "readBytes" if args.len() == 3 => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                let max_bytes = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__tls_read_bytes({}, {}, {})",
+                        session.code, max_bytes.code, callback.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
             "readTimeout" if args.len() == 4 => {
                 let session = emit_expr(&args[0], env, signatures)?;
                 let max_bytes = emit_expr(&args[1], env, signatures)?;
@@ -48692,6 +48763,15 @@ fn emit_qualified_call(
                 let value = emit_expr(&args[1], env, signatures)?;
                 return Ok((
                     format!("flux__tls_write({}, {})", session.code, value.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "writeBytes" if args.len() == 2 => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                let bytes = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__tls_write_bytes({}, {})", session.code, bytes.code),
                     vec![Type::Error],
                     None,
                 ));
@@ -55567,6 +55647,17 @@ fn emit_cfg_scalar_expr_direct(
                 signatures,
                 |rendered| format!("flux__tls_write({}, {})", rendered[0], rendered[1]),
             ),
+            "writeBytes" if arguments.len() == 2 => {
+                emit_cfg_ordered_call_with_borrowed_list_direct(
+                    &arguments[..1],
+                    &[Type::I64],
+                    &arguments[1],
+                    &Type::I64,
+                    env,
+                    signatures,
+                    |rendered, bytes| format!("flux__tls_write_bytes({}, {bytes})", rendered[0]),
+                )
+            }
             "close" if arguments.len() == 1 => {
                 let session = emit_cfg_ordinary_call_argument_direct(
                     &arguments[0],
@@ -76740,6 +76831,10 @@ fn write(session: i64, value: str) -> error {
     return tls.write(session, value)
 }
 
+fn writeBytes(session: i64, bytes: i64[]) -> error {
+    return tls.writeBytes(session, bytes)
+}
+
 fn close(session: i64) -> error {
     return tls.close(session)
 }
@@ -76786,6 +76881,18 @@ fn main() -> i64 {
                     "flux__tls_write({}, {})",
                     local_c_name("session"),
                     local_c_name("value")
+                ),
+            ),
+            (
+                "writeBytes",
+                HashMap::from([
+                    ("session".to_string(), Type::I64),
+                    ("bytes".to_string(), Type::List(Box::new(Type::I64))),
+                ]),
+                format!(
+                    "flux__tls_write_bytes({}, {})",
+                    local_c_name("session"),
+                    local_c_name("bytes")
                 ),
             ),
             (
@@ -80166,13 +80273,14 @@ fn exercise(
     let (wrapped, _) = tls.wrap(multiI64(socket), host, certificate)
     let (listener, _) = tls.listen(multiI64(socket), certificate, key)
     let (read, _) = tls.read(multiI64(session), maxBytes, text)
+    let (binaryRead, _) = tls.readBytes(multiI64(session), maxBytes, bytes)
     let (timedRead, _, _) = tls.readTimeout(multiI64(session), maxBytes, timeout, text)
     let (written, _, _) = tls.writeTimeout(multiI64(session), host, timeout)
     let (accepted, _) = websocket.accept(socket)
     let (connected, _) = websocket.connect(multiI64(socket), host)
     let (message, _) = websocket.readText(multiI64(session), maxBytes, text)
     let (binary, _) = websocket.readBytes(multiI64(session), maxBytes, bytes)
-    return wrapped + listener + read + timedRead + written + accepted + connected + message + binary
+    return wrapped + listener + read + binaryRead + timedRead + written + accepted + connected + message + binary
 }
 
 fn main() -> i64 {
@@ -80234,6 +80342,20 @@ fn main() -> i64 {
                         local_c_name("session"),
                         local_c_name("maxBytes"),
                         function_c_name("text")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    i64_error.clone(),
+                ),
+            ),
+            (
+                ("tls".to_string(), "readBytes".to_string()),
+                (
+                    format!(
+                        "flux__tls_read_bytes({}({}), {}, {})",
+                        function_c_name("multiI64"),
+                        local_c_name("session"),
+                        local_c_name("maxBytes"),
+                        function_c_name("bytes")
                     ),
                     "flux__net_i64_error".to_string(),
                     i64_error.clone(),
@@ -85448,6 +85570,23 @@ fn emit_cfg_multi_expr_direct(
                             |rendered, callback| {
                                 format!(
                                     "flux__tls_read({}, {}, {callback})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
+                    }
+                    "readBytes" if arguments.len() == 3 => {
+                        let call = emit_cfg_ordered_call_with_callback_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
+                            &arguments[2],
+                            &[Type::List(Box::new(Type::I64))],
+                            env,
+                            signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__tls_read_bytes({}, {}, {callback})",
                                     rendered[0], rendered[1]
                                 )
                             },
