@@ -6651,6 +6651,7 @@ static inline void flux__net_unregister_socket(int socket_handle) {
         || runtime_usage.contains("flux__net_receive_bytes_from_many(")
         || runtime_usage.contains("flux__net_receive_bytes_from_many_with_timeout(")
         || runtime_usage.contains("flux__tls_")
+        || runtime_usage.contains("flux__websocket_")
         || uses_cancellable_http;
     if runtime_usage.contains("flux__net_wait_readable(")
         || runtime_usage.contains("flux__net_wait_writable(")
@@ -10080,8 +10081,36 @@ static bool flux__websocket_client_sessions[1024];
 static inline bool flux__websocket_is_client(int64_t session) { return session >= 0 && session < 1024 && flux__websocket_client_sessions[session]; }
 static inline bool flux__websocket_bounded_length(const char *value, size_t maximum, size_t *length) { if (value == NULL || length == NULL) return false; size_t cursor = 0; while (cursor <= maximum && value[cursor] != '\0') cursor += 1; if (cursor > maximum) return false; *length = cursor; return true; }
 static inline const char *flux__websocket_find_bytes(const char *value, size_t length, const char *needle, size_t needle_length) { if (value == NULL || needle == NULL) return NULL; if (needle_length == 0) return value; if (needle_length > length) return NULL; for (size_t offset = 0; offset + needle_length <= length; offset += 1) if (memcmp(value + offset, needle, needle_length) == 0) return value + offset; return NULL; }
-static inline int flux__websocket_read_all(int socket_handle, void *target, size_t length) { size_t offset = 0; while (offset < length) { ssize_t received; do { received = recv(socket_handle, (unsigned char *)target + offset, length - offset, 0); } while (received < 0 && errno == EINTR); if (received <= 0) return 0; offset += (size_t)received; } return 1; }
-static inline int flux__websocket_write_all(int socket_handle, const void *source, size_t length) { size_t offset = 0; while (offset < length) { ssize_t written; do { written = send(socket_handle, (const unsigned char *)source + offset, length - offset, MSG_NOSIGNAL); } while (written < 0 && errno == EINTR); if (written <= 0) return 0; offset += (size_t)written; } return 1; }
+static inline int flux__websocket_read_all(int socket_handle, void *target, size_t length) {
+    size_t offset = 0;
+    while (offset < length) {
+        struct pollfd descriptor = { .fd = socket_handle, .events = POLLIN, .revents = 0 };
+        int ready = flux__net_poll_cancellable(&descriptor, 1, -1);
+        if (ready == -2) { errno = ECANCELED; return 0; }
+        if (ready < 0 || (descriptor.revents & (POLLNVAL | POLLERR)) != 0) return 0;
+        ssize_t received;
+        do { received = recv(socket_handle, (unsigned char *)target + offset, length - offset, MSG_DONTWAIT); } while (received < 0 && errno == EINTR);
+        if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+        if (received <= 0) return 0;
+        offset += (size_t)received;
+    }
+    return 1;
+}
+static inline int flux__websocket_write_all(int socket_handle, const void *source, size_t length) {
+    size_t offset = 0;
+    while (offset < length) {
+        struct pollfd descriptor = { .fd = socket_handle, .events = POLLOUT, .revents = 0 };
+        int ready = flux__net_poll_cancellable(&descriptor, 1, -1);
+        if (ready == -2) { errno = ECANCELED; return 0; }
+        if (ready < 0 || (descriptor.revents & (POLLNVAL | POLLERR | POLLHUP)) != 0) return 0;
+        ssize_t written;
+        do { written = send(socket_handle, (const unsigned char *)source + offset, length - offset, MSG_NOSIGNAL | MSG_DONTWAIT); } while (written < 0 && errno == EINTR);
+        if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+        if (written <= 0) return 0;
+        offset += (size_t)written;
+    }
+    return 1;
+}
 struct flux__websocket_frame { unsigned opcode; bool final; uint64_t length; };
 static inline int flux__websocket_header_has_token(const char *value, const char *token) { size_t token_length = strlen(token); const char *cursor = value; while (*cursor != '\0') { while (*cursor != '\0' && (*cursor == ' ' || *cursor == '\t' || *cursor == ',')) cursor += 1; if (*cursor == '\0') break; const char *end = cursor; while (*end != '\0' && *end != ',') end += 1; const char *trimmed_end = end; while (trimmed_end > cursor && (trimmed_end[-1] == ' ' || trimmed_end[-1] == '\t')) trimmed_end -= 1; if ((size_t)(trimmed_end - cursor) == token_length && strncasecmp(cursor, token, token_length) == 0) return 1; cursor = end; } return 0; }
 static inline int flux__websocket_response_header(const char *response, size_t length, const char *name, const char *expected, bool token) { if (response == NULL || name == NULL || expected == NULL) return 0; const char *limit = response + length; const char *cursor = response; while (cursor + 1 < limit && !(cursor[0] == '\r' && cursor[1] == '\n')) cursor += 1; if (cursor + 1 >= limit) return 0; cursor += 2; size_t name_length = strlen(name); size_t expected_length = strlen(expected); while (cursor + 1 < limit) { if (cursor[0] == '\r' && cursor[1] == '\n') return 0; const char *line_end = cursor; while (line_end + 1 < limit && !(line_end[0] == '\r' && line_end[1] == '\n')) line_end += 1; if (line_end + 1 >= limit) return 0; const char *colon = memchr(cursor, ':', (size_t)(line_end - cursor)); if (colon == NULL || (size_t)(colon - cursor) != name_length || strncasecmp(cursor, name, name_length) != 0) { cursor = line_end + 2; continue; } const char *value = colon + 1; while (value < line_end && (*value == ' ' || *value == '\t')) value += 1; const char *value_end = line_end; while (value_end > value && (value_end[-1] == ' ' || value_end[-1] == '\t')) value_end -= 1; if (token) { char bounded[256]; size_t value_length = (size_t)(value_end - value); if (value_length >= sizeof(bounded)) return 0; memcpy(bounded, value, value_length); bounded[value_length] = '\0'; return flux__websocket_header_has_token(bounded, expected); } return (size_t)(value_end - value) == expected_length && memcmp(value, expected, expected_length) == 0; } return 0; }

@@ -76025,6 +76025,131 @@ fn main() -> i64 {{
 }
 
 #[test]
+fn websocket_blocked_io_is_worker_cancellable() {
+    let probe = TcpListener::bind("127.0.0.1:0").expect("WebSocket cancellation probe should bind");
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let source = format!(
+        r#"fn onText(_value: str) -> void {{
+}}
+
+fn blockedRead(session: i64) -> void {{
+    let (_bytes, readError) = websocket.readText(session, 64, onText)
+    if readError != nil && worker.cancelled():
+        print(1)
+}}
+
+fn main() -> i64 {{
+    let (listener, listenError) = net.listen("127.0.0.1", {port}, 8)
+    if listenError != nil:
+        return 1
+    let (socket, acceptError) = net.accept(listener)
+    if acceptError != nil:
+        return 2
+    let (session, handshakeError) = websocket.accept(socket)
+    if handshakeError != nil:
+        return 3
+    let (handle, startError) = worker.startWith(blockedRead, session)
+    if startError != nil:
+        return 4
+    time.sleep(100)
+    let cancelError: error = worker.cancel(handle)
+    if cancelError != nil:
+        return 5
+    let joinError: error = worker.join(handle)
+    if joinError != nil:
+        return 6
+    let closeError: error = websocket.close(session)
+    if closeError != nil:
+        return 7
+    let listenerCloseError: error = net.close(listener)
+    if listenerCloseError != nil:
+        return 8
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("worker-cancellable WebSocket read should typecheck");
+    let generated =
+        compile_to_c(&source).expect("worker-cancellable WebSocket read should lower natively");
+    assert!(generated.contains("static inline int flux__net_poll_cancellable"));
+    assert!(generated.contains("int ready = flux__net_poll_cancellable(&descriptor, 1, -1);"));
+    assert!(generated.contains("MSG_DONTWAIT"));
+    assert!(generated.contains("errno = ECANCELED"));
+
+    let root = std::env::temp_dir().join(format!("flux-websocket-cancel-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("WebSocket cancellation fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("WebSocket cancellation source should be writable");
+    let binary = root.join("websocket-cancel");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("WebSocket cancellation binary should build");
+    assert!(
+        built.status.success(),
+        "WebSocket cancellation build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let mut server = Command::new(&binary)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("WebSocket cancellation server should start");
+    thread::sleep(Duration::from_millis(100));
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port))
+        .expect("WebSocket cancellation client should connect");
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    client
+        .write_all(
+            b"GET /cancel HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: SGVsbG9GbHV4V29ybGQ=\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .unwrap();
+    let mut handshake = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !handshake.ends_with(b"\r\n\r\n") {
+        client.read_exact(&mut byte).unwrap();
+        handshake.push(byte[0]);
+    }
+    assert!(String::from_utf8_lossy(&handshake).contains("101 Switching Protocols"));
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = server
+            .try_wait()
+            .expect("WebSocket cancellation server status should be readable")
+        {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = server.kill();
+            let _ = server.wait();
+            panic!("worker cancellation should interrupt blocked WebSocket I/O");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let output = server
+        .wait_with_output()
+        .expect("WebSocket cancellation server output should be readable");
+    assert!(
+        status.success(),
+        "WebSocket cancellation server failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "1
+"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn local_time_offset_is_typed_native_and_dst_aware() {
     let source = r#"
 fn main() -> i64 {
