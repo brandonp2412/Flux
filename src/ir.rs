@@ -7393,6 +7393,13 @@ fn call_argument_expected_type(
             .flatten();
     }
 
+    if name.is_none()
+        && positional_index == 0
+        && matches!(crate::builtin_names::global_impl(callee), "any" | "every")
+    {
+        return Some(Type::List(Box::new(Type::Bool)));
+    }
+
     let signature = signatures.get(callee)?;
     if let Some(name) = name {
         return signature

@@ -7453,13 +7453,11 @@ pub fn type_of_expr(
                     &format!("{name} expects exactly one bool[] argument"),
                 ));
             }
-            let list_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
-            require_type(
-                args[0].span,
-                &Type::List(Box::new(Type::Bool)),
-                &list_ty,
-                &format!("{name} input"),
-            )?;
+            let expected = Type::List(Box::new(Type::Bool));
+            let list_ty = signatures.canonical_type(&type_of_call_argument(
+                &args[0], &expected, env, signatures,
+            )?);
+            require_type(args[0].span, &expected, &list_ty, &format!("{name} input"))?;
             Ok(Type::Bool)
         }
         ExprKind::Call {

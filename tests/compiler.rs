@@ -592,6 +592,21 @@ fn main() -> i64 {
 }
 
 #[test]
+fn empty_boolean_builtin_list_arguments_inherit_parameter_types() {
+    let source = r#"
+fn main() -> i64 {
+    let anyValue: bool = any([])
+    let everyValue: bool = all([])
+    if anyValue || !everyValue:
+        return 1
+    return 0
+}
+"#;
+    compile_to_c(source)
+        .expect("empty boolean-list builtin arguments should inherit the exact bool[] contract");
+}
+
+#[test]
 fn map_calls_with_computed_copy_peers_use_ordered_typed_ir_storage() {
     let source = r#"
 fn observeBefore(value: i64) -> i64 {
@@ -35910,6 +35925,34 @@ fn main() -> i64 {
         })
         .expect("empty qualified list argument should remain a normalized typed value");
     assert_eq!(empty_list.ty, Type::List(Box::new(Type::I64)));
+}
+
+#[test]
+fn semantic_cfg_records_contextual_empty_builtin_list_types() {
+    let source = r#"
+fn main() -> i64 {
+    let value: bool = any([])
+    if value:
+        return 1
+    return 0
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1317))
+        .expect("empty builtin list argument should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    let empty_list = graph
+        .values()
+        .iter()
+        .find(|value| {
+            matches!(
+                &value.kind,
+                ControlFlowValueKind::List { items } if items.is_empty()
+            )
+        })
+        .expect("empty builtin list argument should remain a normalized typed value");
+    assert_eq!(empty_list.ty, Type::List(Box::new(Type::Bool)));
 }
 
 #[test]
