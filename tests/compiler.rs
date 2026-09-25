@@ -3438,6 +3438,22 @@ app Screen(title: "Windows syntax", onStart: stopAfterStart)
 #[cfg(target_os = "windows")]
 #[test]
 fn windows_native_gui_runtime_smoke_uses_host_target_by_default() {
+    #[repr(C)]
+    #[derive(Default)]
+    struct WinPoint {
+        x: i32,
+        y: i32,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct WinRect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
     #[link(name = "user32")]
     unsafe extern "system" {
         fn FindWindowW(class_name: *const u16, window_name: *const u16) -> *mut std::ffi::c_void;
@@ -3453,6 +3469,10 @@ fn windows_native_gui_runtime_smoke_uses_host_target_by_default() {
             wparam: usize,
             lparam: isize,
         ) -> i32;
+        fn IsWindowVisible(window: *mut std::ffi::c_void) -> i32;
+        fn GetClientRect(window: *mut std::ffi::c_void, rect: *mut WinRect) -> i32;
+        fn GetWindowRect(window: *mut std::ffi::c_void, rect: *mut WinRect) -> i32;
+        fn ClientToScreen(window: *mut std::ffi::c_void, point: *mut WinPoint) -> i32;
     }
 
     fn wide(value: &str) -> Vec<u16> {
@@ -3491,6 +3511,10 @@ view Screen {
     grid rows: auto
     Button action at 1,1
         text: "Exit through Flux"
+        maxWidth: 160
+        maxHeight: 44
+        alignX: "center"
+        alignY: "end"
         onPress: clicked
 }
 
@@ -3583,6 +3607,72 @@ stderr:
         }
         thread::sleep(Duration::from_millis(50));
     };
+
+    while unsafe { IsWindowVisible(window) } == 0 {
+        if let Some(status) = child
+            .try_wait()
+            .expect("native Windows smoke process status should be readable")
+        {
+            let _ = fs::remove_dir_all(&root);
+            panic!(
+                "native Windows smoke exited before showing its window: {:?}",
+                status.code()
+            );
+        }
+        if Instant::now() >= find_deadline {
+            terminate(&mut child);
+            let _ = fs::remove_dir_all(&root);
+            panic!("native Windows smoke did not show its top-level HWND");
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    let mut client = WinRect::default();
+    let mut button_bounds = WinRect::default();
+    let mut client_origin = WinPoint::default();
+    assert_ne!(
+        unsafe { GetClientRect(window, &mut client) },
+        0,
+        "native Windows smoke should expose its client bounds"
+    );
+    assert_ne!(
+        unsafe { GetWindowRect(button, &mut button_bounds) },
+        0,
+        "native Windows smoke should expose its button bounds"
+    );
+    assert_ne!(
+        unsafe { ClientToScreen(window, &mut client_origin) },
+        0,
+        "native Windows smoke should map client coordinates to screen coordinates"
+    );
+    let button_left = button_bounds.left - client_origin.x;
+    let button_top = button_bounds.top - client_origin.y;
+    let button_right = button_bounds.right - client_origin.x;
+    let button_bottom = button_bounds.bottom - client_origin.y;
+    let client_width = client.right - client.left;
+    let client_height = client.bottom - client.top;
+    let button_width = button_right - button_left;
+    let button_height = button_bottom - button_top;
+    let left_inset = button_left - client.left;
+    let right_inset = client.right - button_right;
+    let top_inset = button_top - client.top;
+    let bottom_inset = client.bottom - button_bottom;
+    assert!(
+        button_width > 0 && button_width < client_width,
+        "center-aligned native button should use a preferred width inside the client area: button={button_width}, client={client_width}"
+    );
+    assert!(
+        (left_inset - right_inset).abs() <= 2,
+        "alignX: center should balance native client insets: left={left_inset}, right={right_inset}"
+    );
+    assert!(
+        button_height > 0 && button_height < client_height,
+        "end-aligned native button should use a preferred height inside the client area: button={button_height}, client={client_height}"
+    );
+    assert!(
+        top_inset > bottom_inset,
+        "alignY: end should place the native button nearer the client bottom: top={top_inset}, bottom={bottom_inset}"
+    );
 
     let posted = unsafe { PostMessageW(button, BM_CLICK, 0, 0) };
     if posted == 0 {
