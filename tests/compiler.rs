@@ -2334,8 +2334,6 @@ app Screen
 fn windows_rejects_unimplemented_portable_styles_instead_of_silently_dropping_them() {
     for (property, source_name) in [
         ("clip: true", "clip"),
-        ("alignX: \"center\"", "alignX"),
-        ("alignY: \"center\"", "alignY"),
         ("padding: 4", "padding"),
         ("paddingTop: 4", "paddingTop"),
         ("paddingBottom: 4", "paddingBottom"),
@@ -2382,6 +2380,88 @@ fn windows_rejects_unimplemented_portable_styles_instead_of_silently_dropping_th
             error.message
         );
     }
+}
+
+#[test]
+fn windows_alignment_uses_native_preferred_size_and_refreshes_dynamic_state() {
+    let source = r#"
+view Screen {
+    state horizontal: str = "center"
+    state vertical: str = "end"
+    grid columns: 1fr
+    grid rows: auto auto
+    Text label at 1,1
+        text: "Aligned"
+        alignX: horizontal
+        alignY: vertical
+    Button move at 2,1
+        text: "Move"
+        onPress: horizontal => "end"
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows alignment source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows alignment source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows alignment should lower into native HWND layout");
+
+    assert!(
+        windows.contains("const char *requested_align_x_label_name = flux__ui_state_horizontal")
+    );
+    assert!(windows.contains("const char *requested_align_y_label_name = flux__ui_state_vertical"));
+    assert!(windows.contains(
+        "flux__win_preferred_size(flux__ui_label, false, flux__win_scale(INT64_C(0)), flux__win_scale(INT64_C(0)), &preferred_width, &preferred_height)"
+    ));
+    assert!(windows.contains("FLUX__WIN_ALIGN_CENTER"));
+    assert!(windows.contains("FLUX__WIN_ALIGN_END"));
+    assert!(windows.contains(
+        "int horizontal_space = available_width > control_width ? available_width - control_width : 0"
+    ));
+    assert!(windows.contains(
+        "if (flux__windows_active_window != NULL && GetClientRect(flux__windows_active_window, &flux__win_refresh_client))"
+    ));
+    assert!(
+        windows.contains(
+            "Flux runtime error: alignX must be one of 'start', 'center', 'end', or 'fill'"
+        )
+    );
+    assert!(
+        windows.contains(
+            "Flux runtime error: alignY must be one of 'start', 'center', 'end', or 'fill'"
+        )
+    );
+
+    let invalid = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Invalid"
+        alignX: "middle"
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(invalid).expect("invalid Windows alignment should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("invalid Windows alignment should typecheck before target lowering");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("invalid Windows alignment should fail target lowering");
+    assert!(
+        error
+            .message
+            .contains("alignX must be one of 'start', 'center', 'end', or 'fill'")
+    );
 }
 
 #[test]
@@ -3246,6 +3326,7 @@ fn stopAfterStart() -> void {
 view Screen {
     state extent: i64 = 80
     state count: i64 = 0
+    state horizontal: str = "center"
     grid columns: 1fr
     grid rows: auto auto auto auto
     Text title at 1,1
@@ -3262,6 +3343,8 @@ view Screen {
         minWidth: extent
         maxWidth: 320
         marginStart: extent
+        alignX: horizontal
+        alignY: "end"
         onTap: count => count + 1
         onLongPress: count => count + 1
         onSwipe: swiped
