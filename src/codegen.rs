@@ -14306,6 +14306,10 @@ fn emit_windows_native_application(
     let uses_alignment = view.elements.iter().any(|element| {
         view_property(element, "align_x").is_some() || view_property(element, "align_y").is_some()
     });
+    let uses_rich_text = view
+        .elements
+        .iter()
+        .any(|element| element.kind == "Text" && view_property(element, "rich_text").is_some());
     if uses_input_scopes {
         for element in view
             .elements
@@ -14351,11 +14355,87 @@ fn emit_windows_native_application(
                 "bootstrap Windows selectable Text requires compile-time textAlign",
             ));
         }
-        if let Some(property) = view_property(element, "rich_text") {
-            return Err(diag(
-                property.value.span,
-                "bootstrap Windows Text.richText is not yet supported by the native Win32 text backend",
-            ));
+        let rich_text = static_rich_text_markup(element, signatures)?;
+        if rich_text.is_some() {
+            if let Some(property) = view_property(element, "text_align")
+                && static_expr_str(&property.value, signatures).is_none()
+            {
+                return Err(diag(
+                    property.value.span,
+                    "bootstrap Windows rich Text requires compile-time textAlign",
+                ));
+            }
+            if let Some(property) = [
+                "letter_spacing",
+                "line_height_percent",
+                "padding",
+                "padding_top",
+                "padding_bottom",
+                "padding_start",
+                "padding_end",
+            ]
+            .iter()
+            .find_map(|property_name| view_property(element, property_name))
+            {
+                return Err(diag(
+                    property.value.span,
+                    "bootstrap Windows rich Text does not yet support letterSpacing, lineHeightPercent, or padding",
+                ));
+            }
+            if let Some(property) = view_property(element, "wrap")
+                && static_expr_bool(&property.value, signatures).is_none()
+            {
+                return Err(diag(
+                    property.value.span,
+                    "bootstrap Windows rich Text does not yet support state-driven wrap",
+                ));
+            }
+            if let Some(property) = view_property(element, "wrap_mode") {
+                match static_expr_str(&property.value, signatures).as_deref() {
+                    Some("word") => {}
+                    Some("char" | "wordChar" | "word_char") => {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Windows rich Text currently supports only wrapMode: 'word'",
+                        ));
+                    }
+                    Some(_) => {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.wrapMode must be one of 'word', 'char', or 'wordChar'",
+                        ));
+                    }
+                    None => {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Windows rich Text does not yet support state-driven wrapMode",
+                        ));
+                    }
+                }
+            }
+            if let Some(property) = view_property(element, "ellipsize") {
+                match static_expr_str(&property.value, signatures).as_deref() {
+                    Some("none") => {}
+                    Some("start" | "middle" | "end") => {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Windows rich Text does not yet support ellipsizing",
+                        ));
+                    }
+                    Some(_) => {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'",
+                        ));
+                    }
+                    None => {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Windows rich Text does not yet support state-driven ellipsize",
+                        ));
+                    }
+                }
+            }
         }
         let uses_custom_text_layout = view_property(element, "letter_spacing").is_some()
             || view_property(element, "line_height_percent").is_some();
@@ -15324,6 +15404,280 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
 }
 "#,
         );
+    }
+    if uses_rich_text {
+        out.push_str(
+            r#"typedef struct {
+    LONG cp_min;
+    LONG cp_max;
+} FluxWinRichTextRange;
+
+typedef struct {
+    UINT cb_size;
+    DWORD mask;
+    DWORD effects;
+    LONG height;
+    LONG offset;
+    COLORREF text_color;
+    BYTE charset;
+    BYTE pitch_and_family;
+    WCHAR face_name[LF_FACESIZE];
+} FluxWinRichTextFormat;
+
+typedef struct {
+    LONG start;
+    LONG end;
+    DWORD effects;
+} FluxWinRichTextRun;
+
+enum {
+    FLUX__WIN_RICH_EM_EXGETSEL = WM_USER + 52,
+    FLUX__WIN_RICH_EM_EXSETSEL = WM_USER + 55,
+    FLUX__WIN_RICH_EM_SETBKGNDCOLOR = WM_USER + 67,
+    FLUX__WIN_RICH_EM_SETCHARFORMAT = WM_USER + 68,
+    FLUX__WIN_RICH_SCF_SELECTION = 0x0001,
+    FLUX__WIN_RICH_SCF_ALL = 0x0004,
+    FLUX__WIN_RICH_CFM_BOLD = 0x00000001,
+    FLUX__WIN_RICH_CFM_ITALIC = 0x00000002,
+    FLUX__WIN_RICH_CFM_UNDERLINE = 0x00000004,
+    FLUX__WIN_RICH_CFM_STRIKEOUT = 0x00000008,
+    FLUX__WIN_RICH_CFM_SIZE = (int)0x80000000u,
+    FLUX__WIN_RICH_CFM_COLOR = 0x40000000,
+    FLUX__WIN_RICH_CFM_FACE = 0x20000000,
+    FLUX__WIN_RICH_CFM_CHARSET = 0x08000000,
+    FLUX__WIN_RICH_CFE_BOLD = 0x00000001,
+    FLUX__WIN_RICH_CFE_ITALIC = 0x00000002,
+    FLUX__WIN_RICH_CFE_UNDERLINE = 0x00000004,
+    FLUX__WIN_RICH_CFE_STRIKEOUT = 0x00000008
+};
+
+static HMODULE flux__win_rich_text_module = NULL;
+
+static bool flux__win_rich_text_init(void) {
+    if (flux__win_rich_text_module != NULL) return true;
+    flux__win_rich_text_module = LoadLibraryW(L"Msftedit.dll");
+    return flux__win_rich_text_module != NULL;
+}
+
+static void flux__win_rich_text_shutdown(void) {
+    if (flux__win_rich_text_module == NULL) return;
+    FreeLibrary(flux__win_rich_text_module);
+    flux__win_rich_text_module = NULL;
+}
+
+static DWORD flux__win_rich_text_base_format(HWND control) {
+    if (control == NULL) return 0;
+    FluxWinRichTextFormat format = {0};
+    format.cb_size = sizeof(format);
+    format.mask =
+        FLUX__WIN_RICH_CFM_BOLD
+        | FLUX__WIN_RICH_CFM_ITALIC
+        | FLUX__WIN_RICH_CFM_UNDERLINE
+        | FLUX__WIN_RICH_CFM_STRIKEOUT
+        | FLUX__WIN_RICH_CFM_COLOR;
+
+    HFONT font = (HFONT)SendMessageW(control, WM_GETFONT, 0, 0);
+    LOGFONTW logical_font = {0};
+    if (font != NULL && GetObjectW(font, sizeof(logical_font), &logical_font) == sizeof(logical_font)) {
+        format.mask |=
+            FLUX__WIN_RICH_CFM_SIZE
+            | FLUX__WIN_RICH_CFM_FACE
+            | FLUX__WIN_RICH_CFM_CHARSET;
+        LONG physical_height = logical_font.lfHeight < 0
+            ? -logical_font.lfHeight
+            : logical_font.lfHeight;
+        UINT dpi = flux__win_dpi > 0 ? flux__win_dpi : 96;
+        format.height = MulDiv(physical_height, 1440, (int)dpi);
+        format.charset = logical_font.lfCharSet;
+        format.pitch_and_family = logical_font.lfPitchAndFamily;
+        wcsncpy(format.face_name, logical_font.lfFaceName, LF_FACESIZE - 1);
+        if (logical_font.lfWeight >= FW_BOLD) format.effects |= FLUX__WIN_RICH_CFE_BOLD;
+        if (logical_font.lfItalic) format.effects |= FLUX__WIN_RICH_CFE_ITALIC;
+        if (logical_font.lfUnderline) format.effects |= FLUX__WIN_RICH_CFE_UNDERLINE;
+        if (logical_font.lfStrikeOut) format.effects |= FLUX__WIN_RICH_CFE_STRIKEOUT;
+    }
+
+    COLORREF background = GetSysColor(COLOR_WINDOW);
+    HDC dc = GetDC(control);
+    if (dc != NULL) {
+        HWND parent = GetParent(control);
+        HBRUSH brush = NULL;
+        if (parent != NULL) {
+            brush = (HBRUSH)(INT_PTR)SendMessageW(
+                parent,
+                WM_CTLCOLOREDIT,
+                (WPARAM)dc,
+                (LPARAM)control
+            );
+        }
+        format.text_color = GetTextColor(dc);
+        if (format.text_color == CLR_INVALID) {
+            format.text_color = GetSysColor(COLOR_WINDOWTEXT);
+        }
+        LOGBRUSH logical_brush = {0};
+        if (
+            brush != NULL
+            && GetObjectW(brush, sizeof(logical_brush), &logical_brush) == sizeof(logical_brush)
+            && logical_brush.lbStyle == BS_SOLID
+        ) {
+            background = logical_brush.lbColor;
+        }
+        ReleaseDC(control, dc);
+    } else {
+        format.text_color = GetSysColor(COLOR_WINDOWTEXT);
+    }
+
+    (void)SendMessageW(
+        control,
+        FLUX__WIN_RICH_EM_SETCHARFORMAT,
+        FLUX__WIN_RICH_SCF_ALL,
+        (LPARAM)&format
+    );
+    (void)SendMessageW(
+        control,
+        FLUX__WIN_RICH_EM_SETBKGNDCOLOR,
+        0,
+        (LPARAM)background
+    );
+    return format.effects;
+}
+
+static void flux__win_apply_rich_text(
+    HWND control,
+    const FluxWinRichTextRun *runs,
+    size_t run_count
+) {
+    if (control == NULL) return;
+    FluxWinRichTextRange previous_selection = {0, 0};
+    (void)SendMessageW(
+        control,
+        FLUX__WIN_RICH_EM_EXGETSEL,
+        0,
+        (LPARAM)&previous_selection
+    );
+    DWORD base_effects = flux__win_rich_text_base_format(control);
+    for (size_t index = 0; index < run_count; index += 1) {
+        FluxWinRichTextRange range = {runs[index].start, runs[index].end};
+        (void)SendMessageW(
+            control,
+            FLUX__WIN_RICH_EM_EXSETSEL,
+            0,
+            (LPARAM)&range
+        );
+        FluxWinRichTextFormat format = {0};
+        format.cb_size = sizeof(format);
+        format.mask =
+            FLUX__WIN_RICH_CFM_BOLD
+            | FLUX__WIN_RICH_CFM_ITALIC
+            | FLUX__WIN_RICH_CFM_UNDERLINE;
+        format.effects =
+            (base_effects
+                & (FLUX__WIN_RICH_CFE_BOLD
+                    | FLUX__WIN_RICH_CFE_ITALIC
+                    | FLUX__WIN_RICH_CFE_UNDERLINE))
+            | runs[index].effects;
+        (void)SendMessageW(
+            control,
+            FLUX__WIN_RICH_EM_SETCHARFORMAT,
+            FLUX__WIN_RICH_SCF_SELECTION,
+            (LPARAM)&format
+        );
+    }
+    (void)SendMessageW(
+        control,
+        FLUX__WIN_RICH_EM_EXSETSEL,
+        0,
+        (LPARAM)&previous_selection
+    );
+}
+
+static void flux__win_rich_text_clear_selection(HWND control) {
+    if (control == NULL) return;
+    FluxWinRichTextRange reset = {0, 0};
+    (void)SendMessageW(
+        control,
+        FLUX__WIN_RICH_EM_EXSETSEL,
+        0,
+        (LPARAM)&reset
+    );
+    HideCaret(control);
+}
+
+static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
+    HWND control,
+    UINT message,
+    WPARAM wparam,
+    LPARAM lparam,
+    UINT_PTR subclass_id,
+    DWORD_PTR reference
+) {
+    (void)reference;
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(
+            control,
+            flux__win_rich_text_nonselectable_proc,
+            subclass_id
+        );
+        return DefSubclassProc(control, message, wparam, lparam);
+    }
+    if (message == WM_SETFOCUS) {
+        flux__win_rich_text_clear_selection(control);
+        HWND parent = GetParent(control);
+        if (parent != NULL) SetFocus(parent);
+        return 0;
+    }
+    LRESULT result = DefSubclassProc(control, message, wparam, lparam);
+    if (
+        message == WM_LBUTTONDOWN
+        || message == WM_LBUTTONUP
+        || message == WM_LBUTTONDBLCLK
+        || message == WM_MOUSEMOVE
+        || message == WM_KEYDOWN
+        || message == WM_KEYUP
+    ) {
+        flux__win_rich_text_clear_selection(control);
+    }
+    return result;
+}
+"#,
+        );
+        for element in view.elements.iter().filter(|element| {
+            element.kind == "Text" && view_property(element, "rich_text").is_some()
+        }) {
+            let markup = static_rich_text_markup(element, signatures)?
+                .expect("rich Text element has validated markup");
+            let (_, runs) = portable_rich_text_plain_and_runs(&markup)
+                .expect("validated portable rich text parses into native runs");
+            if runs.is_empty() {
+                continue;
+            }
+            out.push_str(&format!(
+                "static const FluxWinRichTextRun flux__win_rich_text_runs_{}[] = {{\n",
+                element.name
+            ));
+            for run in runs {
+                let mut effects = Vec::new();
+                if run.bold {
+                    effects.push("FLUX__WIN_RICH_CFE_BOLD");
+                }
+                if run.italic {
+                    effects.push("FLUX__WIN_RICH_CFE_ITALIC");
+                }
+                if run.underline {
+                    effects.push("FLUX__WIN_RICH_CFE_UNDERLINE");
+                }
+                let effects = if effects.is_empty() {
+                    "0".to_string()
+                } else {
+                    effects.join(" | ")
+                };
+                out.push_str(&format!(
+                    "    {{ {}, {}, {} }},\n",
+                    run.start_utf16, run.end_utf16, effects
+                ));
+            }
+            out.push_str("};\n");
+        }
     }
     out.push_str("static void flux__win_set_application_id(const char *application_id) { wchar_t *wide = flux__windows_utf8_to_wide(application_id); if (wide == NULL) return; HMODULE shell32 = LoadLibraryA(\"shell32.dll\"); if (shell32 != NULL) { typedef HRESULT (WINAPI *flux__set_app_id_fn)(LPCWSTR); flux__set_app_id_fn set_app_id = (flux__set_app_id_fn)(void *)GetProcAddress(shell32, \"SetCurrentProcessExplicitAppUserModelID\"); if (set_app_id != NULL) (void)set_app_id(wide); FreeLibrary(shell32); } free(wide); }\n");
     if uses_input_scopes {
@@ -16610,12 +16964,13 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
         out.push_str(&format!("static WNDPROC flux__win_pinch_orig_{index} = NULL;\nstatic ULONGLONG flux__win_pinch_start_{index} = 0;\nstatic LRESULT CALLBACK flux__win_pinch_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_GESTURE) {{ GESTUREINFO info = {{0}}; info.cbSize = sizeof(info); HGESTUREINFO handle = (HGESTUREINFO)lparam; if (GetGestureInfo(handle, &info) && info.dwID == GID_ZOOM) {{ if ((info.dwFlags & GF_BEGIN) != 0 || flux__win_pinch_start_{index} == 0) flux__win_pinch_start_{index} = info.ullArguments; else if (flux__win_pinch_start_{index} > 0) {{ double ratio = (double)info.ullArguments / (double)flux__win_pinch_start_{index}; int64_t scale_percent = (int64_t)(ratio * 100.0 + 0.5); {callback}(scale_percent); flux__win_refresh(); }} if ((info.dwFlags & GF_END) != 0) flux__win_pinch_start_{index} = 0; CloseGestureInfoHandle(handle); return 0; }} }} return CallWindowProcW(flux__win_pinch_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
     }
     for (index, element) in view.elements.iter().enumerate() {
-        let selectable_tap = element.kind == "Text"
-            && view_property(element, "selectable")
+        let edit_backed_text_tap = element.kind == "Text"
+            && (view_property(element, "selectable")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
                 .unwrap_or(false)
+                || view_property(element, "rich_text").is_some())
             && view_property(element, "on_tap").is_some();
-        if !selectable_tap {
+        if !edit_backed_text_tap {
             continue;
         }
         let mut consume_pointer_gesture = String::new();
@@ -17458,6 +17813,27 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             }
         }
     }
+    if uses_rich_text {
+        for element in view.elements.iter().filter(|element| {
+            element.kind == "Text" && view_property(element, "rich_text").is_some()
+        }) {
+            let markup = static_rich_text_markup(element, signatures)?
+                .expect("rich Text element has validated markup");
+            let (_, runs) = portable_rich_text_plain_and_runs(&markup)
+                .expect("validated portable rich text parses into native runs");
+            let variable = ui_widget_c_name(&element.name);
+            if runs.is_empty() {
+                out.push_str(&format!(
+                    "flux__win_apply_rich_text({variable}, NULL, 0);\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "flux__win_apply_rich_text({variable}, flux__win_rich_text_runs_{}, sizeof(flux__win_rich_text_runs_{}) / sizeof(flux__win_rich_text_runs_{}[0]));\n",
+                    element.name, element.name, element.name
+                ));
+            }
+        }
+    }
     out.push_str("flux__win_refreshing = previous_refreshing; }\n");
     out.push_str("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { switch (message) { case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT: { HDC dc = (HDC)wparam; HWND control = (HWND)lparam;\n");
     for element in view.elements.iter().filter(|element| {
@@ -17546,9 +17922,10 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             out.push_str(&format!("case {}: if (HIWORD(wparam) == EN_CHANGE) flux__win_change_{index}((HWND)lparam); return 0;\n", 1000 + index));
         } else if view_property(element, "on_tap").is_some()
             && !(element.kind == "Text"
-                && view_property(element, "selectable")
+                && (view_property(element, "selectable")
                     .and_then(|property| static_expr_bool(&property.value, signatures))
-                    .unwrap_or(false))
+                    .unwrap_or(false)
+                    || view_property(element, "rich_text").is_some()))
         {
             let notification = if element.kind == "Button"
                 || element.kind == "Toggle"
@@ -17676,7 +18053,12 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     } else {
         ""
     };
-    out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness(); flux__win_set_application_id({});{accessibility_init}{tooltip_init}{input_scope_init}{ole_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleW(NULL); WNDCLASSW wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = L\"FluxNativeWindow\"; wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512)); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n", c_string(&application_id)));
+    let rich_text_init = if uses_rich_text {
+        " if (!flux__win_rich_text_init()) return 1;"
+    } else {
+        ""
+    };
+    out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness(); flux__win_set_application_id({});{accessibility_init}{tooltip_init}{input_scope_init}{ole_init}{rich_text_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleW(NULL); WNDCLASSW wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = L\"FluxNativeWindow\"; wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512)); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n", c_string(&application_id)));
     out.push_str(&format!("flux__windows_active_window = CreateWindowExW({window_ex_style}, wc.lpszClassName, L\"\", {window_style}, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1; flux__win_set_text_if_changed(flux__windows_active_window, {});\n", width, height, c_string(&title)));
     if uses_tooltips {
         out.push_str("flux__win_tooltips = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, flux__windows_active_window, NULL, instance, NULL); if (flux__win_tooltips == NULL) return 1; SetWindowPos(flux__win_tooltips, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);\n");
@@ -17696,10 +18078,21 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             "Card" => "title",
             _ => "text",
         };
-        let text = match view_property(element, text_property) {
-            Some(property) => ui_expr_c(&property.value, view, signatures)?,
-            None if element.kind == "TextInput" => c_string(""),
-            None => c_string(&element.name),
+        let rich_text_markup = if element.kind == "Text" {
+            static_rich_text_markup(element, signatures)?
+        } else {
+            None
+        };
+        let text = if let Some(markup) = &rich_text_markup {
+            let (plain, _) = portable_rich_text_plain_and_runs(markup)
+                .expect("validated portable rich text parses into native text");
+            c_string(&plain)
+        } else {
+            match view_property(element, text_property) {
+                Some(property) => ui_expr_c(&property.value, view, signatures)?,
+                None if element.kind == "TextInput" => c_string(""),
+                None => c_string(&element.name),
+            }
         };
         let (class, style) = match element.kind.as_str() {
             "Image" => (
@@ -17773,7 +18166,42 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 let nowrap = view_property(element, "wrap")
                     .and_then(|property| static_expr_bool(&property.value, signatures))
                     .is_some_and(|wrap| !wrap);
-                if selectable {
+                if rich_text_markup.is_some() {
+                    let style = match alignment.as_str() {
+                        "left" | "fill" if nowrap && selectable => {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                        }
+                        "left" | "fill" if nowrap => {
+                            "WS_CHILD | WS_VISIBLE | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                        }
+                        "left" | "fill" if selectable => {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY"
+                        }
+                        "left" | "fill" => {
+                            "WS_CHILD | WS_VISIBLE | ES_LEFT | ES_MULTILINE | ES_READONLY"
+                        }
+                        "center" if selectable => {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_CENTER | ES_MULTILINE | ES_READONLY"
+                        }
+                        "center" => {
+                            "WS_CHILD | WS_VISIBLE | ES_CENTER | ES_MULTILINE | ES_READONLY"
+                        }
+                        "right" if selectable => {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_MULTILINE | ES_READONLY"
+                        }
+                        "right" => "WS_CHILD | WS_VISIBLE | ES_RIGHT | ES_MULTILINE | ES_READONLY",
+                        _ => {
+                            return Err(diag(
+                                view_property(element, "text_align")
+                                    .expect("text_align exists for invalid value")
+                                    .value
+                                    .span,
+                                "Text.textAlign must be one of 'left', 'center', 'right', or 'fill'",
+                            ));
+                        }
+                    };
+                    ("RICHEDIT50W", style)
+                } else if selectable {
                     let style = match alignment.as_str() {
                         "left" | "fill" if nowrap => {
                             "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
@@ -18019,13 +18447,25 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 "SetLastError(0); flux__win_border_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrW({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_border_proc_{index}); if (flux__win_border_orig_{index} == NULL && GetLastError() != 0) return 1;\n"
             ));
         }
-        let selectable_tap = element.kind == "Text"
-            && view_property(element, "selectable")
+        let edit_backed_text_tap = element.kind == "Text"
+            && (view_property(element, "selectable")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
                 .unwrap_or(false)
+                || view_property(element, "rich_text").is_some())
             && view_property(element, "on_tap").is_some();
-        if selectable_tap {
+        if edit_backed_text_tap {
             out.push_str(&format!("SetLastError(0); flux__win_selectable_tap_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrW({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_selectable_tap_proc_{index}); if (flux__win_selectable_tap_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
+        }
+        let nonselectable_rich_text = element.kind == "Text"
+            && view_property(element, "rich_text").is_some()
+            && !view_property(element, "selectable")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                .unwrap_or(false);
+        if nonselectable_rich_text {
+            out.push_str(&format!(
+                "if (!SetWindowSubclass({variable}, flux__win_rich_text_nonselectable_proc, (UINT_PTR){}, 0)) return 1;\n",
+                index + 10001
+            ));
         }
         if let Some(action) = view_property(element, "on_drop") {
             let ExprKind::Var(function) = &action.value.kind else {
@@ -18133,6 +18573,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     }
     if uses_text_drag_drop {
         out.push_str(" flux__win_ole_shutdown();");
+    }
+    if uses_rich_text {
+        out.push_str(" flux__win_rich_text_shutdown();");
     }
     if uses_accessibility {
         out.push_str(" flux__win_accessibility_shutdown();");
@@ -25715,6 +26158,104 @@ pub(crate) fn valid_portable_rich_text(markup: &str) -> bool {
         }
     }
     stack.is_empty()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PortableRichTextRun {
+    start_utf16: usize,
+    end_utf16: usize,
+    bold: bool,
+    italic: bool,
+    underline: bool,
+}
+
+fn portable_rich_text_plain_and_runs(markup: &str) -> Option<(String, Vec<PortableRichTextRun>)> {
+    if !valid_portable_rich_text(markup) {
+        return None;
+    }
+
+    let mut plain = String::new();
+    let mut runs = Vec::new();
+    let mut index = 0;
+    let mut utf16_position = 0;
+    let mut run_start = 0;
+    let mut bold_depth = 0usize;
+    let mut italic_depth = 0usize;
+    let mut underline_depth = 0usize;
+
+    let flush_run = |runs: &mut Vec<PortableRichTextRun>,
+                     start: usize,
+                     end: usize,
+                     bold: usize,
+                     italic: usize,
+                     underline: usize| {
+        if end > start {
+            runs.push(PortableRichTextRun {
+                start_utf16: start,
+                end_utf16: end,
+                bold: bold > 0,
+                italic: italic > 0,
+                underline: underline > 0,
+            });
+        }
+    };
+
+    while index < markup.len() {
+        let remainder = &markup[index..];
+        if remainder.starts_with('<') {
+            let end = remainder.find('>')?;
+            flush_run(
+                &mut runs,
+                run_start,
+                utf16_position,
+                bold_depth,
+                italic_depth,
+                underline_depth,
+            );
+            let token = &remainder[1..end];
+            let (closing, tag) = token
+                .strip_prefix('/')
+                .map_or((false, token), |tag| (true, tag));
+            let depth = match tag {
+                "b" => &mut bold_depth,
+                "i" => &mut italic_depth,
+                "u" => &mut underline_depth,
+                _ => return None,
+            };
+            if closing {
+                *depth = depth.checked_sub(1)?;
+            } else {
+                *depth += 1;
+            }
+            index += end + 1;
+            run_start = utf16_position;
+            continue;
+        }
+
+        let (decoded, consumed) = if remainder.starts_with("&lt;") {
+            ('<', 4)
+        } else if remainder.starts_with("&gt;") {
+            ('>', 4)
+        } else if remainder.starts_with("&amp;") {
+            ('&', 5)
+        } else {
+            let value = remainder.chars().next()?;
+            (value, value.len_utf8())
+        };
+        plain.push(decoded);
+        utf16_position += decoded.len_utf16();
+        index += consumed;
+    }
+
+    flush_run(
+        &mut runs,
+        run_start,
+        utf16_position,
+        bold_depth,
+        italic_depth,
+        underline_depth,
+    );
+    Some((plain, runs))
 }
 
 fn static_rich_text_markup(

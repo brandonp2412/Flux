@@ -3103,31 +3103,129 @@ app Screen
             error.message
         );
     }
+}
 
-    let rich = r#"
+#[test]
+fn windows_rich_text_uses_native_richedit_runs_and_preserves_selection_semantics() {
+    let source = r#"
 view Screen {
+    state emphasized: bool = false
     grid columns: 1fr
     grid rows: auto
     Text label at 1,1
-        richText: "<b>Native</b>"
+        richText: "<b>A😀</b><i>&amp;</i><u>Flux</u>"
+        selectable: true
+        bold: emphasized
+        color: "accent"
+        onTap: emphasized => true
 }
 app Screen
 "#;
-    let program = fluxc::parser::parse(rich).expect("Windows rich Text source should parse");
+    let program = fluxc::parser::parse(source).expect("Windows rich Text source should parse");
     let signatures =
         fluxc::typecheck::check(&program).expect("Windows rich Text source should typecheck");
-    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
         &program,
         &signatures,
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Windows,
     )
-    .expect_err("Windows richText must not silently display the element name");
+    .expect("Windows richText should lower through native RichEdit");
+
+    assert!(windows.contains(r#"LoadLibraryW(L"Msftedit.dll")"#));
+    assert!(windows.contains(r#"L"RICHEDIT50W""#));
     assert!(
-        error
-            .message
-            .contains("Text.richText is not yet supported by the native Win32 text backend")
+        windows
+            .contains("WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY")
     );
+    assert!(windows.contains("FLUX__WIN_RICH_EM_SETCHARFORMAT"));
+    assert!(windows.contains("FLUX__WIN_RICH_EM_SETBKGNDCOLOR"));
+    assert!(windows.contains("FLUX__WIN_RICH_EM_EXGETSEL"));
+    assert!(windows.contains("(LPARAM)&previous_selection"));
+    assert!(windows.contains("{ 0, 3, FLUX__WIN_RICH_CFE_BOLD }"));
+    assert!(windows.contains("{ 3, 4, FLUX__WIN_RICH_CFE_ITALIC }"));
+    assert!(windows.contains("{ 4, 8, FLUX__WIN_RICH_CFE_UNDERLINE }"));
+    assert!(windows.contains("flux__win_apply_rich_text(flux__ui_label"));
+    assert!(windows.contains("flux__win_selectable_tap_proc_0"));
+    assert!(windows.contains("flux__win_rich_text_shutdown();"));
+    assert!(!windows.contains("flux__win_rich_text_nonselectable_proc, (UINT_PTR)10001"));
+
+    for (property, message) in [
+        (
+            "padding: 4",
+            "rich Text does not yet support letterSpacing, lineHeightPercent, or padding",
+        ),
+        (
+            r#"wrapMode: "char""#,
+            "rich Text currently supports only wrapMode: 'word'",
+        ),
+        (
+            r#"ellipsize: "end""#,
+            "rich Text does not yet support ellipsizing",
+        ),
+    ] {
+        let invalid = format!(
+            r#"view Screen {{
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        richText: "<b>Native</b>"
+        {property}
+}}
+app Screen
+"#
+        );
+        let invalid_program = fluxc::parser::parse(&invalid)
+            .expect("restricted Windows rich Text source should parse");
+        let invalid_signatures = fluxc::typecheck::check(&invalid_program)
+            .expect("restricted Windows rich Text source should typecheck");
+        let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+            &invalid_program,
+            &invalid_signatures,
+            &std::collections::HashMap::new(),
+            fluxc::codegen::NativeTarget::Windows,
+        )
+        .expect_err("unsupported Windows rich Text combinations must fail explicitly");
+        assert!(
+            error.message.contains(message),
+            "unexpected rich Text diagnostic for {property}: {}",
+            error.message
+        );
+    }
+}
+
+#[test]
+fn windows_nonselectable_rich_text_keeps_native_selection_disabled() {
+    let source = r#"
+view Screen {
+    state tapped: bool = false
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        richText: "<b>Native</b>"
+        onTap: tapped => true
+}
+app Screen
+"#;
+    let program =
+        fluxc::parser::parse(source).expect("nonselectable rich Text source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("nonselectable rich Text source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("nonselectable Windows rich Text should lower");
+
+    assert!(windows.contains(r#"L"RICHEDIT50W""#));
+    assert!(!windows.contains("WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY"));
+    assert!(windows.contains(
+        "SetWindowSubclass(flux__ui_label, flux__win_rich_text_nonselectable_proc, (UINT_PTR)10001, 0)"
+    ));
+    assert!(windows.contains("if (parent != NULL) SetFocus(parent);"));
+    assert!(windows.contains("flux__win_selectable_tap_proc_0"));
 }
 
 #[test]
@@ -3685,7 +3783,7 @@ view Screen {
     state wrapping: str = "wordChar"
     state overflow: str = "middle"
     grid columns: 1fr
-    grid rows: auto auto auto auto
+    grid rows: auto auto auto auto auto
     Text title at 1,1
         text: "Cross target"
         status: "loading"
@@ -3732,6 +3830,11 @@ view Screen {
         source: "logo.bmp"
         fit: "cover"
         dragText: "logo"
+    Text rich at 5,1
+        richText: "<b>Native</b> <i>&amp;</i> <u>rich</u>"
+        color: "accent"
+        size: 17
+        onTap: count => count + 1
 }
 app Screen(title: "Windows syntax", layoutDirection: "rtl", onStart: stopAfterStart)
 "#;
@@ -57653,6 +57756,20 @@ app Screen
     assert!(android.contains("fromHtml"));
     assert!(android.contains("(Ljava/lang/String;)Landroid/text/Spanned;"));
     assert!(android.contains("<b>Horse</b> <i>Tinder</i> <u>&amp; Flux</u>"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("portable rich text should lower on Windows");
+    assert!(windows.contains("L\"RICHEDIT50W\""));
+    assert!(windows.contains("LoadLibraryW(L\"Msftedit.dll\")"));
+    assert!(windows.contains("flux__win_rich_text_runs_title"));
+    assert!(windows.contains("FLUX__WIN_RICH_CFE_BOLD"));
+    assert!(windows.contains("FLUX__WIN_RICH_CFE_ITALIC"));
+    assert!(windows.contains("FLUX__WIN_RICH_CFE_UNDERLINE"));
 
     for invalid in ["<b>Horse</i>", "<span>Horse</span>", "Horse & pony"] {
         let source = format!(
