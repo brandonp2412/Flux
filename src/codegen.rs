@@ -55771,6 +55771,33 @@ fn emit_cfg_scalar_expr_direct(
             let collection = &arguments[0];
             let searched = &arguments[1];
             let collection_ty = signatures.canonical_type(&collection.ty);
+            if let Type::Map(key, value) = &collection_ty
+                && matches!(collection.kind, CfgScalarExprKind::Aggregate(_))
+            {
+                let key_ty = signatures.canonical_type(key);
+                if signatures.canonical_type(&searched.ty) == key_ty
+                    && matches!(key_ty, Type::I64 | Type::Bool | Type::Str)
+                    && let Some((prelude, borrowed)) = emit_cfg_call_scoped_borrowed_map_direct(
+                        collection, key, value, env, signatures,
+                    )
+                {
+                    let searched =
+                        emit_cfg_ordinary_call_argument_direct(searched, &key_ty, env, signatures)?;
+                    let key_c = c_type(&key_ty, signatures);
+                    let equality = match key_ty {
+                        Type::Str => format!(
+                            "strcmp(flux__typed_contains_value, *((const char **)flux_list_at_unchecked({borrowed}.keys, flux__typed_contains_i, sizeof({key_c})))) == 0"
+                        ),
+                        Type::Bool | Type::I64 => format!(
+                            "flux__typed_contains_value == *(({key_c} *)flux_list_at_unchecked({borrowed}.keys, flux__typed_contains_i, sizeof({key_c})))"
+                        ),
+                        _ => unreachable!("temporary map membership key kind checked above"),
+                    };
+                    return Some(format!(
+                        "__extension__ ({{ {prelude}{key_c} flux__typed_contains_value = {searched}; bool flux__typed_contains_result = false; for (size_t flux__typed_contains_i = 0; flux__typed_contains_i < {borrowed}.keys.len; ++flux__typed_contains_i) {{ if ({equality}) {{ flux__typed_contains_result = true; break; }} }} flux__typed_contains_result; }})"
+                    ));
+                }
+            }
             let (source_c, source, element, list_source, length) = match collection_ty {
                 Type::List(element) => {
                     let element = signatures.canonical_type(&element);
@@ -68404,6 +68431,111 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains(&fake_text), "{function}: {emitted}");
         }
+    }
+
+    #[test]
+    fn effectful_temporary_map_contains_emits_from_ordered_typed_ir() {
+        let source = r#"
+fn observeLeft(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeRight(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn hasRight(first: i64, second: i64) -> bool {
+    return contains(map{"left": (value: observeLeft(first)), "right": (value: observeRight(second))}, "right")
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4258))
+            .expect("effectful temporary map contains fixture should typecheck");
+        let graph = database
+            .control_flow_graph("hasRight")
+            .expect("effectful map contains CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let call = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Call { callee, arguments },
+                        ..
+                    }) if callee == "contains"
+                        && matches!(
+                            arguments.first().map(|argument| &argument.kind),
+                            Some(CfgScalarExprKind::Aggregate(_))
+                        )
+                )
+            })
+            .expect("effectful map contains should preserve aggregate typed-IR facts");
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(call.span))
+            .expect("effectful map contains should have scalar typed-IR facts");
+        let CfgScalarExprKind::Call { arguments, .. } = &scalar.kind else {
+            panic!("contains root should remain a typed call");
+        };
+        let env = HashMap::from([
+            ("first".to_string(), Type::I64),
+            ("second".to_string(), Type::I64),
+        ]);
+        assert!(
+            emit_cfg_scalar_expr_direct(&arguments[0], &env, database.signatures()).is_none(),
+            "effectful temporary map should not use the unordered aggregate renderer"
+        );
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("effectful temporary map contains should emit directly");
+        let left = direct
+            .find(&function_c_name("observeLeft"))
+            .expect("left map value effect should be materialized");
+        let right = direct
+            .find(&function_c_name("observeRight"))
+            .expect("right map value effect should be materialized");
+        let searched = direct
+            .rfind("flux__typed_contains_value")
+            .expect("membership key should be evaluated");
+        assert!(left < right && right < searched, "{direct}");
+        assert_eq!(
+            direct.matches(&function_c_name("observeLeft")).count(),
+            1,
+            "{direct}"
+        );
+        assert_eq!(
+            direct.matches(&function_c_name("observeRight")).count(),
+            1,
+            "{direct}"
+        );
+        assert!(
+            direct.contains("flux__typed_borrowed_map_values"),
+            "{direct}"
+        );
+        assert!(direct.contains("flux__typed_contains_result"), "{direct}");
+
+        let fake = Expr {
+            line: call.span.line,
+            span: call.span,
+            kind: ExprKind::Str("checked-ast-effectful-map-contains".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Bool,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("effectful temporary map contains should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-effectful-map-contains"));
     }
 
     #[test]
