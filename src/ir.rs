@@ -250,12 +250,11 @@ pub struct ControlFlowValue {
     pub producer: ControlFlowNodeId,
     pub result_index: Option<usize>,
     pub ty: Type,
-    /// Ownership classification for the produced value.  Keeping this next
+    /// Ownership classification for the produced value. Keeping this next
     /// to the typed value means ownership consumers do not need to rediscover
-    /// whether a value is a copy or a borrowed collection descriptor from the
-    /// source AST.  Owned values are intentionally not represented yet: the
-    /// bootstrap type system rejects them until transfer and drop semantics
-    /// are available.
+    /// whether a value owns local storage, copies trivially, or borrows another
+    /// value from the source AST. Escaping owned storage and transfer/drop
+    /// semantics remain separately ownership-gated.
     pub ownership: ControlFlowValueOwnership,
     pub span: SourceSpan,
     pub kind: ControlFlowValueKind,
@@ -266,6 +265,7 @@ pub struct ControlFlowValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ControlFlowValueOwnership {
     Copy,
+    Owned,
     ImmutableBorrow,
     EffectOnly,
 }
@@ -273,6 +273,10 @@ pub enum ControlFlowValueOwnership {
 impl ControlFlowValueOwnership {
     pub const fn is_copy(self) -> bool {
         matches!(self, Self::Copy)
+    }
+
+    pub const fn is_owned(self) -> bool {
+        matches!(self, Self::Owned)
     }
 
     pub const fn is_borrow(self) -> bool {
@@ -2073,6 +2077,7 @@ impl PersistedIrCodec for ControlFlowValueOwnership {
             Self::Copy => 0u8.encode_cache_value(bytes),
             Self::ImmutableBorrow => 1u8.encode_cache_value(bytes),
             Self::EffectOnly => 2u8.encode_cache_value(bytes),
+            Self::Owned => 3u8.encode_cache_value(bytes),
         }
     }
 
@@ -2081,6 +2086,7 @@ impl PersistedIrCodec for ControlFlowValueOwnership {
             0 => Some(Self::Copy),
             1 => Some(Self::ImmutableBorrow),
             2 => Some(Self::EffectOnly),
+            3 => Some(Self::Owned),
             _ => None,
         }
     }
@@ -6128,7 +6134,7 @@ impl<'a> ControlFlowBuilder<'a> {
             .enumerate()
             .map(|(index, ty)| {
                 let id = ControlFlowValueId(self.values.len());
-                let ownership = value_ownership(&self.signatures, &ty);
+                let ownership = value_ownership(self.signatures, &ty, &kind);
                 self.values.push(ControlFlowValue {
                     id,
                     producer,
@@ -8604,16 +8610,28 @@ fn value_use_is_reachable(
     }
 }
 
-fn value_ownership(signatures: &Signatures, ty: &Type) -> ControlFlowValueOwnership {
+fn value_ownership(
+    signatures: &Signatures,
+    ty: &Type,
+    kind: &ControlFlowValueKind,
+) -> ControlFlowValueOwnership {
     if signatures.canonical_type(ty) == Type::Void {
         ControlFlowValueOwnership::EffectOnly
     } else if signatures.is_copy_type(ty) {
         ControlFlowValueOwnership::Copy
+    } else if matches!(
+        kind,
+        ControlFlowValueKind::List { .. }
+            | ControlFlowValueKind::Set { .. }
+            | ControlFlowValueKind::Map { .. }
+            | ControlFlowValueKind::ListComprehension { .. }
+    ) {
+        // Collection literals and comprehensions own the local backing storage
+        // created for that expression. Reads, views, parameters, and other
+        // collection-valued projections remain immutable borrows until
+        // escaping owned-collection transfer exists.
+        ControlFlowValueOwnership::Owned
     } else {
-        // Every currently admitted value-bearing non-Copy value is a borrowed
-        // collection descriptor. Keep this conservative fallback explicit so
-        // a future owned value cannot accidentally inherit borrow semantics
-        // when its type is added to the language.
         ControlFlowValueOwnership::ImmutableBorrow
     }
 }

@@ -36303,7 +36303,7 @@ fn cfg_borrowed_index_base(
     id: crate::ir::ControlFlowValueId,
 ) -> Option<CfgScalarExpr> {
     let value = cfg.value(id)?;
-    if !cfg.is_value_reachable(id) || !value.ownership.is_borrow() {
+    if !cfg.is_value_reachable(id) || !(value.ownership.is_borrow() || value.ownership.is_owned()) {
         return None;
     }
     if matches!(&value.ty, Type::List(_)) {
@@ -36350,7 +36350,7 @@ fn cfg_borrowed_list_base(
 ) -> Option<CfgScalarExpr> {
     let value = cfg.value(id)?;
     if !cfg.is_value_reachable(id)
-        || !value.ownership.is_borrow()
+        || !(value.ownership.is_borrow() || value.ownership.is_owned())
         || !matches!(&value.ty, Type::List(_))
     {
         return None;
@@ -36437,7 +36437,7 @@ fn cfg_borrowed_collection_field_base(
     id: crate::ir::ControlFlowValueId,
 ) -> Option<CfgScalarExpr> {
     let value = cfg.value(id)?;
-    if !cfg.is_value_reachable(id) || !value.ownership.is_borrow() {
+    if !cfg.is_value_reachable(id) || !(value.ownership.is_borrow() || value.ownership.is_owned()) {
         return None;
     }
     if matches!(&value.ty, Type::List(_)) {
@@ -36502,7 +36502,7 @@ fn cfg_borrowed_collection_value(
     id: crate::ir::ControlFlowValueId,
 ) -> Option<CfgScalarExpr> {
     let value = cfg.value(id)?;
-    if !cfg.is_value_reachable(id) || !value.ownership.is_borrow() {
+    if !cfg.is_value_reachable(id) || !(value.ownership.is_borrow() || value.ownership.is_owned()) {
         return None;
     }
     match &value.ty {
@@ -36582,7 +36582,7 @@ fn cfg_direct_scalar_expr(
             },
         });
     }
-    if value.ownership.is_borrow()
+    if (value.ownership.is_borrow() || value.ownership.is_owned())
         && matches!(
             &value.ty,
             Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::Optional(_)
@@ -36635,7 +36635,12 @@ fn cfg_direct_scalar_expr(
             optional,
         } => {
             let base_value = cfg.value(*base)?;
-            let base = if base_value.ownership.is_borrow() {
+            let base = if base_value.ownership.is_borrow()
+                || (base_value.ownership.is_owned()
+                    && matches!(
+                        &base_value.ty,
+                        Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::Optional(_)
+                    )) {
                 cfg_borrowed_collection_value(cfg, *base)?
             } else {
                 cfg_direct_scalar_expr(cfg, *base)?
