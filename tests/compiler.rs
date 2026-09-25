@@ -339,6 +339,127 @@ fn main() -> i64 {
 }
 
 #[test]
+fn pure_temporary_list_calls_use_call_scoped_typed_ir_storage() {
+    let source = r#"
+fn consume(values: i64[]) -> i64 {
+    return values.count
+}
+
+fn consumeNamed(seed: i64, *, values: i64[]) -> i64 {
+    return seed + values.count
+}
+
+fn main() -> i64 {
+    let positional: i64 = consume([1, 2])
+    return positional + consumeNamed(3, values: [4])
+}
+"#;
+    let generated =
+        compile_to_c(source).expect("pure temporary-list calls should lower through typed IR");
+    assert!(
+        generated.contains("flux__typed_borrowed_list_storage"),
+        "{generated}"
+    );
+    assert!(generated.contains("flux__fn_consume"), "{generated}");
+    assert!(generated.contains("flux__fn_consumeNamed"), "{generated}");
+}
+
+#[test]
+fn multiple_effectful_temporary_list_calls_use_unique_typed_ir_storage() {
+    let source = r#"
+fn observeBefore(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeList(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeAfter(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn consume(before: i64, left: i64[], right: i64[], after: i64) -> i64 {
+    return before + left.count + right.count + after
+}
+
+fn consumeNamed(seed: i64, *, before: i64, left: i64[], right: i64[], after: i64) -> i64 {
+    return seed + before + left.count + right.count + after
+}
+
+fn main() -> i64 {
+    let positional: i64 = consume(observeBefore(1), [observeList(2)], [observeList(3)], observeAfter(4))
+    return positional + consumeNamed(0, after: observeAfter(5), right: [observeList(6)], left: [observeList(7)], before: observeBefore(8))
+}
+"#;
+    let generated = compile_to_c(source)
+        .expect("multiple temporary-list calls with computed peers should lower through typed IR");
+    assert!(
+        generated.contains("flux__typed_borrowed_list_storage"),
+        "{generated}"
+    );
+    assert!(
+        generated.contains("flux__typed_borrowed_list_1_storage"),
+        "{generated}"
+    );
+    assert!(
+        generated.contains("flux__typed_map_peer_arg_"),
+        "{generated}"
+    );
+    assert!(generated.contains("flux__fn_consume"), "{generated}");
+    assert!(generated.contains("flux__fn_consumeNamed"), "{generated}");
+}
+
+#[test]
+fn function_value_calls_with_temporary_lists_use_ordered_typed_ir_storage() {
+    let source = r#"
+fn observeBefore(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeList(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeAfter(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn consume(before: i64, values: i64[], after: i64) -> i64 {
+    return before + values.count + after
+}
+
+fn apply(transform: fn(i64, i64[], i64) -> i64, first: i64, second: i64, third: i64) -> i64 {
+    return transform(observeBefore(first), [observeList(second)], observeAfter(third))
+}
+
+fn main() -> i64 {
+    return apply(consume, 1, 2, 3)
+}
+"#;
+    let generated = compile_to_c(source)
+        .expect("function-value temporary-list calls should lower through typed IR");
+    assert!(
+        generated.contains("flux__typed_borrowed_list_storage"),
+        "{generated}"
+    );
+    assert!(
+        generated.contains("flux__typed_function_arg_0"),
+        "{generated}"
+    );
+    assert!(
+        generated.contains("flux__typed_function_arg_2"),
+        "{generated}"
+    );
+}
+
+#[test]
 fn map_calls_with_computed_copy_peers_use_ordered_typed_ir_storage() {
     let source = r#"
 fn observeBefore(value: i64) -> i64 {

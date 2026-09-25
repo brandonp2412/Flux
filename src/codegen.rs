@@ -54651,11 +54651,12 @@ fn emit_cfg_call_scoped_borrowed_map_direct(
     emit_cfg_call_scoped_borrowed_map_direct_indexed(argument, key, value, env, signatures, None)
 }
 
-fn emit_cfg_call_scoped_borrowed_list_direct(
+fn emit_cfg_call_scoped_borrowed_list_direct_indexed(
     argument: &CfgScalarExpr,
     element: &Type,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
+    scope_index: Option<usize>,
 ) -> Option<(String, String)> {
     let expected = Type::List(Box::new(element.clone()));
     if signatures.canonical_type(&argument.ty) != signatures.canonical_type(&expected)
@@ -54666,9 +54667,6 @@ fn emit_cfg_call_scoped_borrowed_list_direct(
     let CfgScalarExprKind::Aggregate(aggregate) = &argument.kind else {
         return None;
     };
-    if cfg_aggregate_constant_is_reorder_safe(aggregate) {
-        return None;
-    }
     let CfgAggregateConstantKind::List(values) = &aggregate.kind else {
         return None;
     };
@@ -54678,23 +54676,41 @@ fn emit_cfg_call_scoped_borrowed_list_direct(
 
     let element = signatures.canonical_type(element);
     let element_c = c_type(&element, signatures);
+    let borrowed = match scope_index {
+        Some(index) => format!("flux__typed_borrowed_list_{index}"),
+        None => "flux__typed_borrowed_list".to_string(),
+    };
     let mut prelude = String::new();
     let mut items = Vec::with_capacity(values.len());
     for (index, value) in values.iter().enumerate() {
         let rendered = emit_cfg_aggregate_value(value, &element, env, signatures)?;
-        let temp = format!("flux__typed_borrowed_list_value_{index}");
+        let temp = format!("{borrowed}_value_{index}");
         prelude.push_str(&format!("{element_c} {temp} = {rendered}; "));
         items.push(temp);
     }
-    let storage = "flux__typed_borrowed_list_storage";
-    let borrowed = "flux__typed_borrowed_list";
+    let storage = format!("{borrowed}_storage");
     prelude.push_str(&format!(
         "{element_c} {storage}[{}] = {{ {} }}; struct flux__list {borrowed} = (struct flux__list){{ .data = (void *){storage}, .len = {}, .stride = sizeof({element_c}) }}; ",
         values.len(),
         items.join(", "),
         values.len()
     ));
-    Some((prelude, borrowed.to_string()))
+    Some((prelude, borrowed))
+}
+
+fn emit_cfg_call_scoped_borrowed_list_direct(
+    argument: &CfgScalarExpr,
+    element: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<(String, String)> {
+    let CfgScalarExprKind::Aggregate(aggregate) = &argument.kind else {
+        return None;
+    };
+    if cfg_aggregate_constant_is_reorder_safe(aggregate) {
+        return None;
+    }
+    emit_cfg_call_scoped_borrowed_list_direct_indexed(argument, element, env, signatures, None)
 }
 
 fn emit_cfg_borrowed_list_argument_direct(
@@ -54968,7 +54984,7 @@ fn emit_cfg_named_call_arguments_direct(
     (positional_index == positional.len()).then_some(rendered)
 }
 
-fn emit_cfg_function_value_call_with_scoped_maps_direct<F>(
+fn emit_cfg_function_value_call_with_scoped_collections_direct<F>(
     arguments: &[CfgScalarExpr],
     params: &[Type],
     env: &HashMap<String, Type>,
@@ -54985,6 +55001,7 @@ where
     let mut prelude = String::new();
     let mut rendered = Vec::with_capacity(arguments.len());
     let mut scoped_map_count = 0usize;
+    let mut scoped_list_count = 0usize;
 
     for (index, (argument, expected)) in arguments.iter().zip(params).enumerate() {
         let expected = signatures.canonical_type(expected);
@@ -55004,6 +55021,22 @@ where
             scoped_map_count += 1;
             continue;
         }
+        if let Type::List(element) = &expected
+            && matches!(argument.kind, CfgScalarExprKind::Aggregate(_))
+            && let Some((list_prelude, borrowed)) =
+                emit_cfg_call_scoped_borrowed_list_direct_indexed(
+                    argument,
+                    element,
+                    env,
+                    signatures,
+                    (scoped_list_count != 0).then_some(scoped_list_count),
+                )
+        {
+            prelude.push_str(&list_prelude);
+            rendered.push(borrowed);
+            scoped_list_count += 1;
+            continue;
+        }
 
         let value = emit_cfg_ordinary_call_argument_direct(argument, &expected, env, signatures)?;
         if matches!(
@@ -55021,11 +55054,11 @@ where
         }
     }
 
-    (scoped_map_count != 0)
+    (scoped_map_count != 0 || scoped_list_count != 0)
         .then(|| format!("__extension__ ({{ {prelude}{}; }})", render_call(&rendered)))
 }
 
-fn emit_cfg_positional_call_with_scoped_borrowed_map_direct<F>(
+fn emit_cfg_positional_call_with_scoped_borrowed_collections_direct<F>(
     signature: &Signature,
     arguments: &[CfgScalarExpr],
     env: &HashMap<String, Type>,
@@ -55039,6 +55072,7 @@ where
     let mut prelude = String::new();
     let mut ordered = Vec::with_capacity(signature.param_details.len());
     let mut scoped_map_count = 0usize;
+    let mut scoped_list_count = 0usize;
 
     for parameter in &signature.param_details {
         if !parameter.named_only && positional_index < arguments.len() {
@@ -55059,6 +55093,24 @@ where
                     prelude.push_str(&map_prelude);
                     ordered.push(borrowed);
                     scoped_map_count += 1;
+                    positional_index += 1;
+                    continue;
+                }
+            }
+            if let Type::List(element) = &expected
+                && matches!(argument.kind, CfgScalarExprKind::Aggregate(_))
+            {
+                let scoped = emit_cfg_call_scoped_borrowed_list_direct_indexed(
+                    argument,
+                    element,
+                    env,
+                    signatures,
+                    (scoped_list_count != 0).then_some(scoped_list_count),
+                );
+                if let Some((list_prelude, borrowed)) = scoped {
+                    prelude.push_str(&list_prelude);
+                    ordered.push(borrowed);
+                    scoped_list_count += 1;
                     positional_index += 1;
                     continue;
                 }
@@ -55093,7 +55145,7 @@ where
         ordered.push(constant_c_value(default));
     }
 
-    if positional_index != arguments.len() || scoped_map_count == 0 {
+    if positional_index != arguments.len() || (scoped_map_count == 0 && scoped_list_count == 0) {
         return None;
     }
 
@@ -55173,7 +55225,7 @@ where
     ))
 }
 
-fn emit_cfg_named_call_with_scoped_borrowed_map_direct<F>(
+fn emit_cfg_named_call_with_scoped_borrowed_collections_direct<F>(
     signature: &Signature,
     arguments: &[(Option<String>, CfgScalarExpr)],
     env: &HashMap<String, Type>,
@@ -55206,6 +55258,7 @@ where
     let mut source_rendered = Vec::with_capacity(arguments.len());
     let mut prelude = String::new();
     let mut scoped_map_count = 0usize;
+    let mut scoped_list_count = 0usize;
 
     for (source_index, (name, argument)) in arguments.iter().enumerate() {
         let parameter = if let Some(name) = name {
@@ -55234,6 +55287,23 @@ where
                 prelude.push_str(&map_prelude);
                 source_rendered.push(borrowed);
                 scoped_map_count += 1;
+                continue;
+            }
+        }
+        if let Type::List(element) = &expected
+            && matches!(argument.kind, CfgScalarExprKind::Aggregate(_))
+        {
+            let scoped = emit_cfg_call_scoped_borrowed_list_direct_indexed(
+                argument,
+                element,
+                env,
+                signatures,
+                (scoped_list_count != 0).then_some(scoped_list_count),
+            );
+            if let Some((list_prelude, borrowed)) = scoped {
+                prelude.push_str(&list_prelude);
+                source_rendered.push(borrowed);
+                scoped_list_count += 1;
                 continue;
             }
         }
@@ -55287,7 +55357,7 @@ where
         ordered.push(constant_c_value(default));
     }
 
-    if scoped_map_count == 0 {
+    if scoped_map_count == 0 && scoped_list_count == 0 {
         return None;
     }
 
@@ -56199,7 +56269,7 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
             let callee = local_c_name(callee);
-            if let Some(rendered) = emit_cfg_function_value_call_with_scoped_maps_direct(
+            if let Some(rendered) = emit_cfg_function_value_call_with_scoped_collections_direct(
                 arguments,
                 &params,
                 env,
@@ -56255,13 +56325,14 @@ fn emit_cfg_scalar_expr_direct(
                 .clone()
                 .unwrap_or_else(|| function_c_name(implementation));
             if signature.foreign_symbol.is_none()
-                && let Some(rendered) = emit_cfg_positional_call_with_scoped_borrowed_map_direct(
-                    signature,
-                    arguments,
-                    env,
-                    signatures,
-                    |rendered| format!("{callee}({})", rendered.join(", ")),
-                )
+                && let Some(rendered) =
+                    emit_cfg_positional_call_with_scoped_borrowed_collections_direct(
+                        signature,
+                        arguments,
+                        env,
+                        signatures,
+                        |rendered| format!("{callee}({})", rendered.join(", ")),
+                    )
             {
                 return Some(rendered);
             }
@@ -58905,7 +58976,7 @@ fn emit_cfg_scalar_expr_direct(
                 .clone()
                 .unwrap_or_else(|| function_c_name(implementation));
             if signature.foreign_symbol.is_none()
-                && let Some(rendered) = emit_cfg_named_call_with_scoped_borrowed_map_direct(
+                && let Some(rendered) = emit_cfg_named_call_with_scoped_borrowed_collections_direct(
                     signature,
                     arguments,
                     env,
@@ -69672,6 +69743,299 @@ fn main() -> i64 {
                 "{emitted}"
             );
         }
+    }
+
+    #[test]
+    fn synchronous_user_calls_with_temporary_lists_emit_from_ordered_typed_ir() {
+        let source = r#"
+fn observeBefore(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeListA(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeListB(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeMap(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeAfter(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn consumeLists(before: i64, first: i64[], second: i64[], after: i64) -> i64 {
+    return before + first.count + second.count + after
+}
+
+fn consumeMixed(seed: i64, *, values: i64[], lookup: map<str, (value: i64)>, after: i64) -> i64 {
+    return seed + values.count + lookup.count + after
+}
+
+fn consumeFunction(values: i64[], after: i64) -> i64 {
+    return values.count + after
+}
+
+fn positional(a: i64, b: i64, c: i64, d: i64) -> i64 {
+    return consumeLists(observeBefore(a), [observeListA(b), 10], [observeListB(c)], observeAfter(d))
+}
+
+fn named(a: i64, b: i64, c: i64) -> i64 {
+    return consumeMixed(0, lookup: map{"value": (value: observeMap(a))}, after: observeAfter(c), values: [observeListA(b)])
+}
+
+fn apply(transform: fn(i64[], i64) -> i64, first: i64, second: i64) -> i64 {
+    return transform([observeListA(first)], observeAfter(second))
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4266))
+            .expect("temporary-list user-call fixture should typecheck");
+
+        let positional_graph = database
+            .control_flow_graph("positional")
+            .expect("positional temporary-list CFG should exist");
+        let positional_facts = cfg_rewrite_facts(positional_graph);
+        let positional_call = positional_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    positional_facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Call { callee, arguments },
+                        ..
+                    }) if callee == "consumeLists"
+                        && arguments
+                            .iter()
+                            .filter(|argument| matches!(argument.kind, CfgScalarExprKind::Aggregate(_)))
+                            .count() == 2
+                )
+            })
+            .expect("positional user call should preserve both temporary lists");
+        let positional_scalar = positional_facts
+            .scalar_exprs
+            .get(&source_span_key(positional_call.span))
+            .expect("positional temporary-list call should have scalar facts");
+        let positional_env = HashMap::from([
+            ("a".to_string(), Type::I64),
+            ("b".to_string(), Type::I64),
+            ("c".to_string(), Type::I64),
+            ("d".to_string(), Type::I64),
+        ]);
+        let positional_direct =
+            emit_cfg_scalar_expr_direct(positional_scalar, &positional_env, database.signatures())
+                .expect("positional temporary-list call should emit directly");
+        let before = positional_direct
+            .find(&function_c_name("observeBefore"))
+            .expect("before effect should be emitted");
+        let list_a = positional_direct
+            .find(&function_c_name("observeListA"))
+            .expect("first list effect should be emitted");
+        let list_b = positional_direct
+            .find(&function_c_name("observeListB"))
+            .expect("second list effect should be emitted");
+        let after = positional_direct
+            .find(&function_c_name("observeAfter"))
+            .expect("after effect should be emitted");
+        let consume = positional_direct
+            .rfind(&function_c_name("consumeLists"))
+            .expect("positional callee should be emitted last");
+        assert!(
+            before < list_a && list_a < list_b && list_b < after && after < consume,
+            "{positional_direct}"
+        );
+        assert!(
+            positional_direct.contains("flux__typed_borrowed_list_storage"),
+            "{positional_direct}"
+        );
+        assert!(
+            positional_direct.contains("flux__typed_borrowed_list_1_storage"),
+            "{positional_direct}"
+        );
+        let positional_fake = Expr {
+            line: positional_call.span.line,
+            span: positional_call.span,
+            kind: ExprKind::Str("checked-ast-positional-list-call".to_string()),
+        };
+        let positional_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &positional_fake,
+            &Type::I64,
+            &positional_env,
+            database.signatures(),
+            &HashMap::new(),
+            &positional_facts,
+        )
+        .expect("positional temporary-list call should bypass checked AST");
+        assert_eq!(positional_emitted, positional_direct);
+
+        let named_graph = database
+            .control_flow_graph("named")
+            .expect("named temporary-collection CFG should exist");
+        let named_facts = cfg_rewrite_facts(named_graph);
+        let named_call = named_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    named_facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::NamedCall { callee, .. },
+                        ..
+                    }) if callee == "consumeMixed"
+                )
+            })
+            .expect("named mixed collection call should remain in typed IR");
+        let named_scalar = named_facts
+            .scalar_exprs
+            .get(&source_span_key(named_call.span))
+            .expect("named mixed collection call should have scalar facts");
+        let named_env = HashMap::from([
+            ("a".to_string(), Type::I64),
+            ("b".to_string(), Type::I64),
+            ("c".to_string(), Type::I64),
+        ]);
+        let named_direct =
+            emit_cfg_scalar_expr_direct(named_scalar, &named_env, database.signatures())
+                .expect("named mixed collection call should emit directly");
+        let map_effect = named_direct
+            .find(&function_c_name("observeMap"))
+            .expect("map source effect should be emitted");
+        let after_effect = named_direct
+            .find(&function_c_name("observeAfter"))
+            .expect("computed named peer should be emitted");
+        let list_effect = named_direct
+            .find(&function_c_name("observeListA"))
+            .expect("list source effect should be emitted");
+        let named_consume = named_direct
+            .rfind(&function_c_name("consumeMixed"))
+            .expect("named mixed callee should be emitted last");
+        assert!(
+            map_effect < after_effect && after_effect < list_effect && list_effect < named_consume,
+            "{named_direct}"
+        );
+        assert!(
+            named_direct.contains("flux__typed_borrowed_map_values"),
+            "{named_direct}"
+        );
+        assert!(
+            named_direct.contains("flux__typed_borrowed_list_storage"),
+            "{named_direct}"
+        );
+        let named_call_tail = &named_direct[named_consume..];
+        let declared_list = named_call_tail
+            .find("flux__typed_borrowed_list")
+            .expect("list should be restored to declaration order");
+        let declared_map = named_call_tail
+            .find("flux__typed_borrowed_map")
+            .expect("map should be restored to declaration order");
+        let declared_after = named_call_tail
+            .find("flux__typed_map_peer_arg_2")
+            .expect("computed after peer should be restored to declaration order");
+        assert!(
+            declared_list < declared_map && declared_map < declared_after,
+            "{named_direct}"
+        );
+        let named_fake = Expr {
+            line: named_call.span.line,
+            span: named_call.span,
+            kind: ExprKind::Str("checked-ast-named-list-call".to_string()),
+        };
+        let named_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &named_fake,
+            &Type::I64,
+            &named_env,
+            database.signatures(),
+            &HashMap::new(),
+            &named_facts,
+        )
+        .expect("named mixed collection call should bypass checked AST");
+        assert_eq!(named_emitted, named_direct);
+
+        let apply_graph = database
+            .control_flow_graph("apply")
+            .expect("function-value temporary-list CFG should exist");
+        let apply_facts = cfg_rewrite_facts(apply_graph);
+        let apply_call = apply_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    apply_facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Call { callee, arguments },
+                        ..
+                    }) if callee == "transform"
+                        && matches!(arguments.first().map(|argument| &argument.kind), Some(CfgScalarExprKind::Aggregate(_)))
+                )
+            })
+            .expect("function-value temporary-list call should remain in typed IR");
+        let apply_scalar = apply_facts
+            .scalar_exprs
+            .get(&source_span_key(apply_call.span))
+            .expect("function-value temporary-list call should have scalar facts");
+        let transform_ty = database
+            .signatures()
+            .get("apply")
+            .and_then(|signature| signature.param_details.first())
+            .map(|parameter| parameter.ty.clone())
+            .expect("apply should expose its function-value parameter type");
+        let apply_env = HashMap::from([
+            ("transform".to_string(), transform_ty),
+            ("first".to_string(), Type::I64),
+            ("second".to_string(), Type::I64),
+        ]);
+        let apply_direct =
+            emit_cfg_scalar_expr_direct(apply_scalar, &apply_env, database.signatures())
+                .expect("function-value temporary-list call should emit directly");
+        let function_list = apply_direct
+            .find(&function_c_name("observeListA"))
+            .expect("function-value list effect should be emitted");
+        let function_after = apply_direct
+            .find(&function_c_name("observeAfter"))
+            .expect("function-value computed peer should be emitted");
+        let function_call = apply_direct
+            .rfind(&local_c_name("transform"))
+            .expect("function-value call should be emitted last");
+        assert!(
+            function_list < function_after && function_after < function_call,
+            "{apply_direct}"
+        );
+        assert!(
+            apply_direct.contains("flux__typed_borrowed_list_storage"),
+            "{apply_direct}"
+        );
+        assert!(
+            apply_direct.contains("flux__typed_function_arg_1"),
+            "{apply_direct}"
+        );
+        let apply_fake = Expr {
+            line: apply_call.span.line,
+            span: apply_call.span,
+            kind: ExprKind::Str("checked-ast-function-list-call".to_string()),
+        };
+        let apply_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &apply_fake,
+            &Type::I64,
+            &apply_env,
+            database.signatures(),
+            &HashMap::new(),
+            &apply_facts,
+        )
+        .expect("function-value temporary-list call should bypass checked AST");
+        assert_eq!(apply_emitted, apply_direct);
     }
 
     #[test]
