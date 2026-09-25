@@ -10310,7 +10310,30 @@ static inline struct flux__net_i64_error flux__tls_listen(int64_t socket_handle,
     SSL_shutdown(session); SSL_free(session); SSL_CTX_free(context); flux__net_unregister_socket((int)socket_handle); close((int)socket_handle); return flux__tls_result(-1, "too many active TLS sessions");
 }
 static inline const char *flux__tls_close(int64_t handle) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL) return "invalid or closed TLS session"; SSL_shutdown(slot->session); SSL_free(slot->session); SSL_CTX_free(slot->context); flux__net_unregister_socket(slot->socket); close(slot->socket); slot->used = false; return NULL; }
-static inline const char *flux__tls_write(int64_t handle, const char *value) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || value == NULL) return "invalid TLS write arguments"; size_t length = 0; if (!flux__tls_bounded_length(value, 65536, &length)) return "TLS write value exceeds 65536 bytes"; size_t offset = 0; while (offset < length) { int written = SSL_write(slot->session, value + offset, (int)(length - offset > INT_MAX ? INT_MAX : length - offset)); if (written <= 0) return "TLS write failed"; offset += (size_t)written; } return NULL; }
+static inline int flux__tls_wait_retry(struct flux__tls_slot *slot, int ssl_error) {
+    struct pollfd descriptor = { .fd = slot->socket, .events = ssl_error == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT, .revents = 0 };
+    int ready = flux__net_poll_cancellable(&descriptor, 1, -1);
+    if (ready == -2) return -2;
+    if (ready <= 0 || (descriptor.revents & (POLLNVAL | POLLERR)) != 0) return -1;
+    return 1;
+}
+static inline const char *flux__tls_write(int64_t handle, const char *value) {
+    struct flux__tls_slot *slot = flux__tls_slot_for(handle);
+    if (slot == NULL || value == NULL) return "invalid TLS write arguments";
+    size_t length = 0;
+    if (!flux__tls_bounded_length(value, 65536, &length)) return "TLS write value exceeds 65536 bytes";
+    size_t offset = 0;
+    while (offset < length) {
+        int written = SSL_write(slot->session, value + offset, (int)(length - offset > INT_MAX ? INT_MAX : length - offset));
+        if (written > 0) { offset += (size_t)written; continue; }
+        int ssl_error = SSL_get_error(slot->session, written);
+        if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE) return "TLS write failed";
+        int ready = flux__tls_wait_retry(slot, ssl_error);
+        if (ready == -2) return "TLS write cancelled by worker scope";
+        if (ready < 0) return "TLS write readiness failed";
+    }
+    return NULL;
+}
 static inline const char *flux__tls_validate_bytes(struct flux__list bytes) {
     if (bytes.len > 65536) return "TLS writeBytes bytes exceed 65536 bytes";
     if (bytes.len != 0 && bytes.data == NULL) return "TLS writeBytes byte list has missing storage";
@@ -10344,8 +10367,12 @@ static inline const char *flux__tls_write_bytes(int64_t handle, struct flux__lis
         size_t chunk_offset = 0;
         while (chunk_offset < chunk) {
             int written = SSL_write(slot->session, buffer + chunk_offset, (int)(chunk - chunk_offset));
-            if (written <= 0) return "TLS writeBytes failed";
-            chunk_offset += (size_t)written;
+            if (written > 0) { chunk_offset += (size_t)written; continue; }
+            int ssl_error = SSL_get_error(slot->session, written);
+            if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE) return "TLS writeBytes failed";
+            int ready = flux__tls_wait_retry(slot, ssl_error);
+            if (ready == -2) return "TLS writeBytes cancelled by worker scope";
+            if (ready < 0) return "TLS writeBytes readiness failed";
         }
         offset += chunk;
     }
@@ -10405,17 +10432,43 @@ static inline struct flux__net_i64_bool_error flux__tls_write_bytes_timeout(int6
     return result;
 }
 static inline struct flux__net_i64_bool_error flux__tls_write_timeout(int64_t handle, const char *value, int64_t timeout_millis) { struct flux__net_i64_bool_error result = { .v0 = 0, .v1 = false, .v2 = NULL }; struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || value == NULL) { result.v0 = -1; result.v2 = "invalid TLS writeTimeout arguments"; return result; } size_t length = 0; if (!flux__tls_bounded_length(value, 65536, &length)) { result.v0 = -1; result.v2 = "TLS writeTimeout value exceeds 65536 bytes"; return result; } if (timeout_millis < -1 || timeout_millis > INT_MAX) { result.v0 = -1; result.v2 = "TLS writeTimeout timeoutMillis must be -1 or between 0 and 2147483647"; return result; } int64_t deadline = -1; if (timeout_millis >= 0) { struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) { result.v0 = -1; result.v2 = "TLS writeTimeout clock failed"; return result; } deadline = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + timeout_millis; } size_t offset = 0; short events = POLLOUT; while (offset < length) { if (flux__worker_cancelled()) { result.v0 = (int64_t)offset; result.v2 = "TLS writeTimeout cancelled by worker scope"; return result; } int64_t remaining = -1; if (deadline >= 0) { struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) { result.v0 = (int64_t)offset; result.v2 = "TLS writeTimeout clock failed"; return result; } int64_t current = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000; if (current >= deadline) return result; remaining = deadline - current; } int written = SSL_write(slot->session, value + offset, (int)(length - offset > INT_MAX ? INT_MAX : length - offset)); if (written > 0) { offset += (size_t)written; continue; } int ssl_error = SSL_get_error(slot->session, written); if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE) { result.v0 = (int64_t)offset; result.v2 = "TLS writeTimeout failed"; return result; } events = ssl_error == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT; struct pollfd descriptor = { .fd = slot->socket, .events = events, .revents = 0 }; int wait_millis = remaining < 0 || remaining > INT_MAX ? INT_MAX : (int)remaining; int ready = flux__net_poll_cancellable(&descriptor, 1, wait_millis); if (ready == -2) { result.v0 = (int64_t)offset; result.v2 = "TLS writeTimeout cancelled by worker scope"; return result; } if (ready == 0) { result.v0 = (int64_t)offset; return result; } if (ready < 0 || (descriptor.revents & (POLLNVAL | POLLERR)) != 0) { result.v0 = (int64_t)offset; result.v2 = "TLS writeTimeout readiness failed"; return result; } } result.v0 = (int64_t)offset; result.v1 = true; return result; }
-static inline struct flux__net_i64_error flux__tls_read(int64_t handle, int64_t max_bytes, void (*callback)(const char *)) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || callback == NULL || max_bytes < 1 || max_bytes > 65536) return flux__tls_result(-1, "invalid TLS read arguments"); char buffer[65537]; int received = SSL_read(slot->session, buffer, (int)max_bytes); if (received <= 0) return flux__tls_result(-1, "TLS read failed or reached end of stream"); for (int index = 0; index < received; index += 1) if (buffer[index] == '\0') return flux__tls_result(-1, "TLS read contained NUL in text payload"); buffer[received] = '\0'; callback(buffer); return flux__tls_result((int64_t)received, NULL); }
+static inline struct flux__net_i64_error flux__tls_read(int64_t handle, int64_t max_bytes, void (*callback)(const char *)) {
+    struct flux__tls_slot *slot = flux__tls_slot_for(handle);
+    if (slot == NULL || callback == NULL || max_bytes < 1 || max_bytes > 65536) return flux__tls_result(-1, "invalid TLS read arguments");
+    char buffer[65537];
+    for (;;) {
+        int received = SSL_read(slot->session, buffer, (int)max_bytes);
+        if (received > 0) {
+            for (int index = 0; index < received; index += 1) if (buffer[index] == '\0') return flux__tls_result(-1, "TLS read contained NUL in text payload");
+            buffer[received] = '\0';
+            callback(buffer);
+            return flux__tls_result((int64_t)received, NULL);
+        }
+        int ssl_error = SSL_get_error(slot->session, received);
+        if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE) return flux__tls_result(-1, "TLS read failed or reached end of stream");
+        int ready = flux__tls_wait_retry(slot, ssl_error);
+        if (ready == -2) return flux__tls_result(-1, "TLS read cancelled by worker scope");
+        if (ready < 0) return flux__tls_result(-1, "TLS read readiness failed");
+    }
+}
 static inline struct flux__net_i64_error flux__tls_read_bytes(int64_t handle, int64_t max_bytes, void (*callback)(struct flux__list)) {
     struct flux__tls_slot *slot = flux__tls_slot_for(handle);
     if (slot == NULL || callback == NULL || max_bytes < 1 || max_bytes > 65536) return flux__tls_result(-1, "invalid TLS readBytes arguments");
     unsigned char buffer[65536];
-    int received = SSL_read(slot->session, buffer, (int)max_bytes);
-    if (received <= 0) return flux__tls_result(-1, "TLS readBytes failed or reached end of stream");
-    int64_t values[received];
-    for (int index = 0; index < received; index += 1) values[index] = (int64_t)buffer[index];
-    callback((struct flux__list){ .data = values, .len = (size_t)received, .stride = sizeof(int64_t) });
-    return flux__tls_result((int64_t)received, NULL);
+    for (;;) {
+        int received = SSL_read(slot->session, buffer, (int)max_bytes);
+        if (received > 0) {
+            int64_t values[received];
+            for (int index = 0; index < received; index += 1) values[index] = (int64_t)buffer[index];
+            callback((struct flux__list){ .data = values, .len = (size_t)received, .stride = sizeof(int64_t) });
+            return flux__tls_result((int64_t)received, NULL);
+        }
+        int ssl_error = SSL_get_error(slot->session, received);
+        if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE) return flux__tls_result(-1, "TLS readBytes failed or reached end of stream");
+        int ready = flux__tls_wait_retry(slot, ssl_error);
+        if (ready == -2) return flux__tls_result(-1, "TLS readBytes cancelled by worker scope");
+        if (ready < 0) return flux__tls_result(-1, "TLS readBytes readiness failed");
+    }
 }
 static inline struct flux__net_i64_bool_error flux__tls_read_bytes_timeout(int64_t handle, int64_t max_bytes, int64_t timeout_millis, void (*callback)(struct flux__list)) {
     struct flux__net_i64_bool_error result = { .v0 = 0, .v1 = false, .v2 = NULL };

@@ -26966,6 +26966,10 @@ fn main() -> i64 {
     assert!(generated.contains("flux__net_poll_cancellable(&descriptor, 1, -1)"));
     assert!(generated.contains("TLS requires a TCP stream socket"));
     assert!(generated.contains("TLS requires a connected TCP socket"));
+    assert!(generated.contains("TLS read cancelled by worker scope"));
+    assert!(generated.contains("TLS write cancelled by worker scope"));
+    assert!(generated.contains("TLS readBytes cancelled by worker scope"));
+    assert!(generated.contains("TLS writeBytes cancelled by worker scope"));
     assert!(generated.contains("TLS readTimeout cancelled by worker scope"));
     assert!(generated.contains("TLS writeTimeout cancelled by worker scope"));
     assert!(
@@ -27223,7 +27227,7 @@ fn main() -> i64 {{
     let nonblocking_error: error = net.nonblocking(socket, true)
     let (session, tls_error) = tls.wrap(socket, "127.0.0.1", "{}")
     let write_error: error = tls.write(session, "GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-    let (received, ready, read_error) = tls.readTimeout(session, 4096, 5000, show)
+    let (received, read_error) = tls.read(session, 4096, show)
     let close_error: error = tls.close(session)
     let (socket2, connect_error2) = net.connect("127.0.0.1", {port})
     let nonblocking_error2: error = net.nonblocking(socket2, true)
@@ -27236,7 +27240,6 @@ fn main() -> i64 {{
     print(tls_error)
     print(write_error)
     print(received)
-    print(ready)
     print(read_error)
     print(close_error)
     print(connect_error2)
@@ -27341,6 +27344,9 @@ fn main() -> i64 {{
     let (socket, accept_error) = net.accept(listener)
     if accept_error != nil:
         return 2
+    let nonblocking_error: error = net.nonblocking(socket, true)
+    if nonblocking_error != nil:
+        return 3
     let (session, tls_error) = tls.listen(socket, "{}", "{}")
     if tls_error != nil:
         return 3
