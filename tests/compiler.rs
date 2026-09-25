@@ -224,6 +224,49 @@ fn main() -> i64 {
 }
 
 #[test]
+fn multiple_effectful_temporary_map_calls_use_unique_typed_ir_storage() {
+    let source = r#"
+fn observeLeft(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeRight(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn consumePositional(left: map<str, (value: i64)>, right: map<str, (value: i64)>) -> i64 {
+    return left.count + right.count
+}
+
+fn consumeNamed(seed: i64, *, left: map<str, (value: i64)>, right: map<str, (value: i64)>) -> i64 {
+    return seed + left.count + right.count
+}
+
+fn main() -> i64 {
+    let positional: i64 = consumePositional(map{"left": (value: observeLeft(7))}, map{"right": (value: observeRight(8))})
+    return positional + consumeNamed(3, right: map{"right": (value: observeRight(9))}, left: map{"left": (value: observeLeft(10))})
+}
+"#;
+    let generated = compile_to_c(source)
+        .expect("multiple effectful temporary-map calls should lower through typed IR");
+    assert!(
+        generated.contains("flux__typed_borrowed_map_values"),
+        "{generated}"
+    );
+    assert!(
+        generated.contains("flux__typed_borrowed_map_1_values"),
+        "{generated}"
+    );
+    assert!(
+        generated.contains("flux__fn_consumePositional"),
+        "{generated}"
+    );
+    assert!(generated.contains("flux__fn_consumeNamed"), "{generated}");
+}
+
+#[test]
 fn typed_ir_proves_short_circuit_result_from_left_constant() {
     let source = r#"
 fn choose(value: bool) -> bool {

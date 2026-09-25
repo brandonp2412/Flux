@@ -54571,12 +54571,13 @@ fn cfg_borrowed_list_has_named_root(argument: &CfgScalarExpr) -> bool {
     }
 }
 
-fn emit_cfg_call_scoped_borrowed_map_direct(
+fn emit_cfg_call_scoped_borrowed_map_direct_indexed(
     argument: &CfgScalarExpr,
     key: &Type,
     value: &Type,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
+    scope_index: Option<usize>,
 ) -> Option<(String, String)> {
     let expected = Type::Map(Box::new(key.clone()), Box::new(value.clone()));
     if signatures.canonical_type(&argument.ty) != signatures.canonical_type(&expected)
@@ -54602,6 +54603,10 @@ fn emit_cfg_call_scoped_borrowed_map_direct(
     let value = signatures.canonical_type(value);
     let key_c = c_type(&key, signatures);
     let value_c = c_type(&value, signatures);
+    let borrowed = match scope_index {
+        Some(index) => format!("flux__typed_borrowed_map_{index}"),
+        None => "flux__typed_borrowed_map".to_string(),
+    };
     let mut prelude = String::new();
     let mut keys = Vec::with_capacity(entries.len());
     let mut values = Vec::with_capacity(entries.len());
@@ -54611,17 +54616,16 @@ fn emit_cfg_call_scoped_borrowed_map_direct(
         }
         let key_rendered = constant_c_value(entry_key);
         let value_rendered = emit_cfg_aggregate_value(entry_value, &value, env, signatures)?;
-        let key_temp = format!("flux__typed_borrowed_map_key_{index}");
-        let value_temp = format!("flux__typed_borrowed_map_value_{index}");
+        let key_temp = format!("{borrowed}_key_{index}");
+        let value_temp = format!("{borrowed}_value_{index}");
         prelude.push_str(&format!("{key_c} {key_temp} = {key_rendered}; "));
         prelude.push_str(&format!("{value_c} {value_temp} = {value_rendered}; "));
         keys.push(key_temp);
         values.push(value_temp);
     }
 
-    let key_storage = "flux__typed_borrowed_map_keys";
-    let value_storage = "flux__typed_borrowed_map_values";
-    let borrowed = "flux__typed_borrowed_map";
+    let key_storage = format!("{borrowed}_keys");
+    let value_storage = format!("{borrowed}_values");
     prelude.push_str(&format!(
         "{key_c} {key_storage}[{}] = {{ {} }}; {value_c} {value_storage}[{}] = {{ {} }}; struct flux__map {borrowed} = (struct flux__map){{ .keys = (struct flux__list){{ .data = (void *){key_storage}, .len = {}, .stride = sizeof({key_c}) }}, .values = (struct flux__list){{ .data = (void *){value_storage}, .len = {}, .stride = sizeof({value_c}) }} }}; ",
         entries.len(),
@@ -54631,7 +54635,17 @@ fn emit_cfg_call_scoped_borrowed_map_direct(
         entries.len(),
         entries.len()
     ));
-    Some((prelude, borrowed.to_string()))
+    Some((prelude, borrowed))
+}
+
+fn emit_cfg_call_scoped_borrowed_map_direct(
+    argument: &CfgScalarExpr,
+    key: &Type,
+    value: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<(String, String)> {
+    emit_cfg_call_scoped_borrowed_map_direct_indexed(argument, key, value, env, signatures, None)
 }
 
 fn emit_cfg_call_scoped_borrowed_list_direct(
@@ -54964,23 +54978,34 @@ where
     let mut positional_index = 0usize;
     let mut prelude = String::new();
     let mut ordered = Vec::with_capacity(signature.param_details.len());
-    let mut used_scoped_map = false;
+    let mut scoped_map_count = 0usize;
 
     for parameter in &signature.param_details {
         if !parameter.named_only && positional_index < arguments.len() {
             let argument = &arguments[positional_index];
             let expected = signatures.canonical_type(&parameter.ty);
             if let Type::Map(key, value) = &expected
-                && !used_scoped_map
                 && matches!(argument.kind, CfgScalarExprKind::Aggregate(_))
-                && let Some((map_prelude, borrowed)) =
-                    emit_cfg_call_scoped_borrowed_map_direct(argument, key, value, env, signatures)
             {
-                prelude.push_str(&map_prelude);
-                ordered.push(borrowed);
-                used_scoped_map = true;
-                positional_index += 1;
-                continue;
+                let scoped = if scoped_map_count == 0 {
+                    emit_cfg_call_scoped_borrowed_map_direct(argument, key, value, env, signatures)
+                } else {
+                    emit_cfg_call_scoped_borrowed_map_direct_indexed(
+                        argument,
+                        key,
+                        value,
+                        env,
+                        signatures,
+                        Some(scoped_map_count),
+                    )
+                };
+                if let Some((map_prelude, borrowed)) = scoped {
+                    prelude.push_str(&map_prelude);
+                    ordered.push(borrowed);
+                    scoped_map_count += 1;
+                    positional_index += 1;
+                    continue;
+                }
             }
 
             if !matches!(
@@ -55006,7 +55031,7 @@ where
         ordered.push(constant_c_value(default));
     }
 
-    if positional_index != arguments.len() || !used_scoped_map {
+    if positional_index != arguments.len() || scoped_map_count == 0 {
         return None;
     }
 
@@ -55118,7 +55143,7 @@ where
     let mut positional_index = 0usize;
     let mut source_rendered = Vec::with_capacity(arguments.len());
     let mut prelude = String::new();
-    let mut used_scoped_map = false;
+    let mut scoped_map_count = 0usize;
 
     for (name, argument) in arguments {
         let parameter = if let Some(name) = name {
@@ -55133,15 +55158,26 @@ where
         };
         let expected = signatures.canonical_type(&parameter.ty);
         if let Type::Map(key, value) = &expected
-            && !used_scoped_map
             && matches!(argument.kind, CfgScalarExprKind::Aggregate(_))
-            && let Some((map_prelude, borrowed)) =
-                emit_cfg_call_scoped_borrowed_map_direct(argument, key, value, env, signatures)
         {
-            prelude.push_str(&map_prelude);
-            source_rendered.push(borrowed);
-            used_scoped_map = true;
-            continue;
+            let scoped = if scoped_map_count == 0 {
+                emit_cfg_call_scoped_borrowed_map_direct(argument, key, value, env, signatures)
+            } else {
+                emit_cfg_call_scoped_borrowed_map_direct_indexed(
+                    argument,
+                    key,
+                    value,
+                    env,
+                    signatures,
+                    Some(scoped_map_count),
+                )
+            };
+            if let Some((map_prelude, borrowed)) = scoped {
+                prelude.push_str(&map_prelude);
+                source_rendered.push(borrowed);
+                scoped_map_count += 1;
+                continue;
+            }
         }
 
         if !matches!(
@@ -55188,7 +55224,7 @@ where
         ordered.push(constant_c_value(default));
     }
 
-    if !used_scoped_map {
+    if scoped_map_count == 0 {
         return None;
     }
 
@@ -68976,6 +69012,207 @@ fn main() -> i64 {
         .expect("effectful temporary map named call should bypass checked AST");
         assert_eq!(emitted, direct);
         assert!(!emitted.contains("checked-ast-effectful-map-named-call"));
+    }
+
+    #[test]
+    fn multiple_effectful_temporary_map_positional_calls_emit_from_ordered_typed_ir() {
+        let source = r#"
+fn observeLeft(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeRight(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn consume(left: map<str, (value: i64)>, right: map<str, (value: i64)>) -> i64 {
+    return left.count + right.count
+}
+
+fn exercise(first: i64, second: i64) -> i64 {
+    return consume(map{"left": (value: observeLeft(first))}, map{"right": (value: observeRight(second))})
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4261))
+            .expect("multiple effectful temporary-map positional-call fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("multiple temporary-map positional-call CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let call = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Call { callee, arguments },
+                        ..
+                    }) if callee == "consume"
+                        && arguments.len() == 2
+                        && arguments
+                            .iter()
+                            .all(|argument| matches!(argument.kind, CfgScalarExprKind::Aggregate(_)))
+                )
+            })
+            .expect("multiple temporary-map positional call should preserve typed-IR aggregates");
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(call.span))
+            .expect("multiple temporary-map positional call should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("first".to_string(), Type::I64),
+            ("second".to_string(), Type::I64),
+        ]);
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("multiple effectful temporary maps should emit directly");
+        let left = direct
+            .find(&function_c_name("observeLeft"))
+            .expect("first map effect should be materialized");
+        let right = direct
+            .find(&function_c_name("observeRight"))
+            .expect("second map effect should be materialized");
+        let consume = direct
+            .rfind(&function_c_name("consume"))
+            .expect("callee should follow both map materializations");
+        assert!(left < right && right < consume, "{direct}");
+        assert!(
+            direct.contains("flux__typed_borrowed_map_values"),
+            "{direct}"
+        );
+        assert!(
+            direct.contains("flux__typed_borrowed_map_1_values"),
+            "{direct}"
+        );
+
+        let fake = Expr {
+            line: call.span.line,
+            span: call.span,
+            kind: ExprKind::Str("checked-ast-multiple-map-call".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::I64,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("multiple temporary-map positional call should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-multiple-map-call"));
+    }
+
+    #[test]
+    fn multiple_effectful_temporary_map_named_calls_emit_from_ordered_typed_ir() {
+        let source = r#"
+fn observeLeft(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeRight(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn consume(seed: i64, *, left: map<str, (value: i64)>, right: map<str, (value: i64)>) -> i64 {
+    return seed + left.count + right.count
+}
+
+fn exercise(first: i64, second: i64, seed: i64) -> i64 {
+    return consume(seed, right: map{"right": (value: observeRight(second))}, left: map{"left": (value: observeLeft(first))})
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4262))
+            .expect("multiple effectful temporary-map named-call fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("multiple temporary-map named-call CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let call = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::NamedCall { callee, arguments },
+                        ..
+                    }) if callee == "consume"
+                        && arguments
+                            .iter()
+                            .filter(|(_, argument)| {
+                                matches!(argument.kind, CfgScalarExprKind::Aggregate(_))
+                            })
+                            .count() == 2
+                )
+            })
+            .expect("multiple temporary-map named call should preserve typed-IR aggregates");
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(call.span))
+            .expect("multiple temporary-map named call should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("first".to_string(), Type::I64),
+            ("second".to_string(), Type::I64),
+            ("seed".to_string(), Type::I64),
+        ]);
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("multiple named effectful temporary maps should emit directly");
+        let right = direct
+            .find(&function_c_name("observeRight"))
+            .expect("source-first right map effect should be materialized");
+        let left = direct
+            .find(&function_c_name("observeLeft"))
+            .expect("source-second left map effect should be materialized");
+        let consume = direct
+            .rfind(&function_c_name("consume"))
+            .expect("named callee should follow both map materializations");
+        assert!(right < left && left < consume, "{direct}");
+        assert!(
+            direct.contains("flux__typed_borrowed_map_values"),
+            "{direct}"
+        );
+        assert!(
+            direct.contains("flux__typed_borrowed_map_1_values"),
+            "{direct}"
+        );
+        let call_tail = &direct[consume..];
+        let first_map = call_tail
+            .find("flux__typed_borrowed_map_1")
+            .expect("left map should be restored to declaration order");
+        let second_map = call_tail
+            .rfind("flux__typed_borrowed_map")
+            .expect("right map should be restored to declaration order");
+        assert!(first_map < second_map, "{direct}");
+
+        let fake = Expr {
+            line: call.span.line,
+            span: call.span,
+            kind: ExprKind::Str("checked-ast-multiple-named-map-call".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::I64,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("multiple temporary-map named call should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-multiple-named-map-call"));
     }
 
     #[test]
