@@ -43899,6 +43899,8 @@ fn cfg_rewrite_fact_type(
             rewrite_facts
                 .scalar_exprs
                 .get(&span)
+                .or_else(|| rewrite_facts.sequence_exprs.get(&span))
+                .or_else(|| rewrite_facts.multi_exprs.get(&span))
                 .map(|expr| expr.ty.clone())
         })
         .or_else(|| rewrite_facts.constants.get(&span).map(ConstantValue::ty))
@@ -43938,13 +43940,17 @@ fn emit_cfg_list_comprehension_binding(
     let Type::List(input_element) = &iterable_ty else {
         return None;
     };
-    let source = emit_cfg_aggregate_shape_child_direct(
-        *iterable,
-        &iterable_ty,
-        env,
-        signatures,
-        rewrite_facts,
-    )?;
+    let source = if let Some(sequence) = rewrite_facts.sequence_exprs.get(iterable) {
+        emit_cfg_sequence_list_value(out, pad, sequence, env, signatures, temp_counter)?.code
+    } else {
+        emit_cfg_aggregate_shape_child_direct(
+            *iterable,
+            &iterable_ty,
+            env,
+            signatures,
+            rewrite_facts,
+        )?
+    };
 
     let source_name = format!("flux__list_source_{}", *temp_counter);
     *temp_counter += 1;
@@ -56073,6 +56079,71 @@ fn main() -> i64 {
         assert!(out.contains(&local_c_name("maybeValue")), "{out}");
         assert!(out.contains(&local_c_name("bound")), "{out}");
         assert!(out.contains(&local_c_name("built")), "{out}");
+        assert!(!out.contains("999"), "{out}");
+    }
+
+    #[test]
+    fn list_comprehension_direct_accepts_sequence_iterable_without_root_type() {
+        let source = r#"
+fn exercise(values: i64[]) -> i64 {
+    let projected: i64[] = [value + 1 for value in sorted(values)]
+    return projected.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("sequence iterable comprehension fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("sequence iterable comprehension fixture should parse");
+        let function = program
+            .functions
+            .iter()
+            .find(|function| function.name == "exercise")
+            .expect("exercise function should exist");
+        let mut expr = function
+            .body
+            .iter()
+            .find_map(|stmt| match &stmt.kind {
+                StmtKind::Let { name, expr, .. } if name == "projected" => Some(expr.clone()),
+                _ => None,
+            })
+            .expect("projected binding should exist");
+        let ExprKind::ListComprehension { iterable, .. } = &mut expr.kind else {
+            panic!("projected binding should be a list comprehension");
+        };
+        let iterable_span = source_span_key(iterable.span);
+        iterable.kind = ExprKind::Int(999);
+
+        let list_ty = Type::List(Box::new(Type::I64));
+        let mut env = HashMap::from([("values".to_string(), list_ty.clone())]);
+        let mut facts = cfg_rewrite_facts(graph);
+        assert!(facts.sequence_exprs.contains_key(&iterable_span));
+        facts.root_types.remove(&iterable_span);
+
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_comprehension_binding(
+            &mut out,
+            "",
+            ("projected", &list_ty),
+            &expr,
+            &mut env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("typed-IR sequence iterable should lower without its root type");
+
+        assert!(out.contains("flux__list_source_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(out.contains("flux_add_i64"), "{out}");
         assert!(!out.contains("999"), "{out}");
     }
 
