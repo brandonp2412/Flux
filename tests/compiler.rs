@@ -27224,6 +27224,12 @@ fn show(value: str) -> void {{
     print(value)
 }}
 
+fn blockedRead(session: i64) -> void {{
+    let (_received, readError) = tls.read(session, 64, show)
+    if readError != nil && worker.cancelled():
+        print(readError)
+}}
+
 fn main() -> i64 {{
     let (socket, connect_error) = net.connect("127.0.0.1", {port})
     let nonblocking_error: error = net.nonblocking(socket, true)
@@ -27237,6 +27243,14 @@ fn main() -> i64 {{
     let write_error2: error = tls.write(session2, "GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
     let (received2, ready2, read_error2) = tls.readTimeout(session2, 4096, 5000, show)
     let close_error2: error = tls.close(session2)
+    let (socket3, connect_error3) = net.connect("127.0.0.1", {port})
+    let nonblocking_error3: error = net.nonblocking(socket3, true)
+    let (session3, tls_error3) = tls.wrap(socket3, "127.0.0.1", "{}")
+    let (handle, start_error) = worker.startWith(blockedRead, session3)
+    time.sleep(100)
+    let cancel_error: error = worker.cancel(handle)
+    let join_error: error = worker.join(handle)
+    let close_error3: error = tls.close(session3)
     print(connect_error)
     print(nonblocking_error)
     print(tls_error)
@@ -27252,9 +27266,17 @@ fn main() -> i64 {{
     print(ready2)
     print(read_error2)
     print(close_error2)
+    print(connect_error3)
+    print(nonblocking_error3)
+    print(tls_error3)
+    print(start_error)
+    print(cancel_error)
+    print(join_error)
+    print(close_error3)
     return 0
 }}
 "#,
+        certificate.display(),
         certificate.display(),
         certificate.display()
     );
@@ -27289,6 +27311,10 @@ fn main() -> i64 {{
     assert!(
         stdout.contains("nil\n"),
         "TLS error result missing: {stdout}"
+    );
+    assert!(
+        stdout.contains("TLS read cancelled by worker scope"),
+        "blocked ordinary TLS read should report worker cancellation: {stdout}"
     );
     let _ = fs::remove_dir_all(&root);
 }
