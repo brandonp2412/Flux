@@ -7326,14 +7326,33 @@ pub fn type_of_expr(
             if args.len() != 2 {
                 return Err(diag(expr.span, "concat expects exactly two list arguments"));
             }
-            let left_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            let left_empty = matches!(&args[0].kind, ExprKind::List(items) if items.is_empty());
+            let right_empty = matches!(&args[1].kind, ExprKind::List(items) if items.is_empty());
+            let right_context = if left_empty && !right_empty {
+                Some(signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?))
+            } else {
+                None
+            };
+            let left_ty = if let Some(expected) = right_context.as_ref().and_then(|right_ty| {
+                contextual_empty_concat_argument_type(&args[0], right_ty, signatures)
+            }) {
+                type_of_call_argument(&args[0], &expected, env, signatures)?
+            } else {
+                signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?)
+            };
             let Type::List(_) = &left_ty else {
                 return Err(diag(
                     args[0].span,
                     "concat expects a list as its first argument",
                 ));
             };
-            let right_ty = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+            let right_ty = if right_empty {
+                type_of_call_argument(&args[1], &left_ty, env, signatures)?
+            } else if let Some(right_ty) = right_context {
+                right_ty
+            } else {
+                signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?)
+            };
             require_type(args[1].span, &left_ty, &right_ty, "concat right list")?;
             Ok(left_ty)
         }
@@ -15295,6 +15314,21 @@ pub(crate) fn contextual_empty_contains_collection_type(
     match &collection.kind {
         ExprKind::List(items) if items.is_empty() => Some(Type::List(Box::new(key_type))),
         ExprKind::Set(items) if items.is_empty() => Some(Type::Set(Box::new(key_type))),
+        _ => None,
+    }
+}
+
+pub(crate) fn contextual_empty_concat_argument_type(
+    argument: &Expr,
+    sibling_type: &Type,
+    signatures: &Signatures,
+) -> Option<Type> {
+    let sibling_type = signatures.canonical_type(sibling_type);
+    if !matches!(sibling_type, Type::List(_)) {
+        return None;
+    }
+    match &argument.kind {
+        ExprKind::List(items) if items.is_empty() => Some(sibling_type),
         _ => None,
     }
 }

@@ -628,6 +628,40 @@ fn main() -> i64 {
 }
 
 #[test]
+fn empty_concat_arguments_inherit_sibling_list_types() {
+    let source = r#"
+fn main() -> i64 {
+    let ints: i64[] = concat([], [1, 2])
+    let texts: str[] = merge(["left"], [])
+    let bools: bool[] = concat([true], [])
+    if ints.length != 2 || texts.length != 1 || bools.length != 1:
+        return 1
+    return 0
+}
+"#;
+    compile_to_c(source)
+        .expect("one empty concat operand should inherit the typed sibling list element type");
+}
+
+#[test]
+fn empty_concat_arguments_remain_ambiguous_without_a_typed_sibling() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = concat([], [])
+    return values.length
+}
+"#;
+    let error =
+        check_source(source).expect_err("two empty concat operands should remain ambiguous");
+    assert!(
+        error
+            .message
+            .contains("empty list literals cannot infer an element type yet"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn map_calls_with_computed_copy_peers_use_ordered_typed_ir_storage() {
     let source = r#"
 fn observeBefore(value: i64) -> i64 {
@@ -36004,6 +36038,36 @@ fn main() -> i64 {
             && matches!(
                 &value.kind,
                 ControlFlowValueKind::Set { items } if items.is_empty()
+            )
+    }));
+}
+
+#[test]
+fn semantic_cfg_records_contextual_empty_concat_argument_types() {
+    let source = r#"
+fn main() -> i64 {
+    let ints: i64[] = concat([], [1])
+    let texts: str[] = merge(["left"], [])
+    return ints.length + texts.length
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1319))
+        .expect("empty concat operands should analyze from the typed sibling");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    assert!(graph.values().iter().any(|value| {
+        value.ty == Type::List(Box::new(Type::I64))
+            && matches!(
+                &value.kind,
+                ControlFlowValueKind::List { items } if items.is_empty()
+            )
+    }));
+    assert!(graph.values().iter().any(|value| {
+        value.ty == Type::List(Box::new(Type::Str))
+            && matches!(
+                &value.kind,
+                ControlFlowValueKind::List { items } if items.is_empty()
             )
     }));
 }

@@ -7487,6 +7487,33 @@ fn record_expr_types(
             } else {
                 None
             };
+            let concat_empty_argument_type = if named_args.is_empty()
+                && args.len() == 2
+                && crate::builtin_names::global_impl(name) == "concat"
+            {
+                let left_empty = matches!(&args[0].kind, ExprKind::List(items) if items.is_empty());
+                let right_empty =
+                    matches!(&args[1].kind, ExprKind::List(items) if items.is_empty());
+                let indices = match (left_empty, right_empty) {
+                    (true, false) => Some((0usize, 1usize)),
+                    (false, true) => Some((1usize, 0usize)),
+                    _ => None,
+                };
+                indices.and_then(|(empty_index, sibling_index)| {
+                    typecheck::type_of_expr(&args[sibling_index], env, signatures)
+                        .ok()
+                        .and_then(|sibling_type| {
+                            typecheck::contextual_empty_concat_argument_type(
+                                &args[empty_index],
+                                &sibling_type,
+                                signatures,
+                            )
+                            .map(|expected| (empty_index, expected))
+                        })
+                })
+            } else {
+                None
+            };
             for (index, arg) in args.iter().enumerate() {
                 let inline_sequence_callback = named_args.is_empty()
                     && matches!(arg.kind, ExprKind::AnonymousFunction { .. })
@@ -7501,12 +7528,18 @@ fn record_expr_types(
                 } else {
                     record_expr_types(arg, env, signatures, evaluations);
                     let expected = if index == 0 {
-                        contains_empty_collection_type.clone().or_else(|| {
-                            call_argument_expected_type(name, index, None, env, signatures)
-                        })
+                        contains_empty_collection_type.clone()
                     } else {
-                        call_argument_expected_type(name, index, None, env, signatures)
-                    };
+                        None
+                    }
+                    .or_else(|| {
+                        concat_empty_argument_type
+                            .as_ref()
+                            .and_then(|(empty_index, expected)| {
+                                (*empty_index == index).then(|| expected.clone())
+                            })
+                    })
+                    .or_else(|| call_argument_expected_type(name, index, None, env, signatures));
                     record_contextual_empty_collection_type(arg, expected, signatures, evaluations);
                 }
             }
