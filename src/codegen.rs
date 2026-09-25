@@ -14431,17 +14431,13 @@ fn emit_windows_native_application(
             };
             match ellipsize.as_str() {
                 "none" => {}
-                "end" if !selectable => {}
-                "end" => {
+                "start" | "middle" | "end" if !selectable => {}
+                "start" | "middle" | "end" => {
                     return Err(diag(
                         property.value.span,
-                        "bootstrap Windows selectable Text does not yet support ellipsize: 'end'",
-                    ));
-                }
-                "start" | "middle" => {
-                    return Err(diag(
-                        property.value.span,
-                        "bootstrap Windows Text.ellipsize currently supports only 'none' and 'end'",
+                        &format!(
+                            "bootstrap Windows selectable Text does not yet support ellipsize: '{ellipsize}'"
+                        ),
                     ));
                 }
                 _ => {
@@ -14470,19 +14466,19 @@ fn emit_windows_native_application(
                         "bootstrap Windows selectable Text.wrap: false currently supports only left/fill alignment",
                     ));
                 }
-            } else if ellipsize.as_deref() != Some("end")
+            } else if matches!(ellipsize.as_deref(), None | Some("none"))
                 && let Some(alignment) = view_property(element, "text_align")
             {
                 let Some(alignment_value) = static_expr_str(&alignment.value, signatures) else {
                     return Err(diag(
                         alignment.value.span,
-                        "bootstrap Windows Text.wrap: false requires compile-time textAlign unless ellipsize: 'end' is used",
+                        "bootstrap Windows Text.wrap: false requires compile-time textAlign unless ellipsize is enabled",
                     ));
                 };
                 if matches!(alignment_value.as_str(), "center" | "right") {
                     return Err(diag(
                         wrap_span,
-                        "bootstrap Windows Text.wrap: false without ellipsize: 'end' currently supports only left/fill alignment",
+                        "bootstrap Windows Text.wrap: false without ellipsizing currently supports only left/fill alignment",
                     ));
                 }
             }
@@ -14641,7 +14637,10 @@ fn emit_windows_native_application(
                 || view_property(element, "line_height_percent").is_some()
                 || view_property(element, "wrap_mode")
                     .and_then(|property| static_expr_str(&property.value, signatures))
-                    .is_some_and(|value| value != "word"))
+                    .is_some_and(|value| value != "word")
+                || view_property(element, "ellipsize")
+                    .and_then(|property| static_expr_str(&property.value, signatures))
+                    .is_some_and(|value| matches!(value.as_str(), "start" | "middle")))
     });
     let uses_dynamic_text_layout = view.elements.iter().any(|element| {
         element.kind == "Text"
@@ -14770,12 +14769,19 @@ fn emit_windows_native_application(
     FLUX__WIN_WRAP_WORD_CHAR = 2
 };
 
+enum {
+    FLUX__WIN_ELLIPSIZE_NONE = 0,
+    FLUX__WIN_ELLIPSIZE_START = 1,
+    FLUX__WIN_ELLIPSIZE_MIDDLE = 2,
+    FLUX__WIN_ELLIPSIZE_END = 3
+};
+
 typedef struct {
     int64_t letter_spacing;
     int64_t line_height_percent;
     bool wrap;
     int wrap_mode;
-    bool ellipsize_end;
+    int ellipsize_mode;
 } flux__win_text_layout_state;
 
 static bool flux__win_text_space(wchar_t value) {
@@ -14789,6 +14795,161 @@ static int flux__win_text_measure(HDC dc, const wchar_t *text, int count) {
     return size.cx;
 }
 
+static bool flux__win_text_high_surrogate(wchar_t value) {
+    return value >= (wchar_t)0xd800 && value <= (wchar_t)0xdbff;
+}
+
+static bool flux__win_text_low_surrogate(wchar_t value) {
+    return value >= (wchar_t)0xdc00 && value <= (wchar_t)0xdfff;
+}
+
+static int flux__win_text_safe_prefix_count(const wchar_t *text, int total, int count) {
+    if (
+        text != NULL
+        && count > 0
+        && count < total
+        && flux__win_text_high_surrogate(text[count - 1])
+        && flux__win_text_low_surrogate(text[count])
+    ) {
+        count--;
+    }
+    return count;
+}
+
+static int flux__win_text_safe_suffix_start(const wchar_t *text, int total, int start) {
+    if (
+        text != NULL
+        && start > 0
+        && start < total
+        && flux__win_text_high_surrogate(text[start - 1])
+        && flux__win_text_low_surrogate(text[start])
+    ) {
+        start++;
+    }
+    return start;
+}
+
+static int flux__win_text_fit_prefix(
+    HDC dc,
+    const wchar_t *text,
+    int count,
+    int available_width
+) {
+    if (dc == NULL || text == NULL || count <= 0 || available_width <= 0) return 0;
+    int fit = count;
+    SIZE measured = {0};
+    if (
+        GetTextExtentExPointW(
+            dc,
+            text,
+            count,
+            available_width,
+            &fit,
+            NULL,
+            &measured
+        )
+    ) {
+        if (fit < 0) fit = 0;
+        if (fit > count) fit = count;
+        return flux__win_text_safe_prefix_count(text, count, fit);
+    }
+    while (fit > 0 && flux__win_text_measure(dc, text, fit) > available_width) fit--;
+    return flux__win_text_safe_prefix_count(text, count, fit);
+}
+
+static int flux__win_text_fit_suffix(
+    HDC dc,
+    const wchar_t *text,
+    int count,
+    int available_width
+) {
+    if (dc == NULL || text == NULL || count <= 0 || available_width <= 0) return 0;
+    int low = 0;
+    int high = count;
+    while (low < high) {
+        int keep = low + (high - low + 1) / 2;
+        int start = count - keep;
+        if (flux__win_text_measure(dc, text + start, keep) <= available_width) {
+            low = keep;
+        } else {
+            high = keep - 1;
+        }
+    }
+    int start = flux__win_text_safe_suffix_start(text, count, count - low);
+    return count - start;
+}
+
+static wchar_t *flux__win_text_ellipsize_line(
+    HDC dc,
+    const wchar_t *text,
+    int count,
+    int available_width,
+    int ellipsize_mode,
+    int *render_count
+) {
+    if (render_count == NULL || text == NULL || count < 0) return NULL;
+    *render_count = count;
+    if (ellipsize_mode == FLUX__WIN_ELLIPSIZE_NONE) return NULL;
+
+    const wchar_t ellipsis[] = L"\x2026";
+    int ellipsis_width = flux__win_text_measure(dc, ellipsis, 1);
+    int content_width = available_width - ellipsis_width;
+    if (content_width < 0) content_width = 0;
+
+    int prefix_count = 0;
+    int suffix_count = 0;
+    if (ellipsize_mode == FLUX__WIN_ELLIPSIZE_END) {
+        prefix_count = flux__win_text_fit_prefix(dc, text, count, content_width);
+    } else if (ellipsize_mode == FLUX__WIN_ELLIPSIZE_START) {
+        suffix_count = flux__win_text_fit_suffix(dc, text, count, content_width);
+    } else {
+        int low = 0;
+        int high = count;
+        while (low < high) {
+            int keep = low + (high - low + 1) / 2;
+            int left = (keep + 1) / 2;
+            int right = keep - left;
+            left = flux__win_text_safe_prefix_count(text, count, left);
+            int suffix_start =
+                flux__win_text_safe_suffix_start(text, count, count - right);
+            right = count - suffix_start;
+            int width =
+                flux__win_text_measure(dc, text, left)
+                + flux__win_text_measure(dc, text + suffix_start, right);
+            if (width <= content_width) {
+                low = keep;
+            } else {
+                high = keep - 1;
+            }
+        }
+        prefix_count = (low + 1) / 2;
+        suffix_count = low - prefix_count;
+        prefix_count =
+            flux__win_text_safe_prefix_count(text, count, prefix_count);
+        int suffix_start =
+            flux__win_text_safe_suffix_start(text, count, count - suffix_count);
+        suffix_count = count - suffix_start;
+    }
+
+    size_t capacity = (size_t)prefix_count + (size_t)suffix_count + 2;
+    wchar_t *owned = (wchar_t *)malloc(capacity * sizeof(wchar_t));
+    if (owned == NULL) return NULL;
+    if (prefix_count > 0) {
+        memcpy(owned, text, (size_t)prefix_count * sizeof(wchar_t));
+    }
+    owned[prefix_count] = L'\x2026';
+    if (suffix_count > 0) {
+        memcpy(
+            owned + prefix_count + 1,
+            text + count - suffix_count,
+            (size_t)suffix_count * sizeof(wchar_t)
+        );
+    }
+    *render_count = prefix_count + 1 + suffix_count;
+    owned[*render_count] = L'\0';
+    return owned;
+}
+
 static void flux__win_draw_text_line(
     HWND control,
     HDC dc,
@@ -14796,21 +14957,22 @@ static void flux__win_draw_text_line(
     int count,
     int top,
     const RECT *bounds,
-    bool append_ellipsis
+    int ellipsize_mode
 ) {
     if (control == NULL || dc == NULL || bounds == NULL || text == NULL) return;
+    int render_count = count;
     wchar_t *owned = NULL;
     const wchar_t *render = text;
-    int render_count = count;
-    if (append_ellipsis) {
-        size_t capacity = (size_t)(count < 0 ? 0 : count) + 2;
-        owned = (wchar_t *)malloc(capacity * sizeof(wchar_t));
-        if (owned == NULL) return;
-        if (count > 0) memcpy(owned, text, (size_t)count * sizeof(wchar_t));
-        owned[count] = L'\x2026';
-        owned[count + 1] = L'\0';
-        render = owned;
-        render_count = count + 1;
+    if (ellipsize_mode != FLUX__WIN_ELLIPSIZE_NONE) {
+        owned = flux__win_text_ellipsize_line(
+            dc,
+            text,
+            count,
+            bounds->right - bounds->left,
+            ellipsize_mode,
+            &render_count
+        );
+        if (owned != NULL) render = owned;
     }
     RECT line = *bounds;
     line.top = top;
@@ -14827,7 +14989,6 @@ static void flux__win_draw_text_line(
             flags |= DT_LEFT;
             break;
     }
-    if (append_ellipsis) flags |= DT_END_ELLIPSIS;
     (void)DrawTextW(dc, render, render_count, &line, flags);
     free(owned);
 }
@@ -14992,12 +15153,16 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
             bool more_after_paragraph = paragraph_end < text_length;
             bool no_full_next_line =
                 (int64_t)top + (int64_t)line_height * INT64_C(2) > bounds.bottom;
-            bool append_ellipsis =
-                state->ellipsize_end
+            int line_ellipsize_mode = FLUX__WIN_ELLIPSIZE_NONE;
+            if (
+                state->ellipsize_mode != FLUX__WIN_ELLIPSIZE_NONE
                 && (
                     width_overflow
                     || ((more_in_paragraph || more_after_paragraph) && no_full_next_line)
-                );
+                )
+            ) {
+                line_ellipsize_mode = state->ellipsize_mode;
+            }
 
             int draw_count = count;
             while (
@@ -15013,7 +15178,7 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
                 draw_count,
                 top,
                 &bounds,
-                append_ellipsis
+                line_ellipsize_mode
             );
             top += line_height;
 
@@ -15035,7 +15200,7 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
                 if (position < text_length && text[position] == L'\r') position++;
                 if (position < text_length && text[position] == L'\n') position++;
             }
-            if (append_ellipsis && no_full_next_line) break;
+            if (line_ellipsize_mode != FLUX__WIN_ELLIPSIZE_NONE && no_full_next_line) break;
         }
     }
 
@@ -15182,7 +15347,10 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
                 || view_property(element, "line_height_percent").is_some()
                 || view_property(element, "wrap_mode")
                     .and_then(|property| static_expr_str(&property.value, signatures))
-                    .is_some_and(|value| value != "word"))
+                    .is_some_and(|value| value != "word")
+                || view_property(element, "ellipsize")
+                    .and_then(|property| static_expr_str(&property.value, signatures))
+                    .is_some_and(|value| matches!(value.as_str(), "start" | "middle")))
         {
             let initial_letter_spacing = view_property(element, "letter_spacing")
                 .and_then(|property| static_expr_i64(&property.value, signatures))
@@ -15201,9 +15369,15 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
                 Some("wordChar" | "word_char") => "FLUX__WIN_WRAP_WORD_CHAR",
                 _ => "FLUX__WIN_WRAP_WORD",
             };
-            let ellipsize_end = view_property(element, "ellipsize")
+            let ellipsize_mode = match view_property(element, "ellipsize")
                 .and_then(|property| static_expr_str(&property.value, signatures))
-                .is_some_and(|value| value == "end");
+                .as_deref()
+            {
+                Some("start") => "FLUX__WIN_ELLIPSIZE_START",
+                Some("middle") => "FLUX__WIN_ELLIPSIZE_MIDDLE",
+                Some("end") => "FLUX__WIN_ELLIPSIZE_END",
+                _ => "FLUX__WIN_ELLIPSIZE_NONE",
+            };
             out.push_str(&format!(
                 "static flux__win_text_layout_state flux__win_text_layout_{} = {{ INT64_C({}), INT64_C({}), {}, {}, {} }};\n",
                 element.name,
@@ -15211,7 +15385,7 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
                 initial_line_height_percent,
                 if wrap { "true" } else { "false" },
                 wrap_mode,
-                if ellipsize_end { "true" } else { "false" },
+                ellipsize_mode,
             ));
         }
         if element.kind == "Button"
@@ -17619,7 +17793,10 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 || view_property(element, "line_height_percent").is_some()
                 || view_property(element, "wrap_mode")
                     .and_then(|property| static_expr_str(&property.value, signatures))
-                    .is_some_and(|value| value != "word"))
+                    .is_some_and(|value| value != "word")
+                || view_property(element, "ellipsize")
+                    .and_then(|property| static_expr_str(&property.value, signatures))
+                    .is_some_and(|value| matches!(value.as_str(), "start" | "middle")))
         {
             out.push_str(&format!(
                 "if (!SetWindowSubclass({variable}, flux__win_text_layout_proc, (UINT_PTR){}, (DWORD_PTR)(uintptr_t)&flux__win_text_layout_{})) return 1;\n",

@@ -2639,7 +2639,7 @@ app Screen
     )
     .expect_err("centered Windows clipped no-wrap Text must not silently wrap");
     assert!(centered_nowrap_error.message.contains(
-        "Text.wrap: false without ellipsize: 'end' currently supports only left/fill alignment"
+        "Text.wrap: false without ellipsizing currently supports only left/fill alignment"
     ));
 
     let dynamic_nowrap_source = r#"
@@ -2665,9 +2665,11 @@ app Screen
         fluxc::codegen::NativeTarget::Windows,
     )
     .expect_err("dynamic clipped no-wrap alignment must not silently regain wrapping");
-    assert!(dynamic_nowrap_error.message.contains(
-        "Text.wrap: false requires compile-time textAlign unless ellipsize: 'end' is used"
-    ));
+    assert!(
+        dynamic_nowrap_error.message.contains(
+            "Text.wrap: false requires compile-time textAlign unless ellipsize is enabled"
+        )
+    );
 
     let advanced_source = r#"
 view Screen {
@@ -2738,9 +2740,42 @@ app Screen
     )
     .expect("Windows wordChar wrapping should lower through the native text painter");
     assert!(word_char_windows.contains(
-        "static flux__win_text_layout_state flux__win_text_layout_label = { INT64_C(0), INT64_C(100), true, FLUX__WIN_WRAP_WORD_CHAR, false }"
+        "static flux__win_text_layout_state flux__win_text_layout_label = { INT64_C(0), INT64_C(100), true, FLUX__WIN_WRAP_WORD_CHAR, FLUX__WIN_ELLIPSIZE_NONE }"
     ));
     assert!(word_char_windows.contains("else if (state->wrap_mode == FLUX__WIN_WRAP_WORD_CHAR)"));
+
+    for (ellipsize, native_mode) in [
+        ("start", "FLUX__WIN_ELLIPSIZE_START"),
+        ("middle", "FLUX__WIN_ELLIPSIZE_MIDDLE"),
+    ] {
+        let source = format!(
+            r#"view Screen {{
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "abcdefghijklmno"
+        wrap: false
+        textAlign: "center"
+        ellipsize: "{ellipsize}"
+}}
+app Screen
+"#
+        );
+        let program = fluxc::parser::parse(&source)
+            .expect("Windows leading/middle ellipsize source should parse");
+        let signatures = fluxc::typecheck::check(&program)
+            .expect("Windows leading/middle ellipsize source should typecheck");
+        let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+            &program,
+            &signatures,
+            &std::collections::HashMap::new(),
+            fluxc::codegen::NativeTarget::Windows,
+        )
+        .expect("Windows leading/middle ellipsize should lower through the native text painter");
+        assert!(windows.contains(native_mode));
+        assert!(windows.contains("flux__win_text_ellipsize_line("));
+        assert!(windows.contains("SetWindowSubclass(flux__ui_label, flux__win_text_layout_proc"));
+    }
 
     let selectable_char_source = r#"
 view Screen {
@@ -2770,11 +2805,35 @@ app Screen
             .contains("selectable Text currently supports only wrapMode: 'word'")
     );
 
+    let selectable_ellipsize_source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Selectable"
+        selectable: true
+        ellipsize: "middle"
+}
+app Screen
+"#;
+    let selectable_ellipsize_program = fluxc::parser::parse(selectable_ellipsize_source)
+        .expect("selectable Windows ellipsize source should parse");
+    let selectable_ellipsize_signatures = fluxc::typecheck::check(&selectable_ellipsize_program)
+        .expect("selectable Windows ellipsize source should typecheck");
+    let selectable_ellipsize_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &selectable_ellipsize_program,
+        &selectable_ellipsize_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("selectable Windows Text must not fake custom ellipsizing");
+    assert!(
+        selectable_ellipsize_error
+            .message
+            .contains("selectable Text does not yet support ellipsize: 'middle'")
+    );
+
     for (property, message) in [
-        (
-            "ellipsize: \"middle\"",
-            "Text.ellipsize currently supports only 'none' and 'end'",
-        ),
         (
             "letterSpacing: 2097152",
             "Text.letterSpacing is outside the supported native range",
@@ -3386,7 +3445,7 @@ view Screen {
     Text title at 1,1
         text: "Cross target"
         status: "loading"
-        selectable: true
+        ellipsize: "middle"
         radius: 6
         radiusTopLeft: 3
         radiusBottomRight: 9
