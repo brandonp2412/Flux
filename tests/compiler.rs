@@ -2779,13 +2779,14 @@ app Screen
 
     let dynamic_overflow_source = r#"
 view Screen {
+    state wraps: bool = false
     state wrapping: str = "wordChar"
     state overflow: str = "middle"
     grid columns: 1fr
     grid rows: auto
     Text label at 1,1
         text: "Dynamic native overflow"
-        wrap: false
+        wrap: wraps
         textAlign: "center"
         wrapMode: wrapping
         ellipsize: overflow
@@ -2804,8 +2805,13 @@ app Screen
     )
     .expect("dynamic Windows Text overflow should lower through the native text painter");
     assert!(dynamic_overflow_windows.contains(
-        "static flux__win_text_layout_state flux__win_text_layout_label = { INT64_C(0), INT64_C(100), false, FLUX__WIN_WRAP_WORD, FLUX__WIN_ELLIPSIZE_NONE }"
+        "static flux__win_text_layout_state flux__win_text_layout_label = { INT64_C(0), INT64_C(100), true, FLUX__WIN_WRAP_WORD, FLUX__WIN_ELLIPSIZE_NONE }"
     ));
+    assert!(dynamic_overflow_windows.contains("flux__win_next_wrap_label"));
+    assert!(
+        dynamic_overflow_windows
+            .contains("flux__win_text_layout_label.wrap = flux__win_next_wrap_label")
+    );
     assert!(dynamic_overflow_windows.contains("flux__win_next_wrap_mode_text_label"));
     assert!(dynamic_overflow_windows.contains("flux__win_next_ellipsize_text_label"));
     assert!(
@@ -2910,6 +2916,36 @@ app Screen
             error.message
         );
     }
+
+    let selectable_dynamic_wrap_source = r#"
+view Screen {
+    state wraps: bool = false
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Selectable"
+        selectable: true
+        wrap: wraps
+}
+app Screen
+"#;
+    let selectable_dynamic_wrap_program = fluxc::parser::parse(selectable_dynamic_wrap_source)
+        .expect("selectable dynamic Windows wrap source should parse");
+    let selectable_dynamic_wrap_signatures =
+        fluxc::typecheck::check(&selectable_dynamic_wrap_program)
+            .expect("selectable dynamic Windows wrap source should typecheck");
+    let selectable_dynamic_wrap_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &selectable_dynamic_wrap_program,
+        &selectable_dynamic_wrap_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("selectable Windows Text must not replace native selection for dynamic wrap");
+    assert!(
+        selectable_dynamic_wrap_error
+            .message
+            .contains("selectable Text does not yet support state-driven wrap")
+    );
 
     for (property, message) in [
         (
@@ -3518,6 +3554,7 @@ view Screen {
     state extent: i64 = 80
     state count: i64 = 0
     state horizontal: str = "center"
+    state wraps: bool = true
     state wrapping: str = "wordChar"
     state overflow: str = "middle"
     grid columns: 1fr
@@ -3525,6 +3562,7 @@ view Screen {
     Text title at 1,1
         text: "Cross target"
         status: "loading"
+        wrap: wraps
         ellipsize: overflow
         radius: 6
         radiusTopLeft: 3

@@ -14386,15 +14386,20 @@ fn emit_windows_native_application(
                 "Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer",
             ));
         }
+        let mut wrap_is_dynamic = false;
         let wrap = match view_property(element, "wrap") {
             Some(property) => {
-                let Some(wrap) = static_expr_bool(&property.value, signatures) else {
+                if let Some(wrap) = static_expr_bool(&property.value, signatures) {
+                    wrap
+                } else if selectable {
                     return Err(diag(
                         property.value.span,
-                        "bootstrap Windows Text.wrap must be a compile-time bool value",
+                        "bootstrap Windows selectable Text does not yet support state-driven wrap",
                     ));
-                };
-                wrap
+                } else {
+                    wrap_is_dynamic = true;
+                    true
+                }
             }
             None => true,
         };
@@ -14464,6 +14469,7 @@ fn emit_windows_native_application(
             None
         };
         let text_uses_custom_painter = uses_custom_text_layout
+            || wrap_is_dynamic
             || wrap_mode_uses_custom_painter
             || ellipsize_is_dynamic
             || matches!(ellipsize.as_deref(), Some("start" | "middle"));
@@ -14652,6 +14658,9 @@ fn emit_windows_native_application(
         element.kind == "Text"
             && (view_property(element, "letter_spacing").is_some()
                 || view_property(element, "line_height_percent").is_some()
+                || view_property(element, "wrap").is_some_and(|property| {
+                    static_expr_bool(&property.value, signatures).is_none()
+                })
                 || view_property(element, "wrap_mode").is_some_and(|property| {
                     static_expr_str(&property.value, signatures).is_none_or(|value| value != "word")
                 })
@@ -15363,6 +15372,9 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
         if element.kind == "Text"
             && (view_property(element, "letter_spacing").is_some()
                 || view_property(element, "line_height_percent").is_some()
+                || view_property(element, "wrap").is_some_and(|property| {
+                    static_expr_bool(&property.value, signatures).is_none()
+                })
                 || view_property(element, "wrap_mode").is_some_and(|property| {
                     static_expr_str(&property.value, signatures).is_none_or(|value| value != "word")
                 })
@@ -16897,6 +16909,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         let uses_text_layout_state = element.kind == "Text"
             && (view_property(element, "letter_spacing").is_some()
                 || view_property(element, "line_height_percent").is_some()
+                || view_property(element, "wrap").is_some_and(|property| {
+                    static_expr_bool(&property.value, signatures).is_none()
+                })
                 || view_property(element, "wrap_mode").is_some_and(|property| {
                     static_expr_str(&property.value, signatures).is_none_or(|value| value != "word")
                 })
@@ -16923,6 +16938,16 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "int64_t flux__win_next_line_height_{0} = {value}; if (flux__win_next_line_height_{0} <= 0 || flux__win_next_line_height_{0} > INT32_MAX) {{ fputs(\"Flux runtime error: Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (flux__win_text_layout_{0}.line_height_percent != flux__win_next_line_height_{0}) {{ flux__win_text_layout_{0}.line_height_percent = flux__win_next_line_height_{0}; if ({variable} != NULL) InvalidateRect({variable}, NULL, TRUE); }}\n",
+                element.name
+            ));
+        }
+        if let Some(property) = view_property(element, "wrap")
+            && static_expr_bool(&property.value, signatures).is_none()
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "bool flux__win_next_wrap_{0} = {value}; if (flux__win_text_layout_{0}.wrap != flux__win_next_wrap_{0}) {{ flux__win_text_layout_{0}.wrap = flux__win_next_wrap_{0}; if ({variable} != NULL) InvalidateRect({variable}, NULL, TRUE); }}
+",
                 element.name
             ));
         }
@@ -17835,6 +17860,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         if element.kind == "Text"
             && (view_property(element, "letter_spacing").is_some()
                 || view_property(element, "line_height_percent").is_some()
+                || view_property(element, "wrap").is_some_and(|property| {
+                    static_expr_bool(&property.value, signatures).is_none()
+                })
                 || view_property(element, "wrap_mode").is_some_and(|property| {
                     static_expr_str(&property.value, signatures).is_none_or(|value| value != "word")
                 })
