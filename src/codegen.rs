@@ -43295,10 +43295,17 @@ fn emit_sequence_reduction_binding(
     let Type::List(source_element) = signatures.canonical_type(&source.ty) else {
         return Err(diag(expr.span, "sequence reduction requires a list source"));
     };
-    let list_ty = signatures.canonical_type(&cfg_rewrite_required_root_type(
-        list_expr.span,
-        rewrite_facts,
-    )?);
+    let list_ty = if stages.is_empty() {
+        Type::List(Box::new((*source_element).clone()))
+    } else {
+        sequence_transform_result_type(
+            &stages,
+            &source_element,
+            env,
+            signatures,
+            Some(rewrite_facts),
+        )?
+    };
     let Type::List(element) = list_ty else {
         return Err(diag(
             expr.span,
@@ -57101,7 +57108,7 @@ fn main() -> i64 {
     }
 
     #[test]
-    fn sequence_reduction_fallback_requires_typed_ir_list_root_type() {
+    fn sequence_reduction_fallback_derives_list_type_from_source_children() {
         let source = r#"
 fn exercise(values: i64[]) -> i64 {
     let total: i64 = fold(values, 10, fn(total: i64, value: i64) { total + value + 1 })
@@ -57164,7 +57171,7 @@ fn main() -> i64 {
             &facts,
             &mut temp_counter,
         )
-        .expect("fallback reduction should consume the typed-IR list root type");
+        .expect("fallback reduction should derive the list type from its source");
 
         assert!(out.contains("flux__reduce_source_"), "{out}");
         assert!(out.contains(&local_c_name("values")), "{out}");
@@ -57181,7 +57188,7 @@ fn main() -> i64 {
         let mut env = base_env;
         let mut out = String::new();
         let mut temp_counter = 0;
-        let error = emit_sequence_reduction_binding(
+        emit_sequence_reduction_binding(
             &mut out,
             "",
             ("total", &Type::I64),
@@ -57191,13 +57198,10 @@ fn main() -> i64 {
             &missing_root_facts,
             &mut temp_counter,
         )
-        .expect_err("fallback reduction must require its normalized list root type");
-        assert!(
-            error
-                .message
-                .contains("normalized typed IR is missing an expression root type"),
-            "unexpected diagnostic: {error:?}"
-        );
+        .expect("fallback reduction should derive the missing list root type from child values");
+        assert!(out.contains("flux__reduce_source_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(out.contains("flux_add_i64"), "{out}");
     }
 
     #[test]
