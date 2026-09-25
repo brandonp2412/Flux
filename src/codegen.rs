@@ -5932,6 +5932,22 @@ static inline const char *flux__json_encode_optional_str(struct flux__optional_s
             bool uppercase_ipv6_hex = plain_ipv6_literal && byte >= 'A' && byte <= 'F';
             if (uppercase_host || uppercase_ipv6_hex) *part = (char)(byte - 'A' + 'a');
         }
+
+        char *port_marker = host_end < authority_end && *host_end == ':' ? host_end : NULL;
+        if (port_marker != NULL) {
+            char *port = port_marker + 1;
+            size_t port_length = (size_t)(authority_end - port);
+            size_t scheme_length = (size_t)(scheme_end - buffer);
+            bool http_default = scheme_length == 4 && memcmp(buffer, "http", 4) == 0
+                && port_length == 2 && memcmp(port, "80", 2) == 0;
+            bool https_default = scheme_length == 5 && memcmp(buffer, "https", 5) == 0
+                && port_length == 3 && memcmp(port, "443", 3) == 0;
+            if (http_default || https_default) {
+                size_t removed = (size_t)(authority_end - port_marker);
+                memmove(port_marker, authority_end, length - (size_t)(authority_end - buffer) + 1);
+                length -= removed;
+            }
+        }
     }
 
     // Dot segments are syntax only for hierarchical URIs. Keep opaque
