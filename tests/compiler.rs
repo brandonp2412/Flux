@@ -18511,7 +18511,7 @@ fn main() -> i64 {
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("cannot consume borrowed collection parameter 'alias'")
+            .contains("cannot consume borrowed collection binding 'alias'")
     }));
 }
 
@@ -18539,10 +18539,29 @@ fn main() -> i64 {
             .iter()
             .filter(|error| error
                 .message
-                .contains("cannot consume borrowed collection parameter 'alias'"))
+                .contains("cannot consume borrowed collection binding 'alias'"))
             .count(),
         2
     );
+}
+
+#[test]
+fn explicit_drop_cannot_consume_borrowed_collection_views() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let view: i64[] = values[0:1]
+    drop(view)
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(source).expect_err("a zero-copy collection view must not be consumed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("cannot consume borrowed collection binding 'view'")
+    }));
 }
 
 #[test]

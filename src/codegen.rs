@@ -81182,7 +81182,7 @@ fn main() -> i64 {
 
         let special_body_source = r#"
 fn pick() -> fn(i64[]) -> void {
-    return fn(values: i64[]) -> void { drop(values) }
+    return fn(values: i64[]) -> void { print(values.count) }
 }
 
 fn main() -> i64 {
