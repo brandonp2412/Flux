@@ -15196,6 +15196,9 @@ fn type_of_call_argument(
         ExprKind::Set(items) if items.is_empty() && matches!(expected, Type::Set(_)) => {
             return Ok(expected);
         }
+        ExprKind::Map(items) if items.is_empty() && matches!(expected, Type::Map(_, _)) => {
+            return Ok(expected);
+        }
         _ => {}
     }
     type_of_expr(expr, env, signatures)

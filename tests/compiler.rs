@@ -501,6 +501,14 @@ fn countSetNamed(seed: i64, *, values: set<i64>) -> i64 {
     return seed + values.count
 }
 
+fn countMap(values: map<str, i64>) -> i64 {
+    return values.count
+}
+
+fn countMapNamed(seed: i64, *, values: map<str, i64>) -> i64 {
+    return seed + values.count
+}
+
 fn applyList(transform: fn(i64[]) -> i64) -> i64 {
     return transform([])
 }
@@ -509,14 +517,19 @@ fn applySet(transform: fn(set<i64>) -> i64) -> i64 {
     return transform({})
 }
 
+fn applyMap(transform: fn(map<str, i64>) -> i64) -> i64 {
+    return transform(map{})
+}
+
 fn main() -> i64 {
     let listCount: i64 = applyList(countList)
     let setCount: i64 = applySet(countSet)
-    return listCount + setCount + countSet({}) + countSetNamed(3, values: {})
+    let mapCount: i64 = applyMap(countMap)
+    return listCount + setCount + mapCount + countSet({}) + countSetNamed(3, values: {}) + countMap(map{}) + countMapNamed(4, values: map{})
 }
 "#;
     let generated = compile_to_c(source)
-        .expect("empty list and set call arguments should inherit exact parameter types");
+        .expect("empty collection call arguments should inherit exact parameter types");
     assert!(
         generated
             .contains("(struct flux__list){ .data = NULL, .len = 0, .stride = sizeof(int64_t) }"),
@@ -530,9 +543,15 @@ fn main() -> i64 {
         generated.contains("flux__typed_borrowed_set"),
         "empty set calls should lower through typed-IR borrowed descriptors: {generated}"
     );
+    assert!(
+        generated.contains("flux__typed_borrowed_map"),
+        "empty map calls should lower through typed-IR borrowed descriptors: {generated}"
+    );
     assert!(generated.contains("flux__fn_countList"), "{generated}");
     assert!(generated.contains("flux__fn_countSet"), "{generated}");
     assert!(generated.contains("flux__fn_countSetNamed"), "{generated}");
+    assert!(generated.contains("flux__fn_countMap"), "{generated}");
+    assert!(generated.contains("flux__fn_countMapNamed"), "{generated}");
 }
 
 #[test]

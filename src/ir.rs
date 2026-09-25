@@ -7424,6 +7424,9 @@ fn record_contextual_empty_collection_type(
     ) || matches!(
         (&expr.kind, &expected),
         (ExprKind::Set(items), Type::Set(_)) if items.is_empty()
+    ) || matches!(
+        (&expr.kind, &expected),
+        (ExprKind::Map(items), Type::Map(_, _)) if items.is_empty()
     );
     if contextual
         && !evaluations

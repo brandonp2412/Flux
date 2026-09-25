@@ -54592,9 +54592,6 @@ fn emit_cfg_call_scoped_borrowed_map_direct_indexed(
     let CfgAggregateConstantKind::Map(entries) = &aggregate.kind else {
         return None;
     };
-    if entries.is_empty() {
-        return None;
-    }
 
     let key = signatures.canonical_type(key);
     let value = signatures.canonical_type(value);
@@ -54604,6 +54601,15 @@ fn emit_cfg_call_scoped_borrowed_map_direct_indexed(
         Some(index) => format!("flux__typed_borrowed_map_{index}"),
         None => "flux__typed_borrowed_map".to_string(),
     };
+    if entries.is_empty() {
+        return Some((
+            format!(
+                "struct flux__map {borrowed} = (struct flux__map){{ .keys = (struct flux__list){{ .data = NULL, .len = 0, .stride = sizeof({key_c}) }}, .values = (struct flux__list){{ .data = NULL, .len = 0, .stride = sizeof({value_c}) }} }}; "
+            ),
+            borrowed,
+        ));
+    }
+
     let mut prelude = String::new();
     let mut keys = Vec::with_capacity(entries.len());
     let mut values = Vec::with_capacity(entries.len());
