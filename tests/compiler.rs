@@ -607,6 +607,27 @@ fn main() -> i64 {
 }
 
 #[test]
+fn empty_contains_list_and_set_arguments_inherit_key_types() {
+    let source = r#"
+fn main() -> i64 {
+    let listInt: bool = contains([], 1)
+    let setBool: bool = contains({}, true)
+    let listText: bool = contains([], "needle")
+    let setText: bool = contains({}, "needle")
+    if listInt || setBool || listText || setText:
+        return 1
+    return 0
+}
+"#;
+    let generated = compile_to_c(source)
+        .expect("empty contains list/set arguments should inherit their scalar key types");
+    assert!(
+        generated.matches("flux__typed_contains_result").count() >= 4,
+        "empty contains calls should stay on the typed-IR membership path: {generated}"
+    );
+}
+
+#[test]
 fn map_calls_with_computed_copy_peers_use_ordered_typed_ir_storage() {
     let source = r#"
 fn observeBefore(value: i64) -> i64 {
@@ -35953,6 +35974,38 @@ fn main() -> i64 {
         })
         .expect("empty builtin list argument should remain a normalized typed value");
     assert_eq!(empty_list.ty, Type::List(Box::new(Type::Bool)));
+}
+
+#[test]
+fn semantic_cfg_records_contextual_empty_contains_collection_types() {
+    let source = r#"
+fn main() -> i64 {
+    let listValue: bool = contains([], 1)
+    let setValue: bool = contains({}, true)
+    if listValue || setValue:
+        return 1
+    return 0
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1318))
+        .expect("empty contains collection arguments should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    assert!(graph.values().iter().any(|value| {
+        value.ty == Type::List(Box::new(Type::I64))
+            && matches!(
+                &value.kind,
+                ControlFlowValueKind::List { items } if items.is_empty()
+            )
+    }));
+    assert!(graph.values().iter().any(|value| {
+        value.ty == Type::Set(Box::new(Type::Bool))
+            && matches!(
+                &value.kind,
+                ControlFlowValueKind::Set { items } if items.is_empty()
+            )
+    }));
 }
 
 #[test]

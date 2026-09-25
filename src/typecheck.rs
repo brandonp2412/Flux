@@ -7162,9 +7162,25 @@ pub fn type_of_expr(
                     "contains expects exactly two arguments: a list, set, or map and a scalar key",
                 ));
             }
-            let collection_ty =
-                signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
-            let searched_ty = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+            let contextual_searched_ty = if matches!(
+                &args[0].kind,
+                ExprKind::List(items) | ExprKind::Set(items) if items.is_empty()
+            ) {
+                Some(signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?))
+            } else {
+                None
+            };
+            let collection_ty = if let Some(searched_ty) = contextual_searched_ty.as_ref() {
+                contextual_empty_contains_collection_type(&args[0], searched_ty, signatures)
+                    .expect("empty contains list/set should have a contextual collection type")
+            } else {
+                signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?)
+            };
+            let searched_ty = if let Some(searched_ty) = contextual_searched_ty {
+                searched_ty
+            } else {
+                signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?)
+            };
             let expected = match collection_ty {
                 Type::List(element) | Type::Set(element) => *element,
                 Type::Map(key, _) => *key,
@@ -15268,6 +15284,19 @@ fn type_of_qualified_call_argument(
         return type_of_call_argument(expr, &expected, env, signatures);
     }
     type_of_expr(expr, env, signatures)
+}
+
+pub(crate) fn contextual_empty_contains_collection_type(
+    collection: &Expr,
+    key_type: &Type,
+    signatures: &Signatures,
+) -> Option<Type> {
+    let key_type = signatures.canonical_type(key_type);
+    match &collection.kind {
+        ExprKind::List(items) if items.is_empty() => Some(Type::List(Box::new(key_type))),
+        ExprKind::Set(items) if items.is_empty() => Some(Type::Set(Box::new(key_type))),
+        _ => None,
+    }
 }
 
 fn type_of_call_argument(

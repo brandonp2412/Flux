@@ -7473,6 +7473,20 @@ fn record_expr_types(
             args,
             named_args,
         } => {
+            let contains_empty_collection_type = if named_args.is_empty()
+                && args.len() == 2
+                && crate::builtin_names::global_impl(name) == "contains"
+            {
+                typecheck::type_of_expr(&args[1], env, signatures)
+                    .ok()
+                    .and_then(|key_type| {
+                        typecheck::contextual_empty_contains_collection_type(
+                            &args[0], &key_type, signatures,
+                        )
+                    })
+            } else {
+                None
+            };
             for (index, arg) in args.iter().enumerate() {
                 let inline_sequence_callback = named_args.is_empty()
                     && matches!(arg.kind, ExprKind::AnonymousFunction { .. })
@@ -7486,12 +7500,14 @@ fn record_expr_types(
                     record_inline_sequence_callback_types(arg, env, signatures, evaluations);
                 } else {
                     record_expr_types(arg, env, signatures, evaluations);
-                    record_contextual_empty_collection_type(
-                        arg,
-                        call_argument_expected_type(name, index, None, env, signatures),
-                        signatures,
-                        evaluations,
-                    );
+                    let expected = if index == 0 {
+                        contains_empty_collection_type.clone().or_else(|| {
+                            call_argument_expected_type(name, index, None, env, signatures)
+                        })
+                    } else {
+                        call_argument_expected_type(name, index, None, env, signatures)
+                    };
+                    record_contextual_empty_collection_type(arg, expected, signatures, evaluations);
                 }
             }
             for arg in named_args {
