@@ -6143,7 +6143,11 @@ static inline const char *flux__uri_normalize(const char *value, void (*callback
                 && port_length == 2 && memcmp(port, "80", 2) == 0;
             bool https_default = scheme_length == 5 && memcmp(buffer, "https", 5) == 0
                 && port_length == 3 && memcmp(port, "443", 3) == 0;
-            if (http_default || https_default) {
+            bool ws_default = scheme_length == 2 && memcmp(buffer, "ws", 2) == 0
+                && port_length == 2 && memcmp(port, "80", 2) == 0;
+            bool wss_default = scheme_length == 3 && memcmp(buffer, "wss", 3) == 0
+                && port_length == 3 && memcmp(port, "443", 3) == 0;
+            if (http_default || https_default || ws_default || wss_default) {
                 size_t removed = (size_t)(authority_end - port_marker);
                 memmove(port_marker, authority_end, length - (size_t)(authority_end - buffer) + 1);
                 length -= removed;
