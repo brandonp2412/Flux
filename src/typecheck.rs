@@ -8499,6 +8499,64 @@ fn check_qualified_call(
                 require_type(args[2].span, &expected, &callback, "tls.readBytes callback")?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "readBytesTimeout" => {
+                if args.len() != 4 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "tls.readBytesTimeout expects 4 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let session = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &session,
+                    "tls.readBytesTimeout session",
+                )?;
+                let max_bytes = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &max_bytes,
+                    "tls.readBytesTimeout maxBytes",
+                )?;
+                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value))
+                {
+                    return Err(diag(
+                        args[1].span,
+                        "tls.readBytesTimeout maxBytes must be between 1 and 65536",
+                    ));
+                }
+                let timeout = type_of_expr(&args[2], env, signatures)?;
+                require_type(
+                    args[2].span,
+                    &Type::I64,
+                    &timeout,
+                    "tls.readBytesTimeout timeoutMillis",
+                )?;
+                if matches!(constant_primitive_value(&args[2], signatures), Some(ConstantValue::I64(value)) if !(-1..=i64::from(i32::MAX)).contains(&value))
+                {
+                    return Err(diag(
+                        args[2].span,
+                        "tls.readBytesTimeout timeoutMillis must be -1 or between 0 and 2147483647",
+                    ));
+                }
+                let callback = signatures.canonical_type(&type_of_expr(&args[3], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::List(Box::new(Type::I64))],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[3].span,
+                    &expected,
+                    &callback,
+                    "tls.readBytesTimeout callback",
+                )?;
+                return Ok(vec![Type::I64, Type::Bool, Type::Error]);
+            }
             "readTimeout" => {
                 if args.len() != 4 {
                     return Err(diag(
@@ -8580,6 +8638,50 @@ fn check_qualified_call(
                 )?;
                 validate_literal_byte_list(&args[1], signatures, "tls.writeBytes")?;
                 return Ok(vec![Type::Error]);
+            }
+            "writeBytesTimeout" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "tls.writeBytesTimeout expects 3 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let session = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &session,
+                    "tls.writeBytesTimeout session",
+                )?;
+                let bytes = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::List(Box::new(Type::I64)),
+                    &bytes,
+                    "tls.writeBytesTimeout bytes",
+                )?;
+                validate_literal_byte_list(&args[1], signatures, "tls.writeBytesTimeout")?;
+                let timeout = type_of_expr(&args[2], env, signatures)?;
+                require_type(
+                    args[2].span,
+                    &Type::I64,
+                    &timeout,
+                    "tls.writeBytesTimeout timeoutMillis",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[2], signatures),
+                    Some(ConstantValue::I64(value))
+                        if !(-1..=i64::from(i32::MAX)).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[2].span,
+                        "tls.writeBytesTimeout timeoutMillis must be -1 or between 0 and 2147483647",
+                    ));
+                }
+                return Ok(vec![Type::I64, Type::Bool, Type::Error]);
             }
             "writeTimeout" => {
                 if args.len() != 3 {

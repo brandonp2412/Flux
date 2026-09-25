@@ -25784,9 +25784,17 @@ fn consume(_bytes: i64[]) -> void {
 fn main() -> i64 {
     let write_error: error = tls.writeBytes(1, [0, 128, 255])
     let (received, read_error) = tls.readBytes(1, 1024, consume)
+    let (timed_written, timed_complete, timed_write_error) = tls.writeBytesTimeout(1, [0, 128, 255], 0)
+    let (timed_received, timed_ready, timed_read_error) = tls.readBytesTimeout(1, 1024, 0, consume)
     print(write_error)
     print(received)
     print(read_error)
+    print(timed_written)
+    print(timed_complete)
+    print(timed_write_error)
+    print(timed_received)
+    print(timed_ready)
+    print(timed_read_error)
     return 0
 }
 "#;
@@ -25794,6 +25802,10 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("TLS binary I/O should lower natively");
     assert!(generated.contains("flux__tls_write_bytes("));
     assert!(generated.contains("flux__tls_read_bytes("));
+    assert!(generated.contains("flux__tls_write_bytes_timeout("));
+    assert!(generated.contains("flux__tls_read_bytes_timeout("));
+    assert!(generated.contains("TLS writeBytesTimeout cancelled by worker scope"));
+    assert!(generated.contains("TLS readBytesTimeout cancelled by worker scope"));
     assert!(generated.contains("TLS writeBytes byte values must be between 0 and 255"));
     assert!(generated.contains("TLS writeBytes byte list has an invalid element stride"));
     assert!(generated.contains("invalid TLS readBytes arguments"));
@@ -25826,14 +25838,52 @@ fn main() -> i64 {
     .expect_err("TLS binary reads require a byte callback");
     assert!(invalid_callback.message.contains("tls.readBytes callback"));
 
+    let invalid_read_timeout = check_source(
+        "fn consume(_bytes: i64[]) -> void {
+}
+fn main() -> i64 {
+    let (_received, _ready, _failure) = tls.readBytesTimeout(1, 64, 2147483648, consume)
+    return 0
+}
+",
+    )
+    .expect_err("TLS timed binary reads must bound timeoutMillis");
+    assert!(
+        invalid_read_timeout
+            .message
+            .contains("tls.readBytesTimeout timeoutMillis must be -1 or between 0 and 2147483647")
+    );
+
+    let invalid_write_timeout = check_source(
+        "fn main() -> i64 {
+    let (_written, _complete, _failure) = tls.writeBytesTimeout(1, [0, 255], 2147483648)
+    return 0
+}
+",
+    )
+    .expect_err("TLS timed binary writes must bound timeoutMillis");
+    assert!(
+        invalid_write_timeout
+            .message
+            .contains("tls.writeBytesTimeout timeoutMillis must be -1 or between 0 and 2147483647")
+    );
+
     let unused = r#"
 fn consume(_bytes: i64[]) -> void {
 }
 fn hidden(session: i64, bytes: i64[]) -> void {
     print(tls.writeBytes(session, bytes))
     let (received, failure) = tls.readBytes(session, 64, consume)
+    let (timedWritten, timedComplete, timedWriteFailure) = tls.writeBytesTimeout(session, bytes, 10)
+    let (timedReceived, timedReady, timedReadFailure) = tls.readBytesTimeout(session, 64, 10, consume)
     print(received)
     print(failure)
+    print(timedWritten)
+    print(timedComplete)
+    print(timedWriteFailure)
+    print(timedReceived)
+    print(timedReady)
+    print(timedReadFailure)
 }
 fn main() -> i64 {
     return 0
@@ -25842,6 +25892,8 @@ fn main() -> i64 {
     let unused_generated = compile_to_c(unused).expect("dead TLS binary helpers should tree-shake");
     assert!(!unused_generated.contains("flux__tls_write_bytes("));
     assert!(!unused_generated.contains("flux__tls_read_bytes("));
+    assert!(!unused_generated.contains("flux__tls_write_bytes_timeout("));
+    assert!(!unused_generated.contains("flux__tls_read_bytes_timeout("));
 }
 
 #[test]
@@ -26071,18 +26123,32 @@ fn main() -> i64 {{
     let (session, tls_error) = tls.listen(socket, "{}", "{}")
     if tls_error != nil:
         return 3
-    let (received, read_error) = tls.readBytes(session, 1024, handle)
+    let (received, read_error) = tls.readBytes(session, 4, handle)
     if read_error != nil:
         return 4
     print(received)
+    let (timed_received, timed_ready, timed_read_error) = tls.readBytesTimeout(session, 4, 5000, handle)
+    if timed_read_error != nil:
+        return 5
+    if timed_ready == false:
+        return 6
+    print(timed_received)
+    print(timed_ready)
     let values: i64[] = [0, 77, 128, 77, 255]
     let response: i64[] = values[::2]
     let write_error: error = tls.writeBytes(session, response)
     if write_error != nil:
-        return 5
+        return 7
+    let (timed_written, timed_complete, timed_write_error) = tls.writeBytesTimeout(session, [1, 254], 5000)
+    if timed_write_error != nil:
+        return 8
+    if timed_complete == false:
+        return 9
+    print(timed_written)
+    print(timed_complete)
     let close_error: error = tls.close(session)
     if close_error != nil:
-        return 6
+        return 10
     print(net.close(listener))
     return 0
 }}
@@ -26122,7 +26188,7 @@ fn main() -> i64 {{
         .stdin
         .take()
         .unwrap()
-        .write_all(&[0, 127, 128, 255])
+        .write_all(&[0, 127, 128, 255, 1, 2, 254, 255])
         .expect("TLS binary client payload should write");
     let client_output = client
         .wait_with_output()
@@ -26141,10 +26207,10 @@ fn main() -> i64 {{
         String::from_utf8_lossy(&server_output.stdout),
         String::from_utf8_lossy(&server_output.stderr)
     );
-    assert_eq!(client_output.stdout, vec![0, 128, 255]);
+    assert_eq!(client_output.stdout, vec![0, 128, 255, 1, 254]);
     assert_eq!(
         String::from_utf8_lossy(&server_output.stdout),
-        "4\n0\n127\n128\n255\n4\nnil\n"
+        "4\n0\n127\n128\n255\n4\n4\n1\n2\n254\n255\n4\ntrue\n2\ntrue\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }

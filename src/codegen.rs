@@ -9952,6 +9952,59 @@ static inline const char *flux__tls_write_bytes(int64_t handle, struct flux__lis
     }
     return NULL;
 }
+static inline struct flux__net_i64_bool_error flux__tls_write_bytes_timeout(int64_t handle, struct flux__list bytes, int64_t timeout_millis) {
+    struct flux__net_i64_bool_error result = { .v0 = 0, .v1 = false, .v2 = NULL };
+    struct flux__tls_slot *slot = flux__tls_slot_for(handle);
+    if (slot == NULL) { result.v0 = -1; result.v2 = "invalid TLS writeBytesTimeout session"; return result; }
+    const char *validation = flux__tls_validate_bytes(bytes);
+    if (validation != NULL) { result.v0 = -1; result.v2 = validation; return result; }
+    if (timeout_millis < -1 || timeout_millis > INT_MAX) { result.v0 = -1; result.v2 = "TLS writeBytesTimeout timeoutMillis must be -1 or between 0 and 2147483647"; return result; }
+    int64_t deadline = -1;
+    if (timeout_millis >= 0) {
+        struct timespec now;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) { result.v0 = -1; result.v2 = "TLS writeBytesTimeout clock failed"; return result; }
+        deadline = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + timeout_millis;
+    }
+    ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride;
+    unsigned char buffer[4096];
+    size_t offset = 0;
+    while (offset < bytes.len) {
+        if (flux__worker_cancelled()) { result.v0 = (int64_t)offset; result.v2 = "TLS writeBytesTimeout cancelled by worker scope"; return result; }
+        size_t chunk = bytes.len - offset;
+        if (chunk > sizeof(buffer)) chunk = sizeof(buffer);
+        for (size_t index = 0; index < chunk; index += 1) {
+            int64_t value;
+            memcpy(&value, (const char *)bytes.data + (ptrdiff_t)(offset + index) * stride, sizeof(value));
+            buffer[index] = (unsigned char)value;
+        }
+        size_t chunk_offset = 0;
+        while (chunk_offset < chunk) {
+            if (flux__worker_cancelled()) { result.v0 = (int64_t)(offset + chunk_offset); result.v2 = "TLS writeBytesTimeout cancelled by worker scope"; return result; }
+            int64_t remaining = -1;
+            if (deadline >= 0) {
+                struct timespec now;
+                if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) { result.v0 = (int64_t)(offset + chunk_offset); result.v2 = "TLS writeBytesTimeout clock failed"; return result; }
+                int64_t current = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+                if (current >= deadline) { result.v0 = (int64_t)(offset + chunk_offset); return result; }
+                remaining = deadline - current;
+            }
+            int written = SSL_write(slot->session, buffer + chunk_offset, (int)(chunk - chunk_offset));
+            if (written > 0) { chunk_offset += (size_t)written; continue; }
+            int ssl_error = SSL_get_error(slot->session, written);
+            if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE) { result.v0 = (int64_t)(offset + chunk_offset); result.v2 = "TLS writeBytesTimeout failed"; return result; }
+            struct pollfd descriptor = { .fd = slot->socket, .events = ssl_error == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT, .revents = 0 };
+            int wait_millis = remaining < 0 || remaining > INT_MAX ? INT_MAX : (int)remaining;
+            int ready = flux__net_poll_cancellable(&descriptor, 1, wait_millis);
+            if (ready == -2) { result.v0 = (int64_t)(offset + chunk_offset); result.v2 = "TLS writeBytesTimeout cancelled by worker scope"; return result; }
+            if (ready == 0) { result.v0 = (int64_t)(offset + chunk_offset); return result; }
+            if (ready < 0 || (descriptor.revents & (POLLNVAL | POLLERR)) != 0) { result.v0 = (int64_t)(offset + chunk_offset); result.v2 = "TLS writeBytesTimeout readiness failed"; return result; }
+        }
+        offset += chunk;
+    }
+    result.v0 = (int64_t)offset;
+    result.v1 = true;
+    return result;
+}
 static inline struct flux__net_i64_bool_error flux__tls_write_timeout(int64_t handle, const char *value, int64_t timeout_millis) { struct flux__net_i64_bool_error result = { .v0 = 0, .v1 = false, .v2 = NULL }; struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || value == NULL) { result.v0 = -1; result.v2 = "invalid TLS writeTimeout arguments"; return result; } size_t length = 0; if (!flux__tls_bounded_length(value, 65536, &length)) { result.v0 = -1; result.v2 = "TLS writeTimeout value exceeds 65536 bytes"; return result; } if (timeout_millis < -1 || timeout_millis > INT_MAX) { result.v0 = -1; result.v2 = "TLS writeTimeout timeoutMillis must be -1 or between 0 and 2147483647"; return result; } int64_t deadline = -1; if (timeout_millis >= 0) { struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) { result.v0 = -1; result.v2 = "TLS writeTimeout clock failed"; return result; } deadline = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + timeout_millis; } size_t offset = 0; short events = POLLOUT; while (offset < length) { if (flux__worker_cancelled()) { result.v0 = (int64_t)offset; result.v2 = "TLS writeTimeout cancelled by worker scope"; return result; } int64_t remaining = -1; if (deadline >= 0) { struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) { result.v0 = (int64_t)offset; result.v2 = "TLS writeTimeout clock failed"; return result; } int64_t current = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000; if (current >= deadline) return result; remaining = deadline - current; } int written = SSL_write(slot->session, value + offset, (int)(length - offset > INT_MAX ? INT_MAX : length - offset)); if (written > 0) { offset += (size_t)written; continue; } int ssl_error = SSL_get_error(slot->session, written); if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE) { result.v0 = (int64_t)offset; result.v2 = "TLS writeTimeout failed"; return result; } events = ssl_error == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT; struct pollfd descriptor = { .fd = slot->socket, .events = events, .revents = 0 }; int wait_millis = remaining < 0 || remaining > INT_MAX ? INT_MAX : (int)remaining; int ready = flux__net_poll_cancellable(&descriptor, 1, wait_millis); if (ready == -2) { result.v0 = (int64_t)offset; result.v2 = "TLS writeTimeout cancelled by worker scope"; return result; } if (ready == 0) { result.v0 = (int64_t)offset; return result; } if (ready < 0 || (descriptor.revents & (POLLNVAL | POLLERR)) != 0) { result.v0 = (int64_t)offset; result.v2 = "TLS writeTimeout readiness failed"; return result; } } result.v0 = (int64_t)offset; result.v1 = true; return result; }
 static inline struct flux__net_i64_error flux__tls_read(int64_t handle, int64_t max_bytes, void (*callback)(const char *)) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || callback == NULL || max_bytes < 1 || max_bytes > 65536) return flux__tls_result(-1, "invalid TLS read arguments"); char buffer[65537]; int received = SSL_read(slot->session, buffer, (int)max_bytes); if (received <= 0) return flux__tls_result(-1, "TLS read failed or reached end of stream"); for (int index = 0; index < received; index += 1) if (buffer[index] == '\0') return flux__tls_result(-1, "TLS read contained NUL in text payload"); buffer[received] = '\0'; callback(buffer); return flux__tls_result((int64_t)received, NULL); }
 static inline struct flux__net_i64_error flux__tls_read_bytes(int64_t handle, int64_t max_bytes, void (*callback)(struct flux__list)) {
@@ -9964,6 +10017,54 @@ static inline struct flux__net_i64_error flux__tls_read_bytes(int64_t handle, in
     for (int index = 0; index < received; index += 1) values[index] = (int64_t)buffer[index];
     callback((struct flux__list){ .data = values, .len = (size_t)received, .stride = sizeof(int64_t) });
     return flux__tls_result((int64_t)received, NULL);
+}
+static inline struct flux__net_i64_bool_error flux__tls_read_bytes_timeout(int64_t handle, int64_t max_bytes, int64_t timeout_millis, void (*callback)(struct flux__list)) {
+    struct flux__net_i64_bool_error result = { .v0 = 0, .v1 = false, .v2 = NULL };
+    struct flux__tls_slot *slot = flux__tls_slot_for(handle);
+    if (slot == NULL || callback == NULL || max_bytes < 1 || max_bytes > 65536) { result.v0 = -1; result.v2 = "invalid TLS readBytesTimeout arguments"; return result; }
+    if (timeout_millis < -1 || timeout_millis > INT_MAX) { result.v0 = -1; result.v2 = "TLS readBytesTimeout timeoutMillis must be -1 or between 0 and 2147483647"; return result; }
+    int64_t deadline = -1;
+    if (timeout_millis >= 0) {
+        struct timespec now;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) { result.v0 = -1; result.v2 = "TLS readBytesTimeout clock failed"; return result; }
+        deadline = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + timeout_millis;
+    }
+    unsigned char buffer[65536];
+    short events = POLLIN;
+    for (;;) {
+        if (flux__worker_cancelled()) { result.v0 = -1; result.v2 = "TLS readBytesTimeout cancelled by worker scope"; return result; }
+        int64_t remaining = -1;
+        if (deadline >= 0) {
+            struct timespec now;
+            if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) { result.v0 = -1; result.v2 = "TLS readBytesTimeout clock failed"; return result; }
+            int64_t current = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+            if (current >= deadline) return result;
+            remaining = deadline - current;
+        }
+        if (SSL_pending(slot->session) == 0) {
+            struct pollfd descriptor = { .fd = slot->socket, .events = events, .revents = 0 };
+            int wait_millis = remaining < 0 || remaining > INT_MAX ? INT_MAX : (int)remaining;
+            int ready = flux__net_poll_cancellable(&descriptor, 1, wait_millis);
+            if (ready == -2) { result.v0 = -1; result.v2 = "TLS readBytesTimeout cancelled by worker scope"; return result; }
+            if (ready == 0) return result;
+            if (ready < 0 || (descriptor.revents & (POLLNVAL | POLLERR)) != 0) { result.v0 = -1; result.v2 = "TLS readBytesTimeout readiness failed"; return result; }
+        }
+        int received = SSL_read(slot->session, buffer, (int)max_bytes);
+        if (received > 0) {
+            int64_t values[received];
+            for (int index = 0; index < received; index += 1) values[index] = (int64_t)buffer[index];
+            callback((struct flux__list){ .data = values, .len = (size_t)received, .stride = sizeof(int64_t) });
+            result.v0 = (int64_t)received;
+            result.v1 = true;
+            return result;
+        }
+        int ssl_error = SSL_get_error(slot->session, received);
+        if (ssl_error == SSL_ERROR_WANT_READ) { events = POLLIN; continue; }
+        if (ssl_error == SSL_ERROR_WANT_WRITE) { events = POLLOUT; continue; }
+        result.v0 = -1;
+        result.v2 = "TLS readBytesTimeout failed or reached end of stream";
+        return result;
+    }
 }
 static inline struct flux__net_i64_bool_error flux__tls_read_timeout(int64_t handle, int64_t max_bytes, int64_t timeout_millis, void (*callback)(const char *)) { struct flux__net_i64_bool_error result = { .v0 = 0, .v1 = false, .v2 = NULL }; struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || callback == NULL || max_bytes < 1 || max_bytes > 65536) { result.v0 = -1; result.v2 = "invalid TLS readTimeout arguments"; return result; } if (timeout_millis < -1 || timeout_millis > INT_MAX) { result.v0 = -1; result.v2 = "TLS readTimeout timeoutMillis must be -1 or between 0 and 2147483647"; return result; } int64_t deadline = -1; if (timeout_millis >= 0) { struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) { result.v0 = -1; result.v2 = "TLS readTimeout clock failed"; return result; } deadline = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + timeout_millis; } char buffer[65537]; short events = POLLIN; for (;;) { if (flux__worker_cancelled()) { result.v0 = -1; result.v2 = "TLS readTimeout cancelled by worker scope"; return result; } int64_t remaining = -1; if (deadline >= 0) { struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) { result.v0 = -1; result.v2 = "TLS readTimeout clock failed"; return result; } int64_t current = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000; if (current >= deadline) return result; remaining = deadline - current; } if (SSL_pending(slot->session) == 0) { struct pollfd descriptor = { .fd = slot->socket, .events = events, .revents = 0 }; int wait_millis = remaining < 0 || remaining > INT_MAX ? INT_MAX : (int)remaining; int ready = flux__net_poll_cancellable(&descriptor, 1, wait_millis); if (ready == -2) { result.v0 = -1; result.v2 = "TLS readTimeout cancelled by worker scope"; return result; } if (ready == 0) return result; if (ready < 0 || (descriptor.revents & (POLLNVAL | POLLERR)) != 0) { result.v0 = -1; result.v2 = "TLS readTimeout readiness failed"; return result; } } int received = SSL_read(slot->session, buffer, (int)max_bytes); if (received > 0) { for (int index = 0; index < received; index += 1) if (buffer[index] == '\0') { result.v0 = -1; result.v2 = "TLS read contained NUL in text payload"; return result; } buffer[received] = '\0'; callback(buffer); result.v0 = (int64_t)received; result.v1 = true; return result; } int ssl_error = SSL_get_error(slot->session, received); if (ssl_error == SSL_ERROR_WANT_READ) { events = POLLIN; continue; } if (ssl_error == SSL_ERROR_WANT_WRITE) { events = POLLOUT; continue; } result.v0 = -1; result.v2 = "TLS read failed or reached end of stream"; return result; } }
 "#);
@@ -48744,6 +48845,20 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
+            "readBytesTimeout" if args.len() == 4 => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                let max_bytes = emit_expr(&args[1], env, signatures)?;
+                let timeout = emit_expr(&args[2], env, signatures)?;
+                let callback = emit_expr(&args[3], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__tls_read_bytes_timeout({}, {}, {}, {})",
+                        session.code, max_bytes.code, timeout.code, callback.code
+                    ),
+                    vec![Type::I64, Type::Bool, Type::Error],
+                    Some("flux__net_i64_bool_error".to_string()),
+                ));
+            }
             "readTimeout" if args.len() == 4 => {
                 let session = emit_expr(&args[0], env, signatures)?;
                 let max_bytes = emit_expr(&args[1], env, signatures)?;
@@ -48774,6 +48889,19 @@ fn emit_qualified_call(
                     format!("flux__tls_write_bytes({}, {})", session.code, bytes.code),
                     vec![Type::Error],
                     None,
+                ));
+            }
+            "writeBytesTimeout" if args.len() == 3 => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                let bytes = emit_expr(&args[1], env, signatures)?;
+                let timeout = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__tls_write_bytes_timeout({}, {}, {})",
+                        session.code, bytes.code, timeout.code
+                    ),
+                    vec![Type::I64, Type::Bool, Type::Error],
+                    Some("flux__net_i64_bool_error".to_string()),
                 ));
             }
             "writeTimeout" if args.len() == 3 => {
@@ -85593,6 +85721,27 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
+                    "readBytesTimeout" if arguments.len() == 4 => {
+                        let call = emit_cfg_ordered_call_with_callback_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::I64, Type::I64],
+                            &arguments[3],
+                            &[Type::List(Box::new(Type::I64))],
+                            env,
+                            signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__tls_read_bytes_timeout({}, {}, {}, {callback})",
+                                    rendered[0], rendered[1], rendered[2]
+                                )
+                            },
+                        )?;
+                        Some((
+                            call,
+                            "flux__net_i64_bool_error".to_string(),
+                            i64_bool_error.clone(),
+                        ))
+                    }
                     "readTimeout" if arguments.len() == 4 => {
                         let call = emit_cfg_ordered_call_with_callback_direct(
                             &arguments[..3],
@@ -85605,6 +85754,24 @@ fn emit_cfg_multi_expr_direct(
                                 format!(
                                     "flux__tls_read_timeout({}, {}, {}, {callback})",
                                     rendered[0], rendered[1], rendered[2]
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
+                    }
+                    "writeBytesTimeout" if arguments.len() == 3 => {
+                        let scalar_arguments = vec![arguments[0].clone(), arguments[2].clone()];
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                            &scalar_arguments,
+                            &[Type::I64, Type::I64],
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                            |rendered, bytes| {
+                                format!(
+                                    "flux__tls_write_bytes_timeout({}, {bytes}, {})",
+                                    rendered[0], rendered[1]
                                 )
                             },
                         )?;

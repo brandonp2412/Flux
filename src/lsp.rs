@@ -1341,6 +1341,10 @@ fn add_qualified_namespace_completions(
                 "fn tls.readBytes(session: i64, maxBytes: i64, callback: fn(i64[]) -> void) -> (i64, error)",
             ),
             (
+                "readBytesTimeout",
+                "fn tls.readBytesTimeout(session: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64[]) -> void) -> (i64, bool, error)",
+            ),
+            (
                 "readTimeout",
                 "fn tls.readTimeout(session: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(str) -> void) -> (i64, bool, error)",
             ),
@@ -1348,6 +1352,10 @@ fn add_qualified_namespace_completions(
             (
                 "writeBytes",
                 "fn tls.writeBytes(session: i64, bytes: i64[]) -> error",
+            ),
+            (
+                "writeBytesTimeout",
+                "fn tls.writeBytesTimeout(session: i64, bytes: i64[], timeoutMillis: i64) -> (i64, bool, error)",
             ),
             (
                 "writeTimeout",
@@ -4592,6 +4600,16 @@ fn signature_help_for_document_cached(
                     ],
                     "(i64, error)",
                 ),
+                "readBytesTimeout" => (
+                    "tls.readBytesTimeout",
+                    vec![
+                        "session: i64",
+                        "maxBytes: i64",
+                        "timeoutMillis: i64",
+                        "callback: fn(i64[]) -> void",
+                    ],
+                    "(i64, bool, error)",
+                ),
                 "readTimeout" => (
                     "tls.readTimeout",
                     vec![
@@ -4607,6 +4625,11 @@ fn signature_help_for_document_cached(
                     "tls.writeBytes",
                     vec!["session: i64", "bytes: i64[]"],
                     "error",
+                ),
+                "writeBytesTimeout" => (
+                    "tls.writeBytesTimeout",
+                    vec!["session: i64", "bytes: i64[]", "timeoutMillis: i64"],
+                    "(i64, bool, error)",
                 ),
                 "writeTimeout" => (
                     "tls.writeTimeout",
@@ -10590,7 +10613,7 @@ mod tests {
     #[test]
     fn signature_help_supports_tls_io() {
         let uri = "file:///tmp/tls-io-signatures.flux";
-        let source = "fn consume(_text: str) -> void {\n}\nfn consumeBytes(_bytes: i64[]) -> void {\n}\nfn main() -> i64 {\n    let (_binaryBytes, _binaryError) = tls.readBytes(1, 64, consumeBytes)\n    let _binaryWriteError: error = tls.writeBytes(1, [0, 255])\n    let (_bytes, _ready, _error) = tls.readTimeout(1, 64, 0, consume)\n    return 0\n}\n";
+        let source = "fn consume(_text: str) -> void {\n}\nfn consumeBytes(_bytes: i64[]) -> void {\n}\nfn main() -> i64 {\n    let (_binaryBytes, _binaryError) = tls.readBytes(1, 64, consumeBytes)\n    let _binaryWriteError: error = tls.writeBytes(1, [0, 255])\n    let (_timedBinaryBytes, _timedBinaryReady, _timedBinaryError) = tls.readBytesTimeout(1, 64, 0, consumeBytes)\n    let (_timedBinaryWritten, _timedBinaryComplete, _timedBinaryWriteError) = tls.writeBytesTimeout(1, [0, 255], 0)\n    let (_bytes, _ready, _error) = tls.readTimeout(1, 64, 0, consume)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -10600,6 +10623,14 @@ mod tests {
             (
                 "tls.writeBytes(",
                 "fn tls.writeBytes(session: i64, bytes: i64[]) -> error",
+            ),
+            (
+                "tls.readBytesTimeout(",
+                "fn tls.readBytesTimeout(session: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64[]) -> void) -> (i64, bool, error)",
+            ),
+            (
+                "tls.writeBytesTimeout(",
+                "fn tls.writeBytesTimeout(session: i64, bytes: i64[], timeoutMillis: i64) -> (i64, bool, error)",
             ),
             (
                 "tls.readTimeout(",
