@@ -726,10 +726,10 @@ fn check_all_with_package_constants_mode(
                 if let Err(diagnostic) = require_known_type(span, ty, &signatures) {
                     diagnostics.push(diagnostic);
                 }
-                if is_list_or_optional_list(ty, &signatures) {
+                if is_collection_or_optional_collection(ty, &signatures) {
                     diagnostics.push(diag(
                         span,
-                        "list values cannot be returned from interface capabilities until collection ownership is implemented",
+                        "collection values cannot be returned from interface capabilities until collection ownership is implemented",
                     ));
                 }
                 if definition.public
@@ -1010,10 +1010,10 @@ fn check_all_with_package_constants_mode(
                 diagnostics.push(diagnostic);
             }
             let canonical_return = signatures.canonical_type(ty);
-            if is_list_or_optional_list(&canonical_return, &signatures) {
+            if is_collection_or_optional_collection(&canonical_return, &signatures) {
                 diagnostics.push(diag(
                     span,
-                    "list values cannot be returned from functions until collection ownership is implemented",
+                    "collection values cannot be returned from functions until collection ownership is implemented",
                 ));
             }
             if function.foreign_symbol.is_some()
@@ -5801,11 +5801,11 @@ fn type_of_anonymous_function(
     };
     if returns
         .iter()
-        .any(|ty| is_list_or_optional_list(ty, signatures))
+        .any(|ty| is_collection_or_optional_collection(ty, signatures))
     {
         return Err(diag(
             body.span,
-            "list values cannot be returned from anonymous functions until collection ownership is implemented",
+            "collection values cannot be returned from anonymous functions until collection ownership is implemented",
         ));
     }
     Ok(Type::Function {
@@ -15796,10 +15796,13 @@ fn require_publicly_nameable_type(
     }
 }
 
-fn is_list_or_optional_list(ty: &Type, signatures: &Signatures) -> bool {
+fn is_collection_or_optional_collection(ty: &Type, signatures: &Signatures) -> bool {
     match signatures.canonical_type(ty) {
-        Type::List(_) => true,
-        Type::Optional(inner) => matches!(signatures.canonical_type(&inner), Type::List(_)),
+        Type::List(_) | Type::Set(_) | Type::Map(_, _) => true,
+        Type::Optional(inner) => matches!(
+            signatures.canonical_type(&inner),
+            Type::List(_) | Type::Set(_) | Type::Map(_, _)
+        ),
         _ => false,
     }
 }
