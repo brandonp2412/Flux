@@ -6835,7 +6835,13 @@ pub fn type_of_expr(
                             json_map_value_type_is_supported(&element, signatures);
                         let dynamic_copy_aggregate_list = !is_set
                             && (json_record_type_is_supported(&element, signatures)
-                                || json_enum_type_is_supported(&element, signatures));
+                                || json_enum_type_is_supported(&element, signatures)
+                                || matches!(
+                                    signatures.canonical_type(&element),
+                                    Type::Optional(inner)
+                                        if json_record_type_is_supported(&inner, signatures)
+                                            || json_enum_type_is_supported(&inner, signatures)
+                                ));
                         if !supported_element
                             || (!dynamic_copy_aggregate_list
                                 && values.iter().any(|value| {
