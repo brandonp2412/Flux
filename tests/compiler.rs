@@ -9216,6 +9216,11 @@ fn main() -> i64 {
     print(uri.normalize("wss://[2001:0DB8::1]:443/socket", normalized))
     print(uri.normalize("ws://Example.COM:81/socket", normalized))
     print(uri.normalize("wss://Example.COM:444/socket", normalized))
+    print(uri.normalize("HTTP://Example.COM", normalized))
+    print(uri.normalize("https://Example.COM?x=1", normalized))
+    print(uri.normalize("ws://Example.COM#frag", normalized))
+    print(uri.normalize("wss://Example.COM:443", normalized))
+    print(uri.normalize("custom://Example.COM", normalized))
     print(uri.normalize("custom://Example.COM:80/a", normalized))
     print(uri.normalize("custom://host/%ZZ", normalized))
     print(uri.normalize("custom://host/é", normalized))
@@ -9227,6 +9232,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux__uri_normalize("));
     assert!(generated.contains("flux__bounded_url_length("));
     assert!(generated.contains("invalid URI normalize callback"));
+    assert!(generated.contains("normalized URI exceeds 65536 bytes"));
     assert!(!generated.contains("#include <sys/socket.h>"));
 
     let root = std::env::temp_dir().join(format!("flux-uri-normalize-{}", std::process::id()));
@@ -9253,7 +9259,7 @@ fn main() -> i64 {
     assert!(run.status.success());
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
-        "custom://example.com/~user/a%2Fb\nnil\nhttp://host.example/a/c?x=~1#A\nnil\nmailto:alice.smith/./../example.test\nnil\ncustom://User@[2001:db8::a]:99/A\nnil\ncustom://host/a/c\nnil\ncustom://[fe80::1%25Eth0]/\nnil\ncustom://[2001:db8::ff00:42:8329]/\nnil\ncustom://[2001::1:0:0:1:1]/\nnil\ncustom://[::1]/\nnil\ncustom://[::]/\nnil\ncustom://[2001:db8:0:1:1:1:1:1]/\nnil\ncustom://[::ffff:192.0.2.128]/\nnil\ncustom://[fe80::1%25Eth0]/\nnil\nURI IPv6 host is invalid\nhttp://example.com/~\nnil\nhttps://[2001:db8::a]/a\nnil\nhttps://example.com:444/a\nnil\nws://example.com/socket\nnil\nwss://[2001:db8::1]/socket\nnil\nws://example.com:81/socket\nnil\nwss://example.com:444/socket\nnil\ncustom://example.com:80/a\nnil\nURI contains an invalid percent escape\nURI contains raw non-ASCII bytes; percent-encode UTF-8\n"
+        "custom://example.com/~user/a%2Fb\nnil\nhttp://host.example/a/c?x=~1#A\nnil\nmailto:alice.smith/./../example.test\nnil\ncustom://User@[2001:db8::a]:99/A\nnil\ncustom://host/a/c\nnil\ncustom://[fe80::1%25Eth0]/\nnil\ncustom://[2001:db8::ff00:42:8329]/\nnil\ncustom://[2001::1:0:0:1:1]/\nnil\ncustom://[::1]/\nnil\ncustom://[::]/\nnil\ncustom://[2001:db8:0:1:1:1:1:1]/\nnil\ncustom://[::ffff:192.0.2.128]/\nnil\ncustom://[fe80::1%25Eth0]/\nnil\nURI IPv6 host is invalid\nhttp://example.com/~\nnil\nhttps://[2001:db8::a]/a\nnil\nhttps://example.com:444/a\nnil\nws://example.com/socket\nnil\nwss://[2001:db8::1]/socket\nnil\nws://example.com:81/socket\nnil\nwss://example.com:444/socket\nnil\nhttp://example.com/\nnil\nhttps://example.com/?x=1\nnil\nws://example.com/#frag\nnil\nwss://example.com/\nnil\ncustom://example.com\nnil\ncustom://example.com:80/a\nnil\nURI contains an invalid percent escape\nURI contains raw non-ASCII bytes; percent-encode UTF-8\n"
     );
     let _ = fs::remove_dir_all(&root);
 }

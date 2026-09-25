@@ -6134,23 +6134,38 @@ static inline const char *flux__uri_normalize(const char *value, void (*callback
             }
         }
 
+        size_t scheme_length = (size_t)(scheme_end - buffer);
+        bool http_scheme = scheme_length == 4 && memcmp(buffer, "http", 4) == 0;
+        bool https_scheme = scheme_length == 5 && memcmp(buffer, "https", 5) == 0;
+        bool ws_scheme = scheme_length == 2 && memcmp(buffer, "ws", 2) == 0;
+        bool wss_scheme = scheme_length == 3 && memcmp(buffer, "wss", 3) == 0;
+        bool network_path_scheme = http_scheme || https_scheme || ws_scheme || wss_scheme;
         char *port_marker = host_end < authority_end && *host_end == ':' ? host_end : NULL;
         if (port_marker != NULL) {
             char *port = port_marker + 1;
             size_t port_length = (size_t)(authority_end - port);
-            size_t scheme_length = (size_t)(scheme_end - buffer);
-            bool http_default = scheme_length == 4 && memcmp(buffer, "http", 4) == 0
+            bool http_default = http_scheme
                 && port_length == 2 && memcmp(port, "80", 2) == 0;
-            bool https_default = scheme_length == 5 && memcmp(buffer, "https", 5) == 0
+            bool https_default = https_scheme
                 && port_length == 3 && memcmp(port, "443", 3) == 0;
-            bool ws_default = scheme_length == 2 && memcmp(buffer, "ws", 2) == 0
+            bool ws_default = ws_scheme
                 && port_length == 2 && memcmp(port, "80", 2) == 0;
-            bool wss_default = scheme_length == 3 && memcmp(buffer, "wss", 3) == 0
+            bool wss_default = wss_scheme
                 && port_length == 3 && memcmp(port, "443", 3) == 0;
             if (http_default || https_default || ws_default || wss_default) {
                 size_t removed = (size_t)(authority_end - port_marker);
                 memmove(port_marker, authority_end, length - (size_t)(authority_end - buffer) + 1);
                 length -= removed;
+            }
+        }
+        if (network_path_scheme) {
+            char *path_or_suffix = strpbrk(hierarchy + 3, "/?#");
+            if (path_or_suffix == NULL) path_or_suffix = buffer + length;
+            if (*path_or_suffix != '/') {
+                if (length >= 65536) return "normalized URI exceeds 65536 bytes";
+                memmove(path_or_suffix + 1, path_or_suffix, length - (size_t)(path_or_suffix - buffer) + 1);
+                *path_or_suffix = '/';
+                length += 1;
             }
         }
     }
