@@ -55064,15 +55064,21 @@ where
                 }
             }
 
-            if !matches!(
+            let value =
+                emit_cfg_ordinary_call_argument_direct(argument, &expected, env, signatures)?;
+            if matches!(
                 argument.kind,
                 CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
             ) {
-                return None;
+                ordered.push(value);
+            } else {
+                let temp = format!("flux__typed_map_peer_arg_{positional_index}");
+                prelude.push_str(&format!(
+                    "{} {temp} = {value}; ",
+                    c_type(&expected, signatures)
+                ));
+                ordered.push(temp);
             }
-            ordered.push(emit_cfg_ordinary_call_argument_direct(
-                argument, &expected, env, signatures,
-            )?);
             positional_index += 1;
             continue;
         }
@@ -55201,7 +55207,7 @@ where
     let mut prelude = String::new();
     let mut scoped_map_count = 0usize;
 
-    for (name, argument) in arguments {
+    for (source_index, (name, argument)) in arguments.iter().enumerate() {
         let parameter = if let Some(name) = name {
             signature
                 .param_details
@@ -55232,15 +55238,20 @@ where
             }
         }
 
-        if !matches!(
+        let value = emit_cfg_ordinary_call_argument_direct(argument, &expected, env, signatures)?;
+        if matches!(
             argument.kind,
             CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
         ) {
-            return None;
+            source_rendered.push(value);
+        } else {
+            let temp = format!("flux__typed_map_peer_arg_{source_index}");
+            prelude.push_str(&format!(
+                "{} {temp} = {value}; ",
+                c_type(&expected, signatures)
+            ));
+            source_rendered.push(temp);
         }
-        source_rendered.push(emit_cfg_ordinary_call_argument_direct(
-            argument, &expected, env, signatures,
-        )?);
     }
 
     let positional_sources = arguments
@@ -69501,6 +69512,166 @@ fn main() -> i64 {
         .expect("function-value temporary-map call should bypass checked AST");
         assert_eq!(emitted, direct);
         assert!(!emitted.contains("checked-ast-function-value-map-call"));
+    }
+
+    #[test]
+    fn map_calls_with_computed_copy_peers_emit_in_source_order() {
+        let source = r#"
+fn observeBefore(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeMap(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeAfter(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn consume(before: i64, values: map<str, (value: i64)>, after: i64) -> i64 {
+    return before + values.count + after
+}
+
+fn consumeNamed(seed: i64, *, before: i64, values: map<str, (value: i64)>, after: i64) -> i64 {
+    return seed + before + values.count + after
+}
+
+fn positional(first: i64, second: i64, third: i64) -> i64 {
+    return consume(observeBefore(first), map{"value": (value: observeMap(second))}, observeAfter(third))
+}
+
+fn named(first: i64, second: i64, third: i64) -> i64 {
+    return consumeNamed(0, after: observeAfter(third), values: map{"value": (value: observeMap(second))}, before: observeBefore(first))
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4265))
+            .expect("computed-peer temporary-map call fixture should typecheck");
+        let env = HashMap::from([
+            ("first".to_string(), Type::I64),
+            ("second".to_string(), Type::I64),
+            ("third".to_string(), Type::I64),
+        ]);
+
+        for (function, callee, expected_effects) in [
+            (
+                "positional",
+                "consume",
+                ["observeBefore", "observeMap", "observeAfter"],
+            ),
+            (
+                "named",
+                "consumeNamed",
+                ["observeAfter", "observeMap", "observeBefore"],
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("computed-peer temporary-map call CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let call = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        facts.scalar_exprs.get(&source_span_key(value.span)),
+                        Some(CfgScalarExpr {
+                            kind: CfgScalarExprKind::Call {
+                                callee: found,
+                                arguments,
+                            },
+                            ..
+                        }) if found == callee
+                            && arguments
+                                .iter()
+                                .any(|argument| matches!(argument.kind, CfgScalarExprKind::Aggregate(_)))
+                    ) || matches!(
+                        facts.scalar_exprs.get(&source_span_key(value.span)),
+                        Some(CfgScalarExpr {
+                            kind: CfgScalarExprKind::NamedCall {
+                                callee: found,
+                                arguments,
+                            },
+                            ..
+                        }) if found == callee
+                            && arguments
+                                .iter()
+                                .any(|(_, argument)| matches!(argument.kind, CfgScalarExprKind::Aggregate(_)))
+                    )
+                })
+                .expect("computed-peer map call should preserve typed-IR aggregate facts");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(call.span))
+                .expect("computed-peer map call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("computed-peer map call should emit directly");
+            let first = direct
+                .find(&function_c_name(expected_effects[0]))
+                .expect("first source effect should be emitted");
+            let second = direct
+                .find(&function_c_name(expected_effects[1]))
+                .expect("second source effect should be emitted");
+            let third = direct
+                .find(&function_c_name(expected_effects[2]))
+                .expect("third source effect should be emitted");
+            let call_site = direct
+                .rfind(&function_c_name(callee))
+                .expect("callee should be emitted after all argument effects");
+            assert!(
+                first < second && second < third && third < call_site,
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains("flux__typed_borrowed_map_values"),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains("flux__typed_map_peer_arg_"),
+                "{function}: {direct}"
+            );
+
+            if function == "named" {
+                let call_tail = &direct[call_site..];
+                let before = call_tail
+                    .find("flux__typed_map_peer_arg_3")
+                    .expect("named before argument should be restored to declaration order");
+                let values = call_tail
+                    .find("flux__typed_borrowed_map")
+                    .expect("named map argument should be restored to declaration order");
+                let after = call_tail
+                    .find("flux__typed_map_peer_arg_1")
+                    .expect("named after argument should be restored to declaration order");
+                assert!(before < values && values < after, "{direct}");
+            }
+
+            let fake = Expr {
+                line: call.span.line,
+                span: call.span,
+                kind: ExprKind::Str(format!("checked-ast-map-peers-{function}")),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("computed-peer map call should bypass checked AST");
+            assert_eq!(emitted, direct);
+            assert!(
+                !emitted.contains(&format!("checked-ast-map-peers-{function}")),
+                "{emitted}"
+            );
+        }
     }
 
     #[test]

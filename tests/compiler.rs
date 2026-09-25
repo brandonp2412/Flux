@@ -339,6 +339,51 @@ fn main() -> i64 {
 }
 
 #[test]
+fn map_calls_with_computed_copy_peers_use_ordered_typed_ir_storage() {
+    let source = r#"
+fn observeBefore(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeMap(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeAfter(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn consume(before: i64, values: map<str, (value: i64)>, after: i64) -> i64 {
+    return before + values.count + after
+}
+
+fn consumeNamed(seed: i64, *, before: i64, values: map<str, (value: i64)>, after: i64) -> i64 {
+    return seed + before + values.count + after
+}
+
+fn main() -> i64 {
+    let positional: i64 = consume(observeBefore(1), map{"value": (value: observeMap(2))}, observeAfter(3))
+    return positional + consumeNamed(0, after: observeAfter(4), values: map{"value": (value: observeMap(5))}, before: observeBefore(6))
+}
+"#;
+    let generated = compile_to_c(source)
+        .expect("temporary-map calls with computed Copy peers should lower through typed IR");
+    assert!(
+        generated.contains("flux__typed_borrowed_map_values"),
+        "{generated}"
+    );
+    assert!(
+        generated.contains("flux__typed_map_peer_arg_"),
+        "{generated}"
+    );
+    assert!(generated.contains("flux__fn_consume"), "{generated}");
+    assert!(generated.contains("flux__fn_consumeNamed"), "{generated}");
+}
+
+#[test]
 fn typed_ir_proves_short_circuit_result_from_left_constant() {
     let source = r#"
 fn choose(value: bool) -> bool {
