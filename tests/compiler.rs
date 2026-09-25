@@ -2350,7 +2350,6 @@ fn windows_rejects_unimplemented_portable_styles_instead_of_silently_dropping_th
         ("transitionDelayMs: 20", "transitionDelayMs"),
         ("transitionEasing: \"ease\"", "transitionEasing"),
         ("layoutTransitionMs: 120", "layoutTransitionMs"),
-        ("dragTranslate: true", "dragTranslate"),
         ("pinchScale: true", "pinchScale"),
     ] {
         let source = format!(
@@ -2667,6 +2666,74 @@ app Screen
         error
             .message
             .contains("translateX must fit within a 32-bit signed integer")
+    );
+}
+
+#[test]
+fn windows_drag_translate_composes_with_native_translation_and_pointer_tracking() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text card at 1,1
+        text: "Move me"
+        translateX: 8
+        translateY: -3
+        dragTranslate: true
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows dragTranslate source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows dragTranslate source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows dragTranslate should lower through native drag and layout paths");
+
+    assert!(windows.contains("static int64_t flux__gesture_translate_x_card = INT64_C(0);"));
+    assert!(windows.contains("static int64_t flux__gesture_translate_y_card = INT64_C(0);"));
+    assert!(windows.contains("ClientToScreen(hwnd, &start)"));
+    assert!(windows.contains("GetCursorPos(&cursor)"));
+    assert!(windows.contains("flux__gesture_translate_x_card = flux__win_unscale(offset_x);"));
+    assert!(windows.contains("flux__gesture_translate_y_card = flux__win_unscale(offset_y);"));
+    assert!(windows.contains(
+        "int64_t requested_translate_x = (INT64_C(8)) + flux__gesture_translate_x_card;"
+    ));
+    assert!(windows.contains(
+        "int64_t requested_translate_y = (INT64_C(-3)) + flux__gesture_translate_y_card;"
+    ));
+    assert!(windows.contains("GWLP_WNDPROC, (LONG_PTR)flux__win_drag_proc_0"));
+
+    let dynamic_flag = r#"
+view Screen {
+    state enabled: bool = true
+    grid columns: 1fr
+    grid rows: auto
+    Text card at 1,1
+        text: "No"
+        dragTranslate: enabled
+}
+app Screen
+"#;
+    let program =
+        fluxc::parser::parse(dynamic_flag).expect("dynamic Windows dragTranslate should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("dynamic Windows dragTranslate should remain ordinarily typed");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("Windows dragTranslate enablement must stay a compile-time native contract");
+    assert!(
+        error
+            .message
+            .contains("drag_translate must be a compile-time bool value")
     );
 }
 
@@ -3809,6 +3876,7 @@ view Screen {
         onTap: count => count + 1
         onLongPress: count => count + 1
         onSwipe: swiped
+        dragTranslate: true
         onContextMenu: count => count + 1
         contextMenuLabel: "Open"
         onContextMenuSelect: count => count + 1

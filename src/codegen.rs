@@ -14644,7 +14644,6 @@ fn emit_windows_native_application(
             ("transition_delay_ms", "transitionDelayMs"),
             ("transition_easing", "transitionEasing"),
             ("layout_transition_ms", "layoutTransitionMs"),
-            ("drag_translate", "dragTranslate"),
             ("pinch_scale", "pinchScale"),
         ] {
             if let Some(property) = view_property(element, property_name) {
@@ -16925,17 +16924,47 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
         ));
     }
     for (index, element) in view.elements.iter().enumerate() {
-        let Some(action) = view_property(element, "on_drag") else {
+        let action = view_property(element, "on_drag");
+        let drag_translate =
+            static_gesture_transform_enabled(element, "drag_translate", signatures)?;
+        if action.is_none() && !drag_translate {
             continue;
+        }
+        let callback = if let Some(action) = action {
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap Windows onDrag requires a named fn(i64, i64) -> void callback",
+                ));
+            };
+            format!(
+                "{}(flux__win_unscale(offset_x), flux__win_unscale(offset_y)); ",
+                function_c_name(function)
+            )
+        } else {
+            String::new()
         };
-        let ExprKind::Var(function) = &action.value.kind else {
-            return Err(diag(
-                action.value.span,
-                "bootstrap Windows onDrag requires a named fn(i64, i64) -> void callback",
-            ));
+        let gesture_state = if drag_translate {
+            format!(
+                "static int64_t {} = INT64_C(0);\nstatic int64_t {} = INT64_C(0);\n",
+                ui_gesture_translate_x_c_name(&element.name),
+                ui_gesture_translate_y_c_name(&element.name)
+            )
+        } else {
+            String::new()
         };
-        let callback = function_c_name(function);
-        out.push_str(&format!("static WNDPROC flux__win_drag_orig_{index} = NULL;\nstatic bool flux__win_dragging_{index} = false;\nstatic int flux__win_drag_start_x_{index} = 0;\nstatic int flux__win_drag_start_y_{index} = 0;\nstatic LRESULT CALLBACK flux__win_drag_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_LBUTTONDOWN) {{ LRESULT result = CallWindowProcW(flux__win_drag_orig_{index}, hwnd, message, wparam, lparam); flux__win_dragging_{index} = true; flux__win_drag_start_x_{index} = (int)(short)LOWORD(lparam); flux__win_drag_start_y_{index} = (int)(short)HIWORD(lparam); SetCapture(hwnd); return result; }} if (message == WM_MOUSEMOVE && flux__win_dragging_{index}) {{ LRESULT result = CallWindowProcW(flux__win_drag_orig_{index}, hwnd, message, wparam, lparam); if ((wparam & MK_LBUTTON) == 0) {{ flux__win_dragging_{index} = false; if (GetCapture() == hwnd) ReleaseCapture(); return result; }} int offset_x = (int)(short)LOWORD(lparam) - flux__win_drag_start_x_{index}; int offset_y = (int)(short)HIWORD(lparam) - flux__win_drag_start_y_{index}; {callback}(flux__win_unscale(offset_x), flux__win_unscale(offset_y)); flux__win_refresh(); return result; }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED) {{ LRESULT result = CallWindowProcW(flux__win_drag_orig_{index}, hwnd, message, wparam, lparam); flux__win_dragging_{index} = false; if (GetCapture() == hwnd) ReleaseCapture(); return result; }} return CallWindowProcW(flux__win_drag_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
+        let gesture_update = if drag_translate {
+            format!(
+                "{} = flux__win_unscale(offset_x); {} = flux__win_unscale(offset_y); ",
+                ui_gesture_translate_x_c_name(&element.name),
+                ui_gesture_translate_y_c_name(&element.name)
+            )
+        } else {
+            String::new()
+        };
+        out.push_str(&format!(
+            "static WNDPROC flux__win_drag_orig_{index} = NULL;\nstatic bool flux__win_dragging_{index} = false;\nstatic LONG flux__win_drag_start_screen_x_{index} = 0;\nstatic LONG flux__win_drag_start_screen_y_{index} = 0;\n{gesture_state}static LRESULT CALLBACK flux__win_drag_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_LBUTTONDOWN) {{ LRESULT result = CallWindowProcW(flux__win_drag_orig_{index}, hwnd, message, wparam, lparam); POINT start = {{ (LONG)(short)LOWORD(lparam), (LONG)(short)HIWORD(lparam) }}; if (!ClientToScreen(hwnd, &start)) return result; flux__win_dragging_{index} = true; flux__win_drag_start_screen_x_{index} = start.x; flux__win_drag_start_screen_y_{index} = start.y; SetCapture(hwnd); return result; }} if (message == WM_MOUSEMOVE && flux__win_dragging_{index}) {{ LRESULT result = CallWindowProcW(flux__win_drag_orig_{index}, hwnd, message, wparam, lparam); if ((wparam & MK_LBUTTON) == 0) {{ flux__win_dragging_{index} = false; if (GetCapture() == hwnd) ReleaseCapture(); return result; }} POINT cursor; if (!GetCursorPos(&cursor)) return result; int64_t physical_offset_x_wide = (int64_t)cursor.x - (int64_t)flux__win_drag_start_screen_x_{index}; int64_t physical_offset_y_wide = (int64_t)cursor.y - (int64_t)flux__win_drag_start_screen_y_{index}; int offset_x = physical_offset_x_wide < INT32_MIN ? INT32_MIN : (physical_offset_x_wide > INT32_MAX ? INT32_MAX : (int)physical_offset_x_wide); int offset_y = physical_offset_y_wide < INT32_MIN ? INT32_MIN : (physical_offset_y_wide > INT32_MAX ? INT32_MAX : (int)physical_offset_y_wide); {callback}{gesture_update}flux__win_refresh(); return result; }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ LRESULT result = CallWindowProcW(flux__win_drag_orig_{index}, hwnd, message, wparam, lparam); flux__win_dragging_{index} = false; if (GetCapture() == hwnd) ReleaseCapture(); return result; }} return CallWindowProcW(flux__win_drag_orig_{index}, hwnd, message, wparam, lparam); }}\n"
+        ));
     }
     for (index, element) in view.elements.iter().enumerate() {
         let Some(action) = view_property(element, "on_swipe") else {
@@ -17219,8 +17248,18 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 }
                 ui_expr_c(&property.value, view, signatures)
             };
-        let translate_x_value = translate_value("translate_x", "translateX")?;
-        let translate_y_value = translate_value("translate_y", "translateY")?;
+        let mut translate_x_value = translate_value("translate_x", "translateX")?;
+        let mut translate_y_value = translate_value("translate_y", "translateY")?;
+        if static_gesture_transform_enabled(element, "drag_translate", signatures)? {
+            translate_x_value = format!(
+                "({translate_x_value}) + {}",
+                ui_gesture_translate_x_c_name(&element.name)
+            );
+            translate_y_value = format!(
+                "({translate_y_value}) + {}",
+                ui_gesture_translate_y_c_name(&element.name)
+            );
+        }
         let radius_value = match view_property(element, "radius") {
             Some(property) => match static_expr_i64(&property.value, signatures) {
                 Some(value) => format!("INT64_C({value})"),
@@ -18418,7 +18457,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         if view_property(element, "drag_text").is_some() {
             out.push_str(&format!("SetLastError(0); flux__win_text_drag_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrW({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_text_drag_proc_{index}); if (flux__win_text_drag_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
         }
-        if view_property(element, "on_drag").is_some() {
+        if view_property(element, "on_drag").is_some()
+            || static_gesture_transform_enabled(element, "drag_translate", signatures)?
+        {
             out.push_str(&format!("SetLastError(0); flux__win_drag_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrW({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_drag_proc_{index}); if (flux__win_drag_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
         }
         if view_property(element, "on_swipe").is_some() {
