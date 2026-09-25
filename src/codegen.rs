@@ -43030,7 +43030,7 @@ enum BufferedListItem {
     },
 }
 
-fn emit_cfg_eager_list_child_direct(
+fn emit_cfg_list_child_direct(
     out: &mut String,
     pad: &str,
     span: (u32, usize, usize, usize),
@@ -43085,7 +43085,7 @@ fn emit_cfg_list_builder_binding(
     for item in items {
         match item {
             CfgListItemShape::Value(value) => {
-                let value = emit_cfg_eager_list_child_direct(
+                let value = emit_cfg_list_child_direct(
                     out,
                     pad,
                     *value,
@@ -43119,7 +43119,7 @@ fn emit_cfg_list_builder_binding(
                         rewrite_facts,
                     )?
                 } else {
-                    emit_cfg_eager_list_child_direct(
+                    emit_cfg_list_child_direct(
                         out,
                         pad,
                         *value,
@@ -43230,12 +43230,16 @@ fn emit_cfg_list_builder_binding(
                     ));
                 }
 
-                let then_value = emit_cfg_aggregate_shape_child_direct(
+                let branch_pad = format!("{pad}    ");
+                let then_value = emit_cfg_list_child_direct(
+                    out,
+                    &branch_pad,
                     *value,
                     element,
                     &guarded_env,
                     signatures,
                     rewrite_facts,
+                    temp_counter,
                 )?;
                 out.push_str(&format!("{pad}    {value_name} = {then_value};\n"));
                 if else_value.is_none() {
@@ -43244,15 +43248,19 @@ fn emit_cfg_list_builder_binding(
                     ));
                 }
                 if let Some(else_value) = else_value {
-                    let else_value = emit_cfg_aggregate_shape_child_direct(
+                    out.push_str(&format!("{pad}}} else {{\n"));
+                    let else_value = emit_cfg_list_child_direct(
+                        out,
+                        &branch_pad,
                         *else_value,
                         element,
                         env,
                         signatures,
                         rewrite_facts,
+                        temp_counter,
                     )?;
                     out.push_str(&format!(
-                        "{pad}}} else {{\n{pad}    {value_name} = {else_value};\n{pad}}}\n{pad}if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}++{capacity_name};\n"
+                        "{pad}    {value_name} = {else_value};\n{pad}}}\n{pad}if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}++{capacity_name};\n"
                     ));
                 } else {
                     out.push_str(&format!("{pad}}}\n"));
@@ -44053,12 +44061,16 @@ fn emit_cfg_list_comprehension_binding(
             c_condition(&condition)
         ));
     }
-    let value = emit_cfg_aggregate_shape_child_direct(
+    let loop_pad = format!("{pad}    ");
+    let value = emit_cfg_list_child_direct(
+        out,
+        &loop_pad,
         *value,
         output_element,
         &nested,
         signatures,
         rewrite_facts,
+        temp_counter,
     )?;
     out.push_str(&format!(
         "{pad}    {buffer_name}[{count_name}++] = {value};
@@ -56142,6 +56154,103 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn list_builder_conditional_sequence_children_stay_scoped_in_typed_ir() {
+        let source = r#"
+fn exercise(values: i64[], fallback: i64[], include: bool) -> i64 {
+    let nested: i64[][] = [if include: sorted(values) else: sorted(fallback)]
+    return nested.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("conditional sequence list builder fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let inner_ty = Type::List(Box::new(Type::I64));
+        let nested_ty = Type::List(Box::new(inner_ty.clone()));
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(value.kind, crate::ir::ControlFlowValueKind::List { .. })
+                    && database.signatures().canonical_type(&value.ty) == nested_ty
+            })
+            .expect("typed IR should retain the nested conditional list root");
+        let facts = cfg_rewrite_facts(graph);
+        let shape = facts
+            .aggregates
+            .get(&source_span_key(root.span))
+            .expect("conditional list root should retain aggregate shape");
+        let CfgAggregateShape::List(items) = shape else {
+            panic!("conditional list root should retain list item shape");
+        };
+        let (then_value, else_value) = items
+            .iter()
+            .find_map(|item| match item {
+                CfgListItemShape::Conditional {
+                    value,
+                    else_value: Some(else_value),
+                    ..
+                } => Some((*value, *else_value)),
+                _ => None,
+            })
+            .expect("nested list should retain its conditional item");
+        assert!(facts.sequence_exprs.contains_key(&then_value));
+        assert!(facts.sequence_exprs.contains_key(&else_value));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Int(999),
+        };
+        let mut env = HashMap::from([
+            ("values".to_string(), inner_ty.clone()),
+            ("fallback".to_string(), inner_ty),
+            ("include".to_string(), Type::Bool),
+        ]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_builder_binding(
+            &mut out,
+            "",
+            ("nested", &nested_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("conditional sequence children should lower from typed IR");
+
+        let branch = out
+            .find("if (flux__list_build_condition_")
+            .expect("conditional list builder should emit its branch");
+        let alternative = out
+            .find("} else {")
+            .expect("conditional list builder should emit its alternative");
+        assert!(
+            !out[..branch].contains("flux__sorted_source_"),
+            "sequence work must not be hoisted before its branch: {out}"
+        );
+        assert!(
+            out[branch..alternative].contains("flux__sorted_source_"),
+            "then sequence must be materialized inside the selected branch: {out}"
+        );
+        assert!(
+            out[alternative..].contains("flux__sorted_source_"),
+            "else sequence must be materialized inside the alternative branch: {out}"
+        );
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(out.contains(&local_c_name("fallback")), "{out}");
+        assert!(!out.contains("999"), "{out}");
+    }
+
+    #[test]
     fn dynamic_list_comprehension_lowers_from_typed_ir_without_ast_root() {
         let source = r#"
 fn exercise(values: i64[], floor: i64) -> i64 {
@@ -56207,6 +56316,85 @@ fn main() -> i64 {
         assert!(out.contains(&local_c_name("value")), "{out}");
         assert!(out.contains("flux_mul_i64"), "{out}");
         assert!(out.contains("flux_add_i64"), "{out}");
+        assert!(!out.contains("999"), "{out}");
+    }
+
+    #[test]
+    fn list_comprehension_sequence_values_stay_scoped_in_typed_ir() {
+        let source = r#"
+fn exercise(groups: i64[][]) -> i64 {
+    let nested: i64[][] = [sorted(value) for value in groups]
+    return nested.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("sequence-valued list comprehension fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let inner_ty = Type::List(Box::new(Type::I64));
+        let nested_ty = Type::List(Box::new(inner_ty.clone()));
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::ListComprehension { .. }
+                ) && database.signatures().canonical_type(&value.ty) == nested_ty
+            })
+            .expect("typed IR should retain the nested list comprehension");
+        let facts = cfg_rewrite_facts(graph);
+        let shape = facts
+            .aggregates
+            .get(&source_span_key(root.span))
+            .expect("comprehension root should retain aggregate shape");
+        let CfgAggregateShape::ListComprehension { value, .. } = shape else {
+            panic!("comprehension should retain its normalized shape");
+        };
+        assert!(
+            facts.sequence_exprs.contains_key(value),
+            "comprehension result should retain its sequence IR"
+        );
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Int(999),
+        };
+        let mut env = HashMap::from([("groups".to_string(), nested_ty.clone())]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_comprehension_binding(
+            &mut out,
+            "",
+            ("nested", &nested_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("sequence-valued comprehension should lower from typed IR");
+
+        let loop_start = out
+            .find("for (size_t flux__list_index_")
+            .expect("list comprehension should emit its iteration loop");
+        assert!(
+            !out[..loop_start].contains("flux__sorted_source_"),
+            "sequence work must not be hoisted before the comprehension loop: {out}"
+        );
+        assert!(
+            out[loop_start..].contains("flux__sorted_source_"),
+            "sequence result must be materialized inside the comprehension loop: {out}"
+        );
+        assert!(out.contains(&local_c_name("groups")), "{out}");
+        assert!(out.contains(&local_c_name("value")), "{out}");
         assert!(!out.contains("999"), "{out}");
     }
 
