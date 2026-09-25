@@ -56873,6 +56873,90 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn transformed_sequence_reduction_fallback_derives_list_type_without_root_facts() {
+        let source = r#"
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+
+fn add(total: i64, value: i64) -> i64 {
+    return total + value
+}
+
+fn exercise(values: i64[]) -> i64 {
+    let total: i64 = values | map double | fold 10 add
+    return total
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("transformed reduction fallback fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("transformed reduction fallback fixture should parse");
+        let function = program
+            .functions
+            .iter()
+            .find(|function| function.name == "exercise")
+            .expect("exercise function should exist");
+        let expr = function
+            .body
+            .iter()
+            .find_map(|stmt| match &stmt.kind {
+                StmtKind::Let { name, expr, .. } if name == "total" => Some(expr),
+                _ => None,
+            })
+            .expect("total binding should exist");
+        let list_expr = match sequence_reduction(expr)
+            .expect("total should be a transformed sequence reduction")
+        {
+            SequenceReduction::Fold { list, .. } | SequenceReduction::Reduce { list, .. } => list,
+        };
+        let list_span = source_span_key(list_expr.span);
+        let list_ty = Type::List(Box::new(Type::I64));
+
+        let mut facts = cfg_rewrite_facts(graph);
+        assert!(
+            facts
+                .sequence_exprs
+                .remove(&source_span_key(expr.span))
+                .is_some(),
+            "fixture should begin with a direct typed-IR reduction root"
+        );
+        facts.root_types.remove(&list_span);
+        facts.scalar_exprs.remove(&list_span);
+        facts.sequence_exprs.remove(&list_span);
+        facts.multi_exprs.remove(&list_span);
+        facts.aggregate_constants.remove(&list_span);
+
+        let mut env = HashMap::from([("values".to_string(), list_ty)]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_sequence_reduction_binding(
+            &mut out,
+            "",
+            ("total", &Type::I64),
+            expr,
+            &mut env,
+            database.signatures(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("transformed reduction fallback should derive its list type from child values");
+
+        assert!(out.contains("flux__reduce_source_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(out.contains(&function_c_name("double")), "{out}");
+        assert!(out.contains(&function_c_name("add")), "{out}");
+        assert!(!out.contains("flux__transform_buffer_"), "{out}");
+    }
+
+    #[test]
     fn list_builder_children_use_typed_ir_rewrite_facts() {
         let source = SourceId::new(4243);
         let scalar_span = SourceSpan::new(1, 2, 4).with_source(source);
