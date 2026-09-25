@@ -1921,6 +1921,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "requestBytes",
+            3,
+            "fn http.requestBytes(socket: i64, method: str, target: str, host: str, contentType: str, body: i64[], keepAlive: bool = false) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
             "requestHeaders",
             3,
             "fn http.requestHeaders(socket: i64, method: str, target: str, host: str, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
@@ -1931,6 +1938,13 @@ fn add_qualified_namespace_completions(
             "respond",
             3,
             "fn http.respond(socket: i64, status: i64, contentType: str, body: str, keepAlive: bool = false) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "respondBytes",
+            3,
+            "fn http.respondBytes(socket: i64, status: i64, contentType: str, body: i64[], keepAlive: bool = false) -> error",
         );
         push_completion_item(
             items,
@@ -4327,6 +4341,22 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
+                "requestBytes" => {
+                    return Some(signature_help_for_builtin(
+                        "http.requestBytes",
+                        &[
+                            "socket: i64",
+                            "method: str",
+                            "target: str",
+                            "host: str",
+                            "contentType: str",
+                            "body: i64[]",
+                            "keepAlive: bool = false",
+                        ],
+                        "error",
+                        active_parameter,
+                    ));
+                }
                 "requestWithHeaders" | "sendTextRequestWithHeaders" => {
                     return Some(signature_help_for_builtin(
                         &format!("http.{member}"),
@@ -4352,6 +4382,20 @@ fn signature_help_for_document_cached(
                             "status: i64",
                             "contentType: str",
                             "body: str",
+                            "keepAlive: bool = false",
+                        ],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "respondBytes" => {
+                    return Some(signature_help_for_builtin(
+                        "http.respondBytes",
+                        &[
+                            "socket: i64",
+                            "status: i64",
+                            "contentType: str",
+                            "body: i64[]",
                             "keepAlive: bool = false",
                         ],
                         "error",
@@ -10734,7 +10778,7 @@ mod tests {
     #[test]
     fn signature_help_supports_http_client_capabilities() {
         let uri = "file:///tmp/http-signatures.flux";
-        let source = "fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {\n}\nfn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn binaryBody(_socket: i64, _body: i64[]) -> void {\n}\nfn parsed(_scheme: str, _host: str, _port: i64, _target: str) -> void {\n}\nfn main() -> i64 {\n    print(url.parseHttp(\"https://example.test/\", parsed))\n    print(http.sendTextRequest(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\"))\n    print(http.sendTextRequestWithHeaders(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\", \"Accept: application/json\"))\n    print(http.sendTextResponse(1, 200, \"text/plain\", \"ok\", true))\n    print(http.sendTextResponseWithHeaders(1, 200, \"text/plain\", \"ok\", \"Cache-Control: no-store\", true))\n    let (_requestBinaryReceived, _requestBinaryFailure) = http.receiveRequestWithBinaryBody(1, 4096, 1024, request, header, binaryBody)\n    let (_headReceived, _headFailure) = http.receiveResponseHeadWithHeaders(1, 4096, response, header)\n    let (_received, _failure) = http.receiveResponseWithTextBody(1, 4096, 1024, response, header, body)\n    let (_binaryReceived, _binaryFailure) = http.receiveResponseWithBinaryBody(1, 4096, 1024, response, header, binaryBody)\n    return 0\n}\n";
+        let source = "fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {\n}\nfn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn binaryBody(_socket: i64, _body: i64[]) -> void {\n}\nfn parsed(_scheme: str, _host: str, _port: i64, _target: str) -> void {\n}\nfn main() -> i64 {\n    print(url.parseHttp(\"https://example.test/\", parsed))\n    print(http.sendTextRequest(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\"))\n    print(http.sendTextRequestWithHeaders(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\", \"Accept: application/json\"))\n    print(http.requestBytes(1, \"POST\", \"/binary\", \"example.test\", \"application/octet-stream\", [0, 255]))\n    print(http.sendTextResponse(1, 200, \"text/plain\", \"ok\", true))\n    print(http.sendTextResponseWithHeaders(1, 200, \"text/plain\", \"ok\", \"Cache-Control: no-store\", true))\n    print(http.respondBytes(1, 200, \"application/octet-stream\", [0, 255], true))\n    let (_requestBinaryReceived, _requestBinaryFailure) = http.receiveRequestWithBinaryBody(1, 4096, 1024, request, header, binaryBody)\n    let (_headReceived, _headFailure) = http.receiveResponseHeadWithHeaders(1, 4096, response, header)\n    let (_received, _failure) = http.receiveResponseWithTextBody(1, 4096, 1024, response, header, body)\n    let (_binaryReceived, _binaryFailure) = http.receiveResponseWithBinaryBody(1, 4096, 1024, response, header, binaryBody)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -10746,12 +10790,20 @@ mod tests {
                 "fn http.request(socket: i64, method: str, target: str, host: str, contentType: str, body: str, keepAlive: bool = false) -> error",
             ),
             (
+                "http.requestBytes(",
+                "fn http.requestBytes(socket: i64, method: str, target: str, host: str, contentType: str, body: i64[], keepAlive: bool = false) -> error",
+            ),
+            (
                 "http.sendTextRequestWithHeaders(",
                 "fn http.requestHeaders(socket: i64, method: str, target: str, host: str, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
             ),
             (
                 "http.sendTextResponse(",
                 "fn http.respond(socket: i64, status: i64, contentType: str, body: str, keepAlive: bool = false) -> error",
+            ),
+            (
+                "http.respondBytes(",
+                "fn http.respondBytes(socket: i64, status: i64, contentType: str, body: i64[], keepAlive: bool = false) -> error",
             ),
             (
                 "http.sendTextResponseWithHeaders(",

@@ -9064,6 +9064,108 @@ fn main() -> i64 {
 }
 
 #[test]
+fn http_binary_request_sender_is_typed_strided_tree_shaken_and_runnable() {
+    let source = r#"
+fn main() -> i64 {
+    let body: i64[] = [0, 128, 255]
+    print(http.requestBytes(1, "POST", "/items", "example.test", "application/octet-stream", body))
+    return 0
+}
+"#;
+    check_source(source).expect("HTTP binary request should typecheck");
+    let generated = compile_to_c(source).expect("HTTP binary request should lower on Linux");
+    assert!(generated.contains("flux__net_http_send_bytes_request("));
+    assert!(generated.contains("flux__net_http_copy_binary_body("));
+    assert!(generated.contains("HTTP binary body byte values must be between 0 and 255"));
+    assert!(generated.contains("Content-Length: %zu"));
+    assert!(generated.contains("Connection: %s"));
+
+    let invalid_type = check_source(
+        "fn main() -> i64 {\n    print(http.requestBytes(1, \"POST\", \"/\", \"example.test\", \"application/octet-stream\", \"nope\"))\n    return 0\n}\n",
+    )
+    .expect_err("HTTP binary request body must be bytes");
+    assert!(invalid_type.message.contains("http.requestBytes body"));
+
+    let invalid_byte = check_source(
+        "fn main() -> i64 {\n    print(http.requestBytes(1, \"POST\", \"/\", \"example.test\", \"application/octet-stream\", [0, 256]))\n    return 0\n}\n",
+    )
+    .expect_err("HTTP binary request literal bytes must stay in byte range");
+    assert!(
+        invalid_byte
+            .message
+            .contains("http.requestBytes byte values must be between 0 and 255")
+    );
+
+    let unused = r#"
+fn hidden(body: i64[]) -> void {
+    print(http.requestBytes(1, "POST", "/", "example.test", "application/octet-stream", body))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead HTTP binary request helper should tree-shake");
+    assert!(!unused_generated.contains("flux__net_http_send_bytes_request("));
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("HTTP binary request listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let root = std::env::temp_dir().join(format!(
+        "flux-http-send-binary-request-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP binary request fixture should be writable");
+    let source_path = root.join("request.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn main() -> i64 {{\n    let values: i64[] = [0, 99, 128, 99, 255]\n    let body: i64[] = values[::2]\n    let (socket, connectError) = net.connect(\"127.0.0.1\", {port})\n    print(connectError)\n    print(http.requestBytes(socket, \"POST\", \"/binary\", \"127.0.0.1:{port}\", \"application/octet-stream\", body, true))\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP binary request Flux source should be writable");
+    let binary = root.join("request");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP binary request Flux binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP binary request fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("HTTP binary request Flux binary should run");
+    assert!(
+        run.status.success(),
+        "HTTP binary request run failed: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "nil\nnil\nnil\n");
+
+    let (mut stream, _) = listener
+        .accept()
+        .expect("HTTP binary request connection should accept");
+    let mut request = Vec::new();
+    stream
+        .read_to_end(&mut request)
+        .expect("HTTP binary request should be readable");
+    let mut expected = format!(
+        "POST /binary HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 3\r\nContent-Type: application/octet-stream\r\nConnection: keep-alive\r\n\r\n"
+    )
+    .into_bytes();
+    expected.extend_from_slice(&[0, 128, 255]);
+    assert_eq!(request, expected);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn http_text_request_custom_headers_are_validated_and_runnable() {
     let source = r#"
 fn main() -> i64 {
@@ -10330,6 +10432,105 @@ fn main() -> i64 {
         response,
         "HTTP/1.1 201 \r\nContent-Length: 5\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: keep-alive\r\n\r\nhello"
     );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn http_binary_response_sender_is_typed_strided_tree_shaken_and_runnable() {
+    let source = r#"
+fn main() -> i64 {
+    let body: i64[] = [0, 128, 255]
+    print(http.respondBytes(1, 201, "application/octet-stream", body))
+    return 0
+}
+"#;
+    check_source(source).expect("HTTP binary response should typecheck");
+    let generated = compile_to_c(source).expect("HTTP binary response should lower on Linux");
+    assert!(generated.contains("flux__net_http_send_bytes_response("));
+    assert!(generated.contains("flux__net_http_copy_binary_body("));
+    assert!(generated.contains("HTTP binary body byte values must be between 0 and 255"));
+    assert!(generated.contains("Content-Length: %zu"));
+    assert!(generated.contains("Connection: %s"));
+
+    let invalid_status = check_source(
+        "fn main() -> i64 {\n    let body: i64[] = [0]\n    print(http.respondBytes(1, 99, \"application/octet-stream\", body))\n    return 0\n}\n",
+    )
+    .expect_err("HTTP binary response status must stay in range");
+    assert!(
+        invalid_status
+            .message
+            .contains("http.respondBytes status must be between 100 and 599")
+    );
+
+    let invalid_type = check_source(
+        "fn main() -> i64 {\n    print(http.respondBytes(1, 200, \"application/octet-stream\", \"nope\"))\n    return 0\n}\n",
+    )
+    .expect_err("HTTP binary response body must be bytes");
+    assert!(invalid_type.message.contains("http.respondBytes body"));
+
+    let unused = r#"
+fn hidden(body: i64[]) -> void {
+    print(http.respondBytes(1, 200, "application/octet-stream", body))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead HTTP binary response helper should tree-shake");
+    assert!(!unused_generated.contains("flux__net_http_send_bytes_response("));
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("HTTP binary response listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let root = std::env::temp_dir().join(format!(
+        "flux-http-send-binary-response-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP binary response fixture should be writable");
+    let source_path = root.join("response.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn main() -> i64 {{\n    let values: i64[] = [0, 77, 128, 77, 255]\n    let body: i64[] = values[::2]\n    let (socket, connectError) = net.connect(\"127.0.0.1\", {port})\n    print(connectError)\n    print(http.respondBytes(socket, 201, \"application/octet-stream\", body, false))\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP binary response Flux source should be writable");
+    let binary = root.join("response");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP binary response Flux binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP binary response fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("HTTP binary response Flux binary should run");
+    assert!(
+        run.status.success(),
+        "HTTP binary response run failed: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "nil\nnil\nnil\n");
+
+    let (mut stream, _) = listener
+        .accept()
+        .expect("HTTP binary response connection should accept");
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .expect("HTTP binary response should be readable");
+    let mut expected = b"HTTP/1.1 201 \r\nContent-Length: 3\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n".to_vec();
+    expected.extend_from_slice(&[0, 128, 255]);
+    assert_eq!(response, expected);
     let _ = fs::remove_dir_all(&root);
 }
 

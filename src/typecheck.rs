@@ -11635,6 +11635,56 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::Error]);
             }
+            "requestBytes" => {
+                if !(6..=7).contains(&args.len()) {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "http.requestBytes expects 6 or 7 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &socket,
+                    "http.requestBytes socket",
+                )?;
+                for (index, label) in [
+                    (1usize, "method"),
+                    (2usize, "target"),
+                    (3usize, "host"),
+                    (4usize, "contentType"),
+                ] {
+                    let value = type_of_expr(&args[index], env, signatures)?;
+                    require_type(
+                        args[index].span,
+                        &Type::Str,
+                        &value,
+                        &format!("http.requestBytes {label}"),
+                    )?;
+                }
+                let body = type_of_expr(&args[5], env, signatures)?;
+                require_type(
+                    args[5].span,
+                    &Type::List(Box::new(Type::I64)),
+                    &body,
+                    "http.requestBytes body",
+                )?;
+                validate_literal_byte_list(&args[5], signatures, "http.requestBytes")?;
+                if args.len() == 7 {
+                    let keep_alive = type_of_expr(&args[6], env, signatures)?;
+                    require_type(
+                        args[6].span,
+                        &Type::Bool,
+                        &keep_alive,
+                        "http.requestBytes keepAlive",
+                    )?;
+                }
+                return Ok(vec![Type::Error]);
+            }
             "requestWithHeaders" | "sendTextRequestWithHeaders" => {
                 if !(7..=8).contains(&args.len()) {
                     return Err(diag(
@@ -11726,6 +11776,65 @@ fn check_qualified_call(
                         &Type::Bool,
                         &keep_alive,
                         &format!("http.{name} keepAlive"),
+                    )?;
+                }
+                return Ok(vec![Type::Error]);
+            }
+            "respondBytes" => {
+                if !(4..=5).contains(&args.len()) {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "http.respondBytes expects 4 or 5 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &socket,
+                    "http.respondBytes socket",
+                )?;
+                let status = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &status,
+                    "http.respondBytes status",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[1], signatures),
+                    Some(ConstantValue::I64(value)) if !(100..=599).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[1].span,
+                        "http.respondBytes status must be between 100 and 599",
+                    ));
+                }
+                let content_type = type_of_expr(&args[2], env, signatures)?;
+                require_type(
+                    args[2].span,
+                    &Type::Str,
+                    &content_type,
+                    "http.respondBytes contentType",
+                )?;
+                let body = type_of_expr(&args[3], env, signatures)?;
+                require_type(
+                    args[3].span,
+                    &Type::List(Box::new(Type::I64)),
+                    &body,
+                    "http.respondBytes body",
+                )?;
+                validate_literal_byte_list(&args[3], signatures, "http.respondBytes")?;
+                if args.len() == 5 {
+                    let keep_alive = type_of_expr(&args[4], env, signatures)?;
+                    require_type(
+                        args[4].span,
+                        &Type::Bool,
+                        &keep_alive,
+                        "http.respondBytes keepAlive",
                     )?;
                 }
                 return Ok(vec![Type::Error]);
