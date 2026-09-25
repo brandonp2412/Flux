@@ -58867,6 +58867,21 @@ fn emit_cfg_scalar_expr_direct(
             let base_ty = signatures.canonical_type(&base.ty);
             let aggregate_base = matches!(base.kind, CfgScalarExprKind::Aggregate(_));
             let static_list_len = cfg_direct_aggregate_list_length(base);
+            if let Type::Map(key, value) = &base_ty
+                && aggregate_base
+                && matches!(name.as_str(), "count" | "empty" | "nonempty")
+                && let Some((prelude, borrowed)) =
+                    emit_cfg_call_scoped_borrowed_map_direct(base, key, value, env, signatures)
+            {
+                let length = format!("({borrowed}).keys.len");
+                let property = match name.as_str() {
+                    "count" if ty == Type::I64 => length,
+                    "empty" if ty == Type::Bool => format!("({length} == 0)"),
+                    "nonempty" if ty == Type::Bool => format!("({length} != 0)"),
+                    _ => return None,
+                };
+                return Some(format!("__extension__ ({{ {prelude}{property}; }})"));
+            }
             let rendered_base = emit_cfg_scalar_expr_direct(base, env, signatures)?;
             match &base_ty {
                 Type::List(element) => {
@@ -69131,6 +69146,119 @@ fn main() -> i64 {
         .expect("dynamic temporary list property should bypass the checked-AST root");
         assert_eq!(dynamic_emitted, dynamic_direct);
         assert!(!dynamic_emitted.contains("checked-ast-dynamic-temporary-list-property"));
+    }
+
+    #[test]
+    fn effectful_temporary_map_properties_emit_from_ordered_typed_ir() {
+        let source = r#"
+fn observeLeft(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeRight(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn mapCount(first: i64, second: i64) -> i64 {
+    return map{"left": (value: observeLeft(first)), "right": (value: observeRight(second))}.count
+}
+
+fn mapEmpty(first: i64, second: i64) -> bool {
+    return map{"left": (value: observeLeft(first)), "right": (value: observeRight(second))}.empty
+}
+
+fn mapNonempty(first: i64, second: i64) -> bool {
+    return map{"left": (value: observeLeft(first)), "right": (value: observeRight(second))}.nonempty
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4257))
+            .expect("effectful temporary map property fixture should typecheck");
+        let env = HashMap::from([
+            ("first".to_string(), Type::I64),
+            ("second".to_string(), Type::I64),
+        ]);
+
+        for (function, expected, property_fragment) in [
+            ("mapCount", Type::I64, ".keys.len"),
+            ("mapEmpty", Type::Bool, ".keys.len"),
+            ("mapNonempty", Type::Bool, ".keys.len"),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("effectful map property CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let field = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        facts.scalar_exprs.get(&source_span_key(value.span)),
+                        Some(CfgScalarExpr {
+                            kind: CfgScalarExprKind::Field { base, .. },
+                            ..
+                        }) if matches!(base.kind, CfgScalarExprKind::Aggregate(_))
+                    )
+                })
+                .expect("effectful map property should preserve an aggregate typed-IR base");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(field.span))
+                .expect("effectful map property should have scalar typed-IR facts");
+            let CfgScalarExprKind::Field { base, .. } = &scalar.kind else {
+                panic!("effectful map property root should remain a typed field");
+            };
+            assert!(
+                emit_cfg_scalar_expr_direct(base, &env, database.signatures()).is_none(),
+                "effectful temporary map should not use the unordered aggregate renderer"
+            );
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("effectful temporary map property should emit directly");
+            let left = direct
+                .find(&function_c_name("observeLeft"))
+                .expect("left map value effect should be materialized");
+            let right = direct
+                .find(&function_c_name("observeRight"))
+                .expect("right map value effect should be materialized");
+            assert!(left < right, "{function}: {direct}");
+            assert_eq!(
+                direct.matches(&function_c_name("observeLeft")).count(),
+                1,
+                "{function}: {direct}"
+            );
+            assert_eq!(
+                direct.matches(&function_c_name("observeRight")).count(),
+                1,
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains("flux__typed_borrowed_map_values"),
+                "{function}: {direct}"
+            );
+            assert!(direct.contains(property_fragment), "{function}: {direct}");
+
+            let fake = Expr {
+                line: field.span.line,
+                span: field.span,
+                kind: ExprKind::Str("checked-ast-effectful-map-property".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &expected,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("effectful temporary map property should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-effectful-map-property"));
+        }
     }
 
     #[test]
