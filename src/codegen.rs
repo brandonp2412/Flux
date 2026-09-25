@@ -7947,11 +7947,15 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
         || runtime_usage.contains("flux__net_http_send_text_response_with_headers(")
         || runtime_usage.contains("flux__net_http_send_bytes_request(")
         || runtime_usage.contains("flux__net_http_send_bytes_response(")
+        || runtime_usage.contains("flux__net_http_send_bytes_request_with_headers(")
+        || runtime_usage.contains("flux__net_http_send_bytes_response_with_headers(")
     {
         out.push_str("static inline bool flux__net_http_bounded_length(const char *value, size_t *length) { if (value == NULL || length == NULL) return false; size_t cursor = 0; while (cursor <= 65536 && value[cursor] != '\\0') cursor += 1; if (cursor > 65536) return false; *length = cursor; return true; }\n");
     }
     if runtime_usage.contains("flux__net_http_send_bytes_request(")
         || runtime_usage.contains("flux__net_http_send_bytes_response(")
+        || runtime_usage.contains("flux__net_http_send_bytes_request_with_headers(")
+        || runtime_usage.contains("flux__net_http_send_bytes_response_with_headers(")
     {
         out.push_str("#ifndef FLUX_LIST_DEFINED\n#define FLUX_LIST_DEFINED\nstruct flux__list { void *data; size_t len; ptrdiff_t stride; };\n#endif\n");
         out.push_str(r#"static inline const char *flux__net_http_copy_binary_body(struct flux__list body, unsigned char *payload, size_t *length) {
@@ -8033,6 +8037,131 @@ static inline const char *flux__net_http_send_bytes_response(int64_t socket_hand
     const char *connection = keep_alive ? "keep-alive" : "close";
     char header[512];
     int header_length = snprintf(header, sizeof(header), "HTTP/1.1 %lld \r\nContent-Length: %zu\r\nContent-Type: %s\r\nConnection: %s\r\n\r\n", (long long)status, body_length, content_type, connection);
+    if (header_length < 0 || (size_t)header_length >= sizeof(header)) return "HTTP response headers are too large";
+    size_t header_offset = 0;
+    while (header_offset < (size_t)header_length) {
+        ssize_t sent;
+        do { sent = send((int)socket_handle, header + header_offset, (size_t)header_length - header_offset, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR);
+        if (sent <= 0) return "failed to send HTTP response headers";
+        header_offset += (size_t)sent;
+    }
+    size_t body_offset = 0;
+    while (body_offset < body_length) {
+        ssize_t sent;
+        do { sent = send((int)socket_handle, payload + body_offset, body_length - body_offset, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR);
+        if (sent <= 0) return "failed to send HTTP response body";
+        body_offset += (size_t)sent;
+    }
+    return NULL;
+}
+"#);
+    }
+    if runtime_usage.contains("flux__net_http_send_bytes_request_with_headers(")
+        || runtime_usage.contains("flux__net_http_send_bytes_response_with_headers(")
+    {
+        out.push_str(r#"static inline const char *flux__net_http_validate_binary_headers(const char *headers, bool request_headers) {
+    if (headers == NULL) return "invalid HTTP custom headers";
+    size_t headers_length = 0u;
+    while (headers_length <= 8192 && headers[headers_length] != '\0') headers_length += 1;
+    if (headers_length > 8192) return "HTTP custom headers exceed 8192 bytes";
+    const char *line = headers;
+    while (*line != '\0') {
+        const char *line_end = strstr(line, "\r\n");
+        const char *end = line_end == NULL ? line + strlen(line) : line_end;
+        if (end == line) return "HTTP custom header line must not be empty";
+        const char *colon = memchr(line, ':', (size_t)(end - line));
+        if (colon == NULL || colon == line) return "malformed HTTP custom header field";
+        for (const unsigned char *part = (const unsigned char *)line; part < (const unsigned char *)colon; part += 1) {
+            bool token = (*part >= '0' && *part <= '9') || (*part >= 'A' && *part <= 'Z') || (*part >= 'a' && *part <= 'z') || strchr("!#$%&'*+-.^_|~", *part) != NULL || *part == 0x60;
+            if (!token) return "invalid HTTP custom header name";
+        }
+        size_t name_length = (size_t)(colon - line);
+        if ((request_headers && name_length == 4 && strncasecmp(line, "Host", 4) == 0)
+            || (name_length == 14 && strncasecmp(line, "Content-Length", 14) == 0)
+            || (name_length == 12 && strncasecmp(line, "Content-Type", 12) == 0)
+            || (name_length == 10 && strncasecmp(line, "Connection", 10) == 0)
+            || (name_length == 17 && strncasecmp(line, "Transfer-Encoding", 17) == 0)) return "HTTP custom headers cannot override framing headers";
+        for (const unsigned char *part = (const unsigned char *)(colon + 1); part < (const unsigned char *)end; part += 1) if ((*part < 0x20 && *part != '\t') || *part == 0x7f) return "invalid HTTP custom header value";
+        if (line_end == NULL) break;
+        line = line_end + 2;
+        if (*line == '\0') return "HTTP custom headers must not end with CRLF";
+    }
+    return NULL;
+}
+"#);
+    }
+    if runtime_usage.contains("flux__net_http_send_bytes_request_with_headers(") {
+        out.push_str(r#"static inline const char *flux__net_http_send_bytes_request_with_headers(int64_t socket_handle, const char *method, const char *target, const char *host, const char *content_type, struct flux__list body, const char *headers, bool keep_alive) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return "invalid socket handle";
+    size_t method_length = 0;
+    size_t target_length = 0;
+    size_t host_length = 0;
+    size_t content_type_length = 0;
+    if (!flux__net_http_bounded_length(method, &method_length)
+        || !flux__net_http_bounded_length(target, &target_length)
+        || !flux__net_http_bounded_length(host, &host_length)
+        || !flux__net_http_bounded_length(content_type, &content_type_length)) return "HTTP request argument exceeds 65536 bytes";
+    if (method_length == 0) return "HTTP method must not be empty";
+    for (const unsigned char *part = (const unsigned char *)method; *part != '\0'; part += 1) if (*part <= 0x20 || *part == 0x7f) return "invalid HTTP method";
+    if (target_length == 0) return "HTTP request target must not be empty";
+    for (const unsigned char *part = (const unsigned char *)target; *part != '\0'; part += 1) if (*part <= 0x20 || *part == 0x7f) return "invalid HTTP request target";
+    if (host_length == 0) return "HTTP host must not be empty";
+    if (strchr(host, '\r') != NULL || strchr(host, '\n') != NULL) return "HTTP host must not contain CR or LF";
+    if (memchr(content_type, '\r', content_type_length) != NULL || memchr(content_type, '\n', content_type_length) != NULL) return "HTTP content type must not contain CR or LF";
+    const char *headers_failure = flux__net_http_validate_binary_headers(headers, true);
+    if (headers_failure != NULL) return headers_failure;
+    unsigned char payload[65536];
+    size_t body_length = 0;
+    const char *body_failure = flux__net_http_copy_binary_body(body, payload, &body_length);
+    if (body_failure != NULL) return body_failure;
+    int socket_type = 0;
+    socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return "failed to inspect socket type";
+    if (socket_type != SOCK_STREAM) return "HTTP request requires a TCP socket";
+    const char *connection = keep_alive ? "keep-alive" : "close";
+    const char *header_separator = headers[0] == '\0' ? "" : "\r\n";
+    char header[8192];
+    int header_length = snprintf(header, sizeof(header), "%s %s HTTP/1.1\r\nHost: %s\r\nContent-Length: %zu\r\nContent-Type: %s\r\n%s%sConnection: %s\r\n\r\n", method, target, host, body_length, content_type, headers, header_separator, connection);
+    if (header_length < 0 || (size_t)header_length >= sizeof(header)) return "HTTP request headers are too large";
+    size_t header_offset = 0;
+    while (header_offset < (size_t)header_length) {
+        ssize_t sent;
+        do { sent = send((int)socket_handle, header + header_offset, (size_t)header_length - header_offset, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR);
+        if (sent <= 0) return "failed to send HTTP request headers";
+        header_offset += (size_t)sent;
+    }
+    size_t body_offset = 0;
+    while (body_offset < body_length) {
+        ssize_t sent;
+        do { sent = send((int)socket_handle, payload + body_offset, body_length - body_offset, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR);
+        if (sent <= 0) return "failed to send HTTP request body";
+        body_offset += (size_t)sent;
+    }
+    return NULL;
+}
+"#);
+    }
+    if runtime_usage.contains("flux__net_http_send_bytes_response_with_headers(") {
+        out.push_str(r#"static inline const char *flux__net_http_send_bytes_response_with_headers(int64_t socket_handle, int64_t status, const char *content_type, struct flux__list body, const char *headers, bool keep_alive) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return "invalid socket handle";
+    if (status < 100 || status > 599) return "HTTP status must be between 100 and 599";
+    size_t content_type_length = 0;
+    if (!flux__net_http_bounded_length(content_type, &content_type_length)) return "HTTP response argument exceeds 65536 bytes";
+    if (memchr(content_type, '\r', content_type_length) != NULL || memchr(content_type, '\n', content_type_length) != NULL) return "HTTP content type must not contain CR or LF";
+    const char *headers_failure = flux__net_http_validate_binary_headers(headers, false);
+    if (headers_failure != NULL) return headers_failure;
+    unsigned char payload[65536];
+    size_t body_length = 0;
+    const char *body_failure = flux__net_http_copy_binary_body(body, payload, &body_length);
+    if (body_failure != NULL) return body_failure;
+    int socket_type = 0;
+    socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return "failed to inspect socket type";
+    if (socket_type != SOCK_STREAM) return "HTTP response requires a TCP socket";
+    const char *connection = keep_alive ? "keep-alive" : "close";
+    const char *header_separator = headers[0] == '\0' ? "" : "\r\n";
+    char header[8192];
+    int header_length = snprintf(header, sizeof(header), "HTTP/1.1 %lld \r\nContent-Length: %zu\r\nContent-Type: %s\r\n%s%sConnection: %s\r\n\r\n", (long long)status, body_length, content_type, headers, header_separator, connection);
     if (header_length < 0 || (size_t)header_length >= sizeof(header)) return "HTTP response headers are too large";
     size_t header_offset = 0;
     while (header_offset < (size_t)header_length) {
@@ -49905,6 +50034,42 @@ fn emit_qualified_call(
                     None,
                 ));
             }
+            "requestBytesHeaders" => {
+                if !(7..=8).contains(&args.len()) {
+                    return Err(diag(span, "invalid HTTP call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let method = emit_expr(&args[1], env, signatures)?;
+                let target = emit_expr(&args[2], env, signatures)?;
+                let host = emit_expr(&args[3], env, signatures)?;
+                let content_type = emit_expr(&args[4], env, signatures)?;
+                let body = emit_expr(&args[5], env, signatures)?;
+                let headers = emit_expr(&args[6], env, signatures)?;
+                let keep_alive = if args.len() == 8 {
+                    emit_expr(&args[7], env, signatures)?.code
+                } else {
+                    "false".to_string()
+                };
+                return Ok((
+                    profiled_timeline_call(
+                        "network",
+                        "http.requestBytesHeaders",
+                        format!(
+                            "flux__net_http_send_bytes_request_with_headers({}, {}, {}, {}, {}, {}, {}, {})",
+                            socket_handle.code,
+                            method.code,
+                            target.code,
+                            host.code,
+                            content_type.code,
+                            body.code,
+                            headers.code,
+                            keep_alive
+                        ),
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
             "requestWithHeaders" | "sendTextRequestWithHeaders" => {
                 if !(7..=8).contains(&args.len()) {
                     return Err(diag(span, "invalid HTTP call reached code generation"));
@@ -49932,6 +50097,38 @@ fn emit_qualified_call(
                         body.code,
                         headers.code,
                         keep_alive
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "respondBytesHeaders" => {
+                if !(5..=6).contains(&args.len()) {
+                    return Err(diag(span, "invalid HTTP call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let status = emit_expr(&args[1], env, signatures)?;
+                let content_type = emit_expr(&args[2], env, signatures)?;
+                let body = emit_expr(&args[3], env, signatures)?;
+                let headers = emit_expr(&args[4], env, signatures)?;
+                let keep_alive = if args.len() == 6 {
+                    emit_expr(&args[5], env, signatures)?.code
+                } else {
+                    "false".to_string()
+                };
+                return Ok((
+                    profiled_timeline_call(
+                        "network",
+                        "http.respondBytesHeaders",
+                        format!(
+                            "flux__net_http_send_bytes_response_with_headers({}, {}, {}, {}, {}, {})",
+                            socket_handle.code,
+                            status.code,
+                            content_type.code,
+                            body.code,
+                            headers.code,
+                            keep_alive
+                        ),
                     ),
                     vec![Type::Error],
                     None,
@@ -55162,6 +55359,46 @@ fn emit_cfg_scalar_expr_direct(
                         },
                     )
                 }
+                "requestBytesHeaders" if (7..=8).contains(&arguments.len()) => {
+                    let mut scalar_arguments = arguments[..5].to_vec();
+                    scalar_arguments.push(arguments[6].clone());
+                    let mut expected = vec![
+                        Type::I64,
+                        Type::Str,
+                        Type::Str,
+                        Type::Str,
+                        Type::Str,
+                        Type::Str,
+                    ];
+                    if arguments.len() == 8 {
+                        scalar_arguments.push(arguments[7].clone());
+                        expected.push(Type::Bool);
+                    }
+                    emit_cfg_ordered_call_with_borrowed_list_direct(
+                        &scalar_arguments,
+                        &expected,
+                        &arguments[5],
+                        &Type::I64,
+                        env,
+                        signatures,
+                        |rendered, body| {
+                            let keep_alive = rendered.get(6).map_or("false", String::as_str);
+                            profiled_timeline_call(
+                                "network",
+                                "http.requestBytesHeaders",
+                                format!(
+                                    "flux__net_http_send_bytes_request_with_headers({}, {}, {}, {}, {}, {body}, {}, {keep_alive})",
+                                    rendered[0],
+                                    rendered[1],
+                                    rendered[2],
+                                    rendered[3],
+                                    rendered[4],
+                                    rendered[5]
+                                ),
+                            )
+                        },
+                    )
+                }
                 "requestWithHeaders" | "sendTextRequestWithHeaders"
                     if (7..=8).contains(&arguments.len()) =>
                 {
@@ -55203,6 +55440,34 @@ fn emit_cfg_scalar_expr_direct(
                                 rendered[4],
                                 rendered[5],
                                 rendered[6]
+                            )
+                        },
+                    )
+                }
+                "respondBytesHeaders" if (5..=6).contains(&arguments.len()) => {
+                    let mut scalar_arguments = arguments[..3].to_vec();
+                    scalar_arguments.push(arguments[4].clone());
+                    let mut expected = vec![Type::I64, Type::I64, Type::Str, Type::Str];
+                    if arguments.len() == 6 {
+                        scalar_arguments.push(arguments[5].clone());
+                        expected.push(Type::Bool);
+                    }
+                    emit_cfg_ordered_call_with_borrowed_list_direct(
+                        &scalar_arguments,
+                        &expected,
+                        &arguments[3],
+                        &Type::I64,
+                        env,
+                        signatures,
+                        |rendered, body| {
+                            let keep_alive = rendered.get(4).map_or("false", String::as_str);
+                            profiled_timeline_call(
+                                "network",
+                                "http.respondBytesHeaders",
+                                format!(
+                                    "flux__net_http_send_bytes_response_with_headers({}, {}, {}, {body}, {}, {keep_alive})",
+                                    rendered[0], rendered[1], rendered[2], rendered[3]
+                                ),
                             )
                         },
                     )
@@ -77114,6 +77379,10 @@ fn requestBytesBasic(socket: i64, method: str, target: str, host: str, contentTy
     return http.requestBytes(socket, method, target, host, contentType, body)
 }
 
+fn requestBytesHeadersCall(socket: i64, method: str, target: str, host: str, contentType: str, body: i64[], headers: str, keepAlive: bool) -> error {
+    return http.requestBytesHeaders(socket, method, target, host, contentType, body, headers, keepAlive)
+}
+
 fn requestHeaders(socket: i64, method: str, target: str, host: str, contentType: str, body: str, headers: str) -> error {
     return http.requestWithHeaders(socket, method, target, host, contentType, body, headers)
 }
@@ -77124,6 +77393,10 @@ fn respondBasic(socket: i64, status: i64, contentType: str, body: str) -> error 
 
 fn respondBytesKeepAlive(socket: i64, status: i64, contentType: str, body: i64[], keepAlive: bool) -> error {
     return http.respondBytes(socket, status, contentType, body, keepAlive)
+}
+
+fn respondBytesHeadersCall(socket: i64, status: i64, contentType: str, body: i64[], headers: str) -> error {
+    return http.respondBytesHeaders(socket, status, contentType, body, headers)
 }
 
 fn respondHeaders(socket: i64, status: i64, contentType: str, body: str, headers: str, keepAlive: bool) -> error {
@@ -77238,6 +77511,34 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "requestBytesHeadersCall",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("method".to_string(), Type::Str),
+                    ("target".to_string(), Type::Str),
+                    ("host".to_string(), Type::Str),
+                    ("contentType".to_string(), Type::Str),
+                    ("body".to_string(), Type::List(Box::new(Type::I64))),
+                    ("headers".to_string(), Type::Str),
+                    ("keepAlive".to_string(), Type::Bool),
+                ]),
+                profiled_timeline_call(
+                    "network",
+                    "http.requestBytesHeaders",
+                    format!(
+                        "flux__net_http_send_bytes_request_with_headers({}, {}, {}, {}, {}, {}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("method"),
+                        local_c_name("target"),
+                        local_c_name("host"),
+                        local_c_name("contentType"),
+                        local_c_name("body"),
+                        local_c_name("headers"),
+                        local_c_name("keepAlive")
+                    ),
+                ),
+            ),
+            (
                 "requestHeaders",
                 HashMap::from([
                     ("socket".to_string(), Type::I64),
@@ -77298,6 +77599,28 @@ fn main() -> i64 {
                         local_c_name("contentType"),
                         local_c_name("body"),
                         local_c_name("keepAlive")
+                    ),
+                ),
+            ),
+            (
+                "respondBytesHeadersCall",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("status".to_string(), Type::I64),
+                    ("contentType".to_string(), Type::Str),
+                    ("body".to_string(), Type::List(Box::new(Type::I64))),
+                    ("headers".to_string(), Type::Str),
+                ]),
+                profiled_timeline_call(
+                    "network",
+                    "http.respondBytesHeaders",
+                    format!(
+                        "flux__net_http_send_bytes_response_with_headers({}, {}, {}, {}, {}, false)",
+                        local_c_name("socket"),
+                        local_c_name("status"),
+                        local_c_name("contentType"),
+                        local_c_name("body"),
+                        local_c_name("headers")
                     ),
                 ),
             ),

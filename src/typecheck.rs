@@ -11685,6 +11685,63 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::Error]);
             }
+            "requestBytesHeaders" => {
+                if !(7..=8).contains(&args.len()) {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "http.requestBytesHeaders expects 7 or 8 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &socket,
+                    "http.requestBytesHeaders socket",
+                )?;
+                for (index, label) in [
+                    (1usize, "method"),
+                    (2usize, "target"),
+                    (3usize, "host"),
+                    (4usize, "contentType"),
+                ] {
+                    let value = type_of_expr(&args[index], env, signatures)?;
+                    require_type(
+                        args[index].span,
+                        &Type::Str,
+                        &value,
+                        &format!("http.requestBytesHeaders {label}"),
+                    )?;
+                }
+                let body = type_of_expr(&args[5], env, signatures)?;
+                require_type(
+                    args[5].span,
+                    &Type::List(Box::new(Type::I64)),
+                    &body,
+                    "http.requestBytesHeaders body",
+                )?;
+                validate_literal_byte_list(&args[5], signatures, "http.requestBytesHeaders")?;
+                let headers = type_of_expr(&args[6], env, signatures)?;
+                require_type(
+                    args[6].span,
+                    &Type::Str,
+                    &headers,
+                    "http.requestBytesHeaders headers",
+                )?;
+                if args.len() == 8 {
+                    let keep_alive = type_of_expr(&args[7], env, signatures)?;
+                    require_type(
+                        args[7].span,
+                        &Type::Bool,
+                        &keep_alive,
+                        "http.requestBytesHeaders keepAlive",
+                    )?;
+                }
+                return Ok(vec![Type::Error]);
+            }
             "requestWithHeaders" | "sendTextRequestWithHeaders" => {
                 if !(7..=8).contains(&args.len()) {
                     return Err(diag(
@@ -11722,6 +11779,72 @@ fn check_qualified_call(
                         &Type::Bool,
                         &keep_alive,
                         &format!("http.{name} keepAlive"),
+                    )?;
+                }
+                return Ok(vec![Type::Error]);
+            }
+            "respondBytesHeaders" => {
+                if !(5..=6).contains(&args.len()) {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "http.respondBytesHeaders expects 5 or 6 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &socket,
+                    "http.respondBytesHeaders socket",
+                )?;
+                let status = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &status,
+                    "http.respondBytesHeaders status",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[1], signatures),
+                    Some(ConstantValue::I64(value)) if !(100..=599).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[1].span,
+                        "http.respondBytesHeaders status must be between 100 and 599",
+                    ));
+                }
+                let content_type = type_of_expr(&args[2], env, signatures)?;
+                require_type(
+                    args[2].span,
+                    &Type::Str,
+                    &content_type,
+                    "http.respondBytesHeaders contentType",
+                )?;
+                let body = type_of_expr(&args[3], env, signatures)?;
+                require_type(
+                    args[3].span,
+                    &Type::List(Box::new(Type::I64)),
+                    &body,
+                    "http.respondBytesHeaders body",
+                )?;
+                validate_literal_byte_list(&args[3], signatures, "http.respondBytesHeaders")?;
+                let headers = type_of_expr(&args[4], env, signatures)?;
+                require_type(
+                    args[4].span,
+                    &Type::Str,
+                    &headers,
+                    "http.respondBytesHeaders headers",
+                )?;
+                if args.len() == 6 {
+                    let keep_alive = type_of_expr(&args[5], env, signatures)?;
+                    require_type(
+                        args[5].span,
+                        &Type::Bool,
+                        &keep_alive,
+                        "http.respondBytesHeaders keepAlive",
                     )?;
                 }
                 return Ok(vec![Type::Error]);
