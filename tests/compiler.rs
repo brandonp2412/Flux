@@ -684,6 +684,29 @@ fn main() -> i64 {
 }
 
 #[test]
+fn empty_reduction_sources_inherit_reducer_parameter_types() {
+    let source = r#"
+fn count(total: i64, value: str) -> i64 {
+    if value == "":
+        return total
+    return total + 1
+}
+
+fn sum(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn main() -> i64 {
+    let countResult: i64 = fold([], 0, count)
+    let sumResult: i64 = reduce([], sum)
+    return countResult + sumResult
+}
+"#;
+    compile_to_c(source)
+        .expect("empty fold/reduce sources should inherit reducer element parameter types");
+}
+
+#[test]
 fn map_calls_with_computed_copy_peers_use_ordered_typed_ir_storage() {
     let source = r#"
 fn observeBefore(value: i64) -> i64 {
@@ -36125,6 +36148,46 @@ fn main() -> i64 {
     }));
     assert!(graph.values().iter().any(|value| {
         value.ty == Type::List(Box::new(Type::Str))
+            && matches!(
+                &value.kind,
+                ControlFlowValueKind::List { items } if items.is_empty()
+            )
+    }));
+}
+
+#[test]
+fn semantic_cfg_records_contextual_empty_reduction_source_types() {
+    let source = r#"
+fn count(total: i64, value: str) -> i64 {
+    if value == "":
+        return total
+    return total + 1
+}
+
+fn sum(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn main() -> i64 {
+    let countResult: i64 = fold([], 0, count)
+    let sumResult: i64 = reduce([], sum)
+    return countResult + sumResult
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1321))
+        .expect("empty reduction sources should analyze from reducer parameter types");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    assert!(graph.values().iter().any(|value| {
+        value.ty == Type::List(Box::new(Type::Str))
+            && matches!(
+                &value.kind,
+                ControlFlowValueKind::List { items } if items.is_empty()
+            )
+    }));
+    assert!(graph.values().iter().any(|value| {
+        value.ty == Type::List(Box::new(Type::I64))
             && matches!(
                 &value.kind,
                 ControlFlowValueKind::List { items } if items.is_empty()

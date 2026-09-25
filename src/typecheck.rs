@@ -7451,33 +7451,49 @@ pub fn type_of_expr(
                     &format!("{name} expects exactly {expected_len} arguments"),
                 ));
             }
-            let list_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            let source_empty = matches!(&args[0].kind, ExprKind::List(items) if items.is_empty());
+            let reducer_index = if name == "fold" { 2usize } else { 1usize };
+            let reducer_context = if source_empty {
+                Some(signatures.canonical_type(&type_of_sequence_callback(
+                    &args[reducer_index],
+                    env,
+                    signatures,
+                )?))
+            } else {
+                None
+            };
+            let list_ty = if let Some(expected) = reducer_context.as_ref().and_then(|callback_ty| {
+                contextual_empty_reduction_source_type(name, &args[0], callback_ty, signatures)
+            }) {
+                type_of_call_argument(&args[0], &expected, env, signatures)?
+            } else {
+                signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?)
+            };
             let Type::List(element) = list_ty else {
                 return Err(diag(
                     args[0].span,
                     &format!("{name} expects a list as its first argument"),
                 ));
             };
-            let (result_ty, reducer_index, expected_params) = if name == "fold" {
+            let (result_ty, expected_params) = if name == "fold" {
                 let initial_ty =
                     signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
-                (
-                    initial_ty.clone(),
-                    2usize,
-                    vec![initial_ty, (*element).clone()],
-                )
+                (initial_ty.clone(), vec![initial_ty, (*element).clone()])
             } else {
                 (
                     (*element).clone(),
-                    1usize,
                     vec![(*element).clone(), (*element).clone()],
                 )
             };
-            let reducer_ty = signatures.canonical_type(&type_of_sequence_callback(
-                &args[reducer_index],
-                env,
-                signatures,
-            )?);
+            let reducer_ty = if let Some(reducer_ty) = reducer_context {
+                reducer_ty
+            } else {
+                signatures.canonical_type(&type_of_sequence_callback(
+                    &args[reducer_index],
+                    env,
+                    signatures,
+                )?)
+            };
             let expected_reducer = Type::Function {
                 params: expected_params,
                 returns: vec![result_ty.clone()],
@@ -15370,6 +15386,37 @@ pub(crate) fn contextual_empty_sequence_source_type(
         }
         _ => None,
     }
+}
+
+pub(crate) fn contextual_empty_reduction_source_type(
+    name: &str,
+    source: &Expr,
+    callback_type: &Type,
+    signatures: &Signatures,
+) -> Option<Type> {
+    if !matches!(&source.kind, ExprKind::List(items) if items.is_empty()) {
+        return None;
+    }
+    let callback_type = signatures.canonical_type(callback_type);
+    let Type::Function { params, .. } = callback_type else {
+        return None;
+    };
+    if params.len() != 2 {
+        return None;
+    }
+    let element = match name {
+        "fold" => signatures.canonical_type(&params[1]),
+        "reduce" => {
+            let left = signatures.canonical_type(&params[0]);
+            let right = signatures.canonical_type(&params[1]);
+            if left != right {
+                return None;
+            }
+            left
+        }
+        _ => return None,
+    };
+    Some(Type::List(Box::new(element)))
 }
 
 fn type_of_call_argument(
