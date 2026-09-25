@@ -7498,10 +7498,20 @@ fn record_expr_types(
             }
         }
         ExprKind::QualifiedCall {
-            args, named_args, ..
+            namespace,
+            name,
+            args,
+            named_args,
+            ..
         } => {
-            for arg in args {
+            for (index, arg) in args.iter().enumerate() {
                 record_expr_types(arg, env, signatures, evaluations);
+                record_contextual_empty_collection_type(
+                    arg,
+                    crate::typecheck::qualified_call_argument_expected_type(namespace, name, index),
+                    signatures,
+                    evaluations,
+                );
             }
             for arg in named_args {
                 record_expr_types(&arg.value, env, signatures, evaluations);

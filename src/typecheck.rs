@@ -8629,7 +8629,8 @@ fn check_qualified_call(
                 }
                 let session = type_of_expr(&args[0], env, signatures)?;
                 require_type(args[0].span, &Type::I64, &session, "tls.writeBytes session")?;
-                let bytes = type_of_expr(&args[1], env, signatures)?;
+                let bytes =
+                    type_of_qualified_call_argument(&args[1], namespace, name, 1, env, signatures)?;
                 require_type(
                     args[1].span,
                     &Type::List(Box::new(Type::I64)),
@@ -8656,7 +8657,8 @@ fn check_qualified_call(
                     &session,
                     "tls.writeBytesTimeout session",
                 )?;
-                let bytes = type_of_expr(&args[1], env, signatures)?;
+                let bytes =
+                    type_of_qualified_call_argument(&args[1], namespace, name, 1, env, signatures)?;
                 require_type(
                     args[1].span,
                     &Type::List(Box::new(Type::I64)),
@@ -8902,7 +8904,8 @@ fn check_qualified_call(
                     &session,
                     "websocket.writeBytes session",
                 )?;
-                let bytes = type_of_expr(&args[1], env, signatures)?;
+                let bytes =
+                    type_of_qualified_call_argument(&args[1], namespace, name, 1, env, signatures)?;
                 require_type(
                     args[1].span,
                     &Type::List(Box::new(Type::I64)),
@@ -9510,7 +9513,9 @@ fn check_qualified_call(
                         &format!("net.{name} expects 3 arguments, got {}", args.len()),
                     ));
                 }
-                let sockets = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+                let sockets = signatures.canonical_type(&type_of_qualified_call_argument(
+                    &args[0], namespace, name, 0, env, signatures,
+                )?);
                 require_type(
                     args[0].span,
                     &Type::List(Box::new(Type::I64)),
@@ -9567,7 +9572,9 @@ fn check_qualified_call(
                         &format!("net.waitAny expects 2 arguments, got {}", args.len()),
                     ));
                 }
-                let sockets = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+                let sockets = signatures.canonical_type(&type_of_qualified_call_argument(
+                    &args[0], namespace, name, 0, env, signatures,
+                )?);
                 require_type(
                     args[0].span,
                     &Type::List(Box::new(Type::I64)),
@@ -9779,7 +9786,9 @@ fn check_qualified_call(
                 }
                 let handle = type_of_expr(&args[0], env, signatures)?;
                 require_type(args[0].span, &Type::I64, &handle, "net.writeBytes socket")?;
-                let bytes = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                let bytes = signatures.canonical_type(&type_of_qualified_call_argument(
+                    &args[1], namespace, name, 1, env, signatures,
+                )?);
                 require_type(
                     args[1].span,
                     &Type::List(Box::new(Type::I64)),
@@ -9803,7 +9812,9 @@ fn check_qualified_call(
                     &handle,
                     "net.writeBytesFrom socket",
                 )?;
-                let bytes = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                let bytes = signatures.canonical_type(&type_of_qualified_call_argument(
+                    &args[1], namespace, name, 1, env, signatures,
+                )?);
                 require_type(
                     args[1].span,
                     &Type::List(Box::new(Type::I64)),
@@ -9844,7 +9855,9 @@ fn check_qualified_call(
                     &handle,
                     "net.writeBytesTimeout socket",
                 )?;
-                let bytes = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                let bytes = signatures.canonical_type(&type_of_qualified_call_argument(
+                    &args[1], namespace, name, 1, env, signatures,
+                )?);
                 require_type(
                     args[1].span,
                     &Type::List(Box::new(Type::I64)),
@@ -9887,7 +9900,9 @@ fn check_qualified_call(
                     &handle,
                     "net.writeBytesFromTimeout socket",
                 )?;
-                let bytes = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                let bytes = signatures.canonical_type(&type_of_qualified_call_argument(
+                    &args[1], namespace, name, 1, env, signatures,
+                )?);
                 require_type(
                     args[1].span,
                     &Type::List(Box::new(Type::I64)),
@@ -9939,7 +9954,9 @@ fn check_qualified_call(
                     &handle,
                     "net.sendTextParts socket",
                 )?;
-                let parts = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                let parts = signatures.canonical_type(&type_of_qualified_call_argument(
+                    &args[1], namespace, name, 1, env, signatures,
+                )?);
                 require_type(
                     args[1].span,
                     &Type::List(Box::new(Type::Str)),
@@ -9965,7 +9982,9 @@ fn check_qualified_call(
                     &handle,
                     "net.sendTextPartsProgress socket",
                 )?;
-                let parts = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                let parts = signatures.canonical_type(&type_of_qualified_call_argument(
+                    &args[1], namespace, name, 1, env, signatures,
+                )?);
                 require_type(
                     args[1].span,
                     &Type::List(Box::new(Type::Str)),
@@ -10025,7 +10044,9 @@ fn check_qualified_call(
                     &handle,
                     "net.sendTextPartsWithTimeout socket",
                 )?;
-                let parts = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                let parts = signatures.canonical_type(&type_of_qualified_call_argument(
+                    &args[1], namespace, name, 1, env, signatures,
+                )?);
                 require_type(
                     args[1].span,
                     &Type::List(Box::new(Type::Str)),
@@ -10067,7 +10088,9 @@ fn check_qualified_call(
                     &handle,
                     "net.sendTextPartsProgressWithTimeout socket",
                 )?;
-                let parts = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                let parts = signatures.canonical_type(&type_of_qualified_call_argument(
+                    &args[1], namespace, name, 1, env, signatures,
+                )?);
                 require_type(
                     args[1].span,
                     &Type::List(Box::new(Type::Str)),
@@ -10153,7 +10176,9 @@ fn check_qualified_call(
                         &format!("net.{name} port must be between 1 and 65535"),
                     ));
                 }
-                let payload = signatures.canonical_type(&type_of_expr(&args[3], env, signatures)?);
+                let payload = signatures.canonical_type(&type_of_qualified_call_argument(
+                    &args[3], namespace, name, 3, env, signatures,
+                )?);
                 if name == "sendTextToParts" {
                     require_type(
                         args[3].span,
@@ -10191,7 +10216,9 @@ fn check_qualified_call(
                         &format!("net.{name} port must be between 1 and 65535"),
                     ));
                 }
-                let parts = signatures.canonical_type(&type_of_expr(&args[3], env, signatures)?);
+                let parts = signatures.canonical_type(&type_of_qualified_call_argument(
+                    &args[3], namespace, name, 3, env, signatures,
+                )?);
                 require_type(
                     args[3].span,
                     &Type::List(Box::new(Type::List(Box::new(Type::I64)))),
@@ -11882,7 +11909,8 @@ fn check_qualified_call(
                         &format!("http.requestBytes {label}"),
                     )?;
                 }
-                let body = type_of_expr(&args[5], env, signatures)?;
+                let body =
+                    type_of_qualified_call_argument(&args[5], namespace, name, 5, env, signatures)?;
                 require_type(
                     args[5].span,
                     &Type::List(Box::new(Type::I64)),
@@ -11932,7 +11960,8 @@ fn check_qualified_call(
                         &format!("http.requestBytesHeaders {label}"),
                     )?;
                 }
-                let body = type_of_expr(&args[5], env, signatures)?;
+                let body =
+                    type_of_qualified_call_argument(&args[5], namespace, name, 5, env, signatures)?;
                 require_type(
                     args[5].span,
                     &Type::List(Box::new(Type::I64)),
@@ -12039,7 +12068,8 @@ fn check_qualified_call(
                     &content_type,
                     "http.respondBytesHeaders contentType",
                 )?;
-                let body = type_of_expr(&args[3], env, signatures)?;
+                let body =
+                    type_of_qualified_call_argument(&args[3], namespace, name, 3, env, signatures)?;
                 require_type(
                     args[3].span,
                     &Type::List(Box::new(Type::I64)),
@@ -12159,7 +12189,8 @@ fn check_qualified_call(
                     &content_type,
                     "http.respondBytes contentType",
                 )?;
-                let body = type_of_expr(&args[3], env, signatures)?;
+                let body =
+                    type_of_qualified_call_argument(&args[3], namespace, name, 3, env, signatures)?;
                 require_type(
                     args[3].span,
                     &Type::List(Box::new(Type::I64)),
@@ -13030,7 +13061,9 @@ fn check_qualified_call(
                         &format!("worker.{name} expects 1 argument, got {}", args.len()),
                     ));
                 }
-                let actual = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+                let actual = signatures.canonical_type(&type_of_qualified_call_argument(
+                    &args[0], namespace, name, 0, env, signatures,
+                )?);
                 require_type(
                     args[0].span,
                     &Type::List(Box::new(Type::I64)),
@@ -15114,7 +15147,12 @@ fn check_net_send_bytes_to(
             "net.sendBytesTo port must be between 1 and 65535",
         ));
     }
-    let bytes = signatures.canonical_type(&type_of_expr(&args[3], env, signatures)?);
+    let bytes = signatures.canonical_type(&type_of_call_argument(
+        &args[3],
+        &Type::List(Box::new(Type::I64)),
+        env,
+        signatures,
+    )?);
     require_type(
         args[3].span,
         &Type::List(Box::new(Type::I64)),
@@ -15180,6 +15218,58 @@ fn check_await(
         env,
         signatures,
     )
+}
+
+pub(crate) fn qualified_call_argument_expected_type(
+    namespace: &str,
+    name: &str,
+    index: usize,
+) -> Option<Type> {
+    let name = crate::builtin_names::qualified_impl(namespace, name);
+    match (namespace, name, index) {
+        ("http", "requestBytes" | "requestBytesHeaders", 5)
+        | ("http", "respondBytes" | "respondBytesHeaders", 3)
+        | ("tls", "writeBytes" | "writeBytesTimeout", 1)
+        | ("websocket", "writeBytes", 1)
+        | (
+            "net",
+            "sendBytes"
+            | "sendBytesProgress"
+            | "sendBytesWithTimeout"
+            | "sendBytesProgressWithTimeout",
+            1,
+        )
+        | ("net", "sendBytesTo", 3)
+        | ("net", "waitReadableMany" | "waitWritableMany" | "waitReadyMany" | "waitAny", 0)
+        | ("worker", "waitAny" | "joinAny", 0) => Some(Type::List(Box::new(Type::I64))),
+        ("net", "sendBytesToParts", 3) => {
+            Some(Type::List(Box::new(Type::List(Box::new(Type::I64)))))
+        }
+        (
+            "net",
+            "sendTextParts"
+            | "sendTextPartsProgress"
+            | "sendTextPartsWithTimeout"
+            | "sendTextPartsProgressWithTimeout",
+            1,
+        )
+        | ("net", "sendTextToParts", 3) => Some(Type::List(Box::new(Type::Str))),
+        _ => None,
+    }
+}
+
+fn type_of_qualified_call_argument(
+    expr: &Expr,
+    namespace: &str,
+    name: &str,
+    index: usize,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Type, Diagnostic> {
+    if let Some(expected) = qualified_call_argument_expected_type(namespace, name, index) {
+        return type_of_call_argument(expr, &expected, env, signatures);
+    }
+    type_of_expr(expr, env, signatures)
 }
 
 fn type_of_call_argument(

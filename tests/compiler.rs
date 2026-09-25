@@ -555,6 +555,43 @@ fn main() -> i64 {
 }
 
 #[test]
+fn empty_qualified_list_arguments_inherit_builtin_types() {
+    let source = r#"
+fn ready(_socket: i64) -> void {
+}
+
+fn main() -> i64 {
+    let _tlsFailure: error = tls.writeBytes(1, [])
+    let _websocketFailure: error = websocket.writeBytes(1, [])
+    let (_written, _writeFailure) = net.writeBytes(1, [])
+    let _partsFailure: error = net.writeParts(1, [])
+    let (_datagramWritten, _datagramFailure) = net.writeBytesTo(1, "127.0.0.1", 1, [])
+    let (_partDatagramWritten, _partDatagramFailure) = net.writeBytesToParts(1, "127.0.0.1", 1, [])
+    let (_readyCount, _readyFailure) = net.readableMany([], 0, ready)
+    let (_workerHandle, _workerFailure) = worker.waitAny([])
+    let _requestFailure: error = http.requestBytes(1, "GET", "/", "localhost", "application/octet-stream", [])
+    let _responseFailure: error = http.respondBytes(1, 200, "application/octet-stream", [])
+    return 0
+}
+"#;
+    let generated = compile_to_c(source)
+        .expect("empty qualified list arguments should inherit exact builtin parameter types");
+
+    assert!(
+        generated.matches(".data = NULL, .len = 0").count() >= 10,
+        "empty builtin list arguments should lower as storage-free typed descriptors: {generated}"
+    );
+    assert!(
+        generated.contains(".stride = sizeof(const char *)"),
+        "empty text-part lists should preserve their exact contextual element type: {generated}"
+    );
+    assert!(
+        generated.contains(".stride = sizeof(struct flux__list)"),
+        "empty nested byte-part lists should preserve their exact contextual element type: {generated}"
+    );
+}
+
+#[test]
 fn map_calls_with_computed_copy_peers_use_ordered_typed_ir_storage() {
     let source = r#"
 fn observeBefore(value: i64) -> i64 {
@@ -35847,6 +35884,32 @@ fn main() -> i64 {
         ControlFlowValueKind::Set { ref items }
             if items.len() == 3 && items.iter().all(|item| graph.value(*item).is_some())
     )));
+}
+
+#[test]
+fn semantic_cfg_records_contextual_empty_qualified_list_types() {
+    let source = r#"
+fn main() -> i64 {
+    let _failure: error = tls.writeBytes(1, [])
+    return 0
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1316))
+        .expect("empty qualified list argument should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    let empty_list = graph
+        .values()
+        .iter()
+        .find(|value| {
+            matches!(
+                &value.kind,
+                ControlFlowValueKind::List { items } if items.is_empty()
+            )
+        })
+        .expect("empty qualified list argument should remain a normalized typed value");
+    assert_eq!(empty_list.ty, Type::List(Box::new(Type::I64)));
 }
 
 #[test]
