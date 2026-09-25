@@ -10718,7 +10718,10 @@ fn windows_native_system_libraries(c_source: &str) -> Vec<&'static str> {
     if c_source.contains("GetDeviceCaps(") {
         libraries.push("-lgdi32");
     }
-    if c_source.contains("InitCommonControlsEx(") {
+    if c_source.contains("InitCommonControlsEx(")
+        || c_source.contains("SetWindowSubclass(")
+        || c_source.contains("DefSubclassProc(")
+    {
         libraries.push("-lcomctl32");
     }
     if c_source.contains("GetOpenFileNameW(") || c_source.contains("GetSaveFileNameW(") {
@@ -14573,6 +14576,10 @@ app OverlayDemo(title: "Overlay")
 
         let tooltips = windows_native_system_libraries("CreateWindowExW( InitCommonControlsEx(");
         assert_eq!(tooltips, vec!["-luser32", "-lcomctl32"]);
+
+        let subclassed_text =
+            windows_native_system_libraries("CreateWindowExW( SetWindowSubclass( DefSubclassProc(");
+        assert_eq!(subclassed_text, vec!["-luser32", "-lcomctl32"]);
 
         assert_eq!(
             windows_native_system_libraries("ShellExecuteW("),
