@@ -2763,6 +2763,10 @@ fn tapped() -> void {
     print("tap")
 }
 
+fn swiped(velocityX: i64, velocityY: i64) -> void {
+    print(velocityX + velocityY)
+}
+
 view Screen {
     grid columns: 1fr
     grid rows: auto
@@ -2770,24 +2774,42 @@ view Screen {
         text: "Selectable action"
         selectable: true
         onTap: tapped
+        onLongPress: tapped
+        onSwipe: swiped
 }
 app Screen
 "#;
     let program = fluxc::parser::parse(tappable).expect("tappable selectable Text should parse");
     let signatures =
         fluxc::typecheck::check(&program).expect("tappable selectable Text should typecheck");
-    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
         &program,
         &signatures,
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Windows,
     )
-    .expect_err("unsupported selectable-onTap composition must be explicit");
+    .expect("selectable Text should compose with onTap through the native EDIT control");
+    assert!(windows.contains(
+        "flux__ui_label = CreateWindowExW(0, L\"EDIT\", L\"\", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY"
+    ));
+    assert!(windows.contains("static LRESULT CALLBACK flux__win_selectable_tap_proc_0"));
+    assert!(windows.contains("flux__win_selectable_tap_moved_0"));
+    assert!(windows.contains("GetSystemMetrics(SM_CXDRAG)"));
+    assert!(windows.contains("GetSystemMetrics(SM_CYDRAG)"));
+    assert!(windows.contains("if (activate) flux__win_tap_0();"));
+    assert!(windows.contains(
+        "if (flux__win_long_press_consumed_0) { flux__win_long_press_consumed_0 = false;"
+    ));
     assert!(
-        error
-            .message
-            .contains("selectable Text cannot currently combine selectable: true with onTap")
+        windows.contains("if (flux__win_swipe_consumed_0) { flux__win_swipe_consumed_0 = false;")
     );
+    assert!(windows.contains(
+        "SetWindowLongPtrW(flux__ui_label, GWLP_WNDPROC, (LONG_PTR)flux__win_selectable_tap_proc_0)"
+    ));
+    assert!(!windows.contains("case 1000: if (HIWORD(wparam) == STN_CLICKED)"));
+    assert!(windows.contains(
+        "if (message->wParam == VK_RETURN || message->wParam == VK_SPACE) { flux__win_tap_0(); return true; }"
+    ));
 }
 
 #[test]
@@ -3240,6 +3262,9 @@ view Screen {
         minWidth: extent
         maxWidth: 320
         marginStart: extent
+        onTap: count => count + 1
+        onLongPress: count => count + 1
+        onSwipe: swiped
         onContextMenu: count => count + 1
         contextMenuLabel: "Open"
         onContextMenuSelect: count => count + 1

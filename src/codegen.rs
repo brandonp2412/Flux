@@ -14339,15 +14339,6 @@ fn emit_windows_native_application(
             }
             None => false,
         };
-        if selectable && view_property(element, "on_tap").is_some() {
-            return Err(diag(
-                view_property(element, "selectable")
-                    .expect("selectable exists when selectable is true")
-                    .value
-                    .span,
-                "bootstrap Windows selectable Text cannot currently combine selectable: true with onTap",
-            ));
-        }
         if selectable
             && let Some(alignment) = view_property(element, "text_align")
             && static_expr_str(&alignment.value, signatures).is_none()
@@ -16267,6 +16258,36 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
         let callback = function_c_name(function);
         out.push_str(&format!("static WNDPROC flux__win_pinch_orig_{index} = NULL;\nstatic ULONGLONG flux__win_pinch_start_{index} = 0;\nstatic LRESULT CALLBACK flux__win_pinch_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_GESTURE) {{ GESTUREINFO info = {{0}}; info.cbSize = sizeof(info); HGESTUREINFO handle = (HGESTUREINFO)lparam; if (GetGestureInfo(handle, &info) && info.dwID == GID_ZOOM) {{ if ((info.dwFlags & GF_BEGIN) != 0 || flux__win_pinch_start_{index} == 0) flux__win_pinch_start_{index} = info.ullArguments; else if (flux__win_pinch_start_{index} > 0) {{ double ratio = (double)info.ullArguments / (double)flux__win_pinch_start_{index}; int64_t scale_percent = (int64_t)(ratio * 100.0 + 0.5); {callback}(scale_percent); flux__win_refresh(); }} if ((info.dwFlags & GF_END) != 0) flux__win_pinch_start_{index} = 0; CloseGestureInfoHandle(handle); return 0; }} }} return CallWindowProcW(flux__win_pinch_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
     }
+    for (index, element) in view.elements.iter().enumerate() {
+        let selectable_tap = element.kind == "Text"
+            && view_property(element, "selectable")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                .unwrap_or(false)
+            && view_property(element, "on_tap").is_some();
+        if !selectable_tap {
+            continue;
+        }
+        let mut consume_pointer_gesture = String::new();
+        if view_property(element, "on_long_press").is_some() {
+            consume_pointer_gesture.push_str(&format!(
+                "if (flux__win_long_press_consumed_{index}) {{ flux__win_long_press_consumed_{index} = false; flux__win_selectable_tap_tracking_{index} = false; flux__win_selectable_tap_moved_{index} = false; return result; }} "
+            ));
+        }
+        if view_property(element, "on_swipe").is_some() {
+            consume_pointer_gesture.push_str(&format!(
+                "if (flux__win_swipe_consumed_{index}) {{ flux__win_swipe_consumed_{index} = false; flux__win_selectable_tap_tracking_{index} = false; flux__win_selectable_tap_moved_{index} = false; return result; }} "
+            ));
+        }
+        out.push_str(&format!(
+            "static WNDPROC flux__win_selectable_tap_orig_{index} = NULL;
+static bool flux__win_selectable_tap_tracking_{index} = false;
+static bool flux__win_selectable_tap_moved_{index} = false;
+static int flux__win_selectable_tap_start_x_{index} = 0;
+static int flux__win_selectable_tap_start_y_{index} = 0;
+static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_LBUTTONDOWN) {{ LRESULT result = CallWindowProcW(flux__win_selectable_tap_orig_{index}, hwnd, message, wparam, lparam); flux__win_selectable_tap_tracking_{index} = true; flux__win_selectable_tap_moved_{index} = false; flux__win_selectable_tap_start_x_{index} = (int)(short)LOWORD(lparam); flux__win_selectable_tap_start_y_{index} = (int)(short)HIWORD(lparam); return result; }} if (message == WM_MOUSEMOVE && flux__win_selectable_tap_tracking_{index} && (wparam & MK_LBUTTON) != 0) {{ int dx = (int)(short)LOWORD(lparam) - flux__win_selectable_tap_start_x_{index}; int dy = (int)(short)HIWORD(lparam) - flux__win_selectable_tap_start_y_{index}; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) flux__win_selectable_tap_moved_{index} = true; }} if (message == WM_LBUTTONUP) {{ bool activate = flux__win_selectable_tap_tracking_{index} && !flux__win_selectable_tap_moved_{index}; flux__win_selectable_tap_tracking_{index} = false; flux__win_selectable_tap_moved_{index} = false; LRESULT result = CallWindowProcW(flux__win_selectable_tap_orig_{index}, hwnd, message, wparam, lparam); {consume_pointer_gesture}if (activate) flux__win_tap_{index}(); return result; }} if (message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ flux__win_selectable_tap_tracking_{index} = false; flux__win_selectable_tap_moved_{index} = false; }} return CallWindowProcW(flux__win_selectable_tap_orig_{index}, hwnd, message, wparam, lparam); }}
+"
+        ));
+    }
     if uses_key_events || uses_passive_keyboard_activation || uses_shortcuts {
         out.push_str("static bool flux__win_dispatch_key(const MSG *message) { if (message == NULL || (message->message != WM_KEYDOWN && message->message != WM_SYSKEYDOWN)) return false; HWND focused = GetFocus(); char utf8[8] = {0};\n");
         for (index, element) in view.elements.iter().enumerate() {
@@ -16990,7 +17011,12 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
             }
         } else if element.kind == "TextInput" && view_property(element, "on_change").is_some() {
             out.push_str(&format!("case {}: if (HIWORD(wparam) == EN_CHANGE) flux__win_change_{index}((HWND)lparam); return 0;\n", 1000 + index));
-        } else if view_property(element, "on_tap").is_some() {
+        } else if view_property(element, "on_tap").is_some()
+            && !(element.kind == "Text"
+                && view_property(element, "selectable")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    .unwrap_or(false))
+        {
             let notification = if element.kind == "Button"
                 || element.kind == "Toggle"
                 || element.kind == "Radio"
@@ -17454,6 +17480,14 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
             out.push_str(&format!(
                 "SetLastError(0); flux__win_border_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrW({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_border_proc_{index}); if (flux__win_border_orig_{index} == NULL && GetLastError() != 0) return 1;\n"
             ));
+        }
+        let selectable_tap = element.kind == "Text"
+            && view_property(element, "selectable")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                .unwrap_or(false)
+            && view_property(element, "on_tap").is_some();
+        if selectable_tap {
+            out.push_str(&format!("SetLastError(0); flux__win_selectable_tap_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrW({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_selectable_tap_proc_{index}); if (flux__win_selectable_tap_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
         }
         if let Some(action) = view_property(element, "on_drop") {
             let ExprKind::Var(function) = &action.value.kind else {
