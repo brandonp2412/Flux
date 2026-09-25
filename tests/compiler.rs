@@ -1471,6 +1471,65 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_effectful_temporary_copy_arrays_preserve_order_natively() {
+    let source = r#"
+fn firstValue(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn secondValue(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn encoded(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    print(json.encodeArray([firstValue(1), secondValue(2)], encoded))
+    return 0
+}
+"#;
+    check_source(source).expect("effectful temporary JSON array should typecheck");
+    let generated = compile_to_c(source).expect("effectful temporary JSON array should lower");
+    assert!(
+        generated.contains("flux__typed_borrowed_list_storage"),
+        "{generated}"
+    );
+
+    let root =
+        std::env::temp_dir().join(format!("flux-json-effectful-array-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON effectful array directory should be writable");
+    let c_path = root.join("json-effectful-array.c");
+    let exe_path = root.join("json-effectful-array");
+    fs::write(&c_path, generated).expect("generated JSON effectful array C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile effectful JSON array code");
+    assert!(
+        compile.status.success(),
+        "effectful JSON array C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("effectful JSON array program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "1\n2\n[1,2]\nnil\n"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn json_encodes_ordered_sets_as_bounded_arrays() {
     let source = r#"
 fn encoded(value: str) -> void {

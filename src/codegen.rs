@@ -37244,6 +37244,38 @@ fn cfg_literal_aggregate_value(
     )))
 }
 
+fn cfg_call_scoped_list_aggregate(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<Box<CfgAggregateConstant>> {
+    let value = cfg.value(id)?;
+    if !cfg.is_value_reachable(id) {
+        return None;
+    }
+    let crate::ir::ControlFlowValueKind::List { items } = &value.kind else {
+        return None;
+    };
+
+    let values = items
+        .iter()
+        .map(|id| {
+            if let Some(value) = cfg_literal_aggregate_value(cfg, *id) {
+                return Some(value);
+            }
+            let child = cfg.value(*id)?;
+            if !child.ownership.is_copy() {
+                return None;
+            }
+            Some(CfgAggregateValue::Direct(cfg_direct_scalar_expr(cfg, *id)?))
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    Some(Box::new(CfgAggregateConstant {
+        ty: value.ty.clone(),
+        kind: CfgAggregateConstantKind::List(values),
+    }))
+}
+
 fn cfg_scalar_leaf(
     cfg: &crate::ir::ControlFlowGraph,
     id: crate::ir::ControlFlowValueId,
@@ -37357,9 +37389,9 @@ fn cfg_borrowed_list_base(
             operand: Box::new(cfg_borrowed_collection_value(cfg, *operand)?),
         },
         crate::ir::ControlFlowValueKind::List { .. } => {
-            let CfgAggregateValue::Aggregate(aggregate) = cfg_literal_aggregate_value(cfg, id)?
-            else {
-                return None;
+            let aggregate = match cfg_literal_aggregate_value(cfg, id) {
+                Some(CfgAggregateValue::Aggregate(aggregate)) => aggregate,
+                _ => cfg_call_scoped_list_aggregate(cfg, id)?,
             };
             CfgScalarExprKind::Aggregate(aggregate)
         }
@@ -52663,6 +52695,9 @@ fn emit_cfg_aggregate_constant(
 
     match (&aggregate.kind, &expected) {
         (CfgAggregateConstantKind::List(values), Type::List(element)) => {
+            if !cfg_aggregate_constant_is_reorder_safe(aggregate) {
+                return None;
+            }
             let element_c = c_type(element, signatures);
             if values.is_empty() {
                 return Some(format!(
@@ -54286,6 +54321,52 @@ fn cfg_borrowed_list_has_named_root(argument: &CfgScalarExpr) -> bool {
     }
 }
 
+fn emit_cfg_call_scoped_borrowed_list_direct(
+    argument: &CfgScalarExpr,
+    element: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<(String, String)> {
+    let expected = Type::List(Box::new(element.clone()));
+    if signatures.canonical_type(&argument.ty) != signatures.canonical_type(&expected)
+        || !signatures.is_copy_type(element)
+    {
+        return None;
+    }
+    let CfgScalarExprKind::Aggregate(aggregate) = &argument.kind else {
+        return None;
+    };
+    if cfg_aggregate_constant_is_reorder_safe(aggregate) {
+        return None;
+    }
+    let CfgAggregateConstantKind::List(values) = &aggregate.kind else {
+        return None;
+    };
+    if values.is_empty() {
+        return None;
+    }
+
+    let element = signatures.canonical_type(element);
+    let element_c = c_type(&element, signatures);
+    let mut prelude = String::new();
+    let mut items = Vec::with_capacity(values.len());
+    for (index, value) in values.iter().enumerate() {
+        let rendered = emit_cfg_aggregate_value(value, &element, env, signatures)?;
+        let temp = format!("flux__typed_borrowed_list_value_{index}");
+        prelude.push_str(&format!("{element_c} {temp} = {rendered}; "));
+        items.push(temp);
+    }
+    let storage = "flux__typed_borrowed_list_storage";
+    let borrowed = "flux__typed_borrowed_list";
+    prelude.push_str(&format!(
+        "{element_c} {storage}[{}] = {{ {} }}; struct flux__list {borrowed} = (struct flux__list){{ .data = (void *){storage}, .len = {}, .stride = sizeof({element_c}) }}; ",
+        values.len(),
+        items.join(", "),
+        values.len()
+    ));
+    Some((prelude, borrowed.to_string()))
+}
+
 fn emit_cfg_borrowed_list_argument_direct(
     argument: &CfgScalarExpr,
     element: &Type,
@@ -54367,6 +54448,35 @@ fn emit_cfg_ordered_call_with_borrowed_list_direct<F>(
 where
     F: FnOnce(&[String], &str) -> String,
 {
+    if let Some((prelude, borrowed)) = emit_cfg_call_scoped_borrowed_list_direct(
+        borrowed_argument,
+        borrowed_element,
+        env,
+        signatures,
+    ) {
+        if scalar_arguments.len() != expected_scalars.len()
+            || scalar_arguments.iter().any(|argument| {
+                !matches!(
+                    argument.kind,
+                    CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                )
+            })
+        {
+            return None;
+        }
+        let rendered = scalar_arguments
+            .iter()
+            .zip(expected_scalars)
+            .map(|(argument, expected)| {
+                emit_cfg_ordinary_call_argument_direct(argument, expected, env, signatures)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        return Some(format!(
+            "__extension__ ({{ {prelude}{}; }})",
+            render_call(&rendered, &borrowed)
+        ));
+    }
+
     let borrowed = emit_cfg_borrowed_list_argument_direct(
         borrowed_argument,
         borrowed_element,
@@ -57005,7 +57115,16 @@ fn emit_cfg_scalar_expr_direct(
                 if is_literal && !scalar_element && !nested_scalar_collection_element {
                     return None;
                 }
-                let value = emit_cfg_scalar_expr_direct(value, env, signatures)?;
+                let call_scoped = match &value_ty {
+                    Type::List(_) => {
+                        emit_cfg_call_scoped_borrowed_list_direct(value, &element, env, signatures)
+                    }
+                    _ => None,
+                };
+                let value = match &call_scoped {
+                    Some((_, borrowed)) => borrowed.clone(),
+                    None => emit_cfg_scalar_expr_direct(value, env, signatures)?,
+                };
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
@@ -57030,10 +57149,14 @@ fn emit_cfg_scalar_expr_direct(
                     return Some(format!("{helper}({value}, {callback})"));
                 }
                 let (helper, kind, depth) = json_array_encoding_shape(&element, signatures).ok()?;
-                Some(if helper == "flux__json_encode_recursive_array" {
+                let call = if helper == "flux__json_encode_recursive_array" {
                     format!("{helper}({value}, {kind}, {depth}, {callback})")
                 } else {
                     format!("{helper}({value}, {kind}, {callback})")
+                };
+                Some(match call_scoped {
+                    Some((prelude, _)) => format!("__extension__ ({{ {prelude}{call}; }})"),
+                    None => call,
                 })
             }
             "encodeObject" | "encode"
@@ -77194,6 +77317,93 @@ fn main() -> i64 {
         .expect("nested projection slice call should bypass the checked-AST root");
         assert_eq!(emitted, direct);
         assert!(!emitted.contains("checked-ast-nested-projection-slice"));
+    }
+
+    #[test]
+    fn effectful_temporary_copy_list_argument_emits_from_ordered_typed_ir() {
+        let source = r#"
+fn firstByte(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn secondByte(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn send(session: i64, first: i64, second: i64) -> error {
+    return tls.writeBytes(session, [firstByte(first), secondByte(second)])
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4252))
+            .expect("effectful temporary borrowed-list fixture should analyze");
+        let graph = database
+            .control_flow_graph("send")
+            .expect("send CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall {
+                        namespace,
+                        name,
+                        ..
+                    } if namespace == "tls" && name == "writeBytes"
+                )
+            })
+            .expect("TLS byte write should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("effectful temporary list call should have direct scalar facts");
+        let env = HashMap::from([
+            ("session".to_string(), Type::I64),
+            ("first".to_string(), Type::I64),
+            ("second".to_string(), Type::I64),
+        ]);
+
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("effectful temporary Copy list should emit inside call scope");
+        let first = direct
+            .find(&function_c_name("firstByte"))
+            .expect("first element effect should be emitted");
+        let second = direct
+            .find(&function_c_name("secondByte"))
+            .expect("second element effect should be emitted");
+        let call = direct
+            .rfind("flux__tls_write_bytes")
+            .expect("TLS byte write should be emitted");
+        assert!(first < second && second < call, "{direct}");
+        assert!(
+            direct.contains("flux__typed_borrowed_list_storage"),
+            "{direct}"
+        );
+        assert!(direct.contains("flux__typed_borrowed_list"), "{direct}");
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-effectful-borrowed-list".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Error,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("effectful temporary list call should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-effectful-borrowed-list"));
     }
 
     #[test]
