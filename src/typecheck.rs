@@ -8253,6 +8253,50 @@ pub(crate) fn value_types_of_expr(
     }
 }
 
+fn check_websocket_connect_call(
+    name: &str,
+    span: SourceSpan,
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Vec<Type>, Diagnostic> {
+    let expects_path = name == "connectPath";
+    let expected_count = if expects_path { 3 } else { 2 };
+    if args.len() != expected_count {
+        return Err(diag(
+            span,
+            &format!(
+                "websocket.{name} expects {expected_count} arguments, got {}",
+                args.len()
+            ),
+        ));
+    }
+    let socket = type_of_expr(&args[0], env, signatures)?;
+    require_type(
+        args[0].span,
+        &Type::I64,
+        &socket,
+        &format!("websocket.{name} socket"),
+    )?;
+    let host = type_of_expr(&args[1], env, signatures)?;
+    require_type(
+        args[1].span,
+        &Type::Str,
+        &host,
+        &format!("websocket.{name} host"),
+    )?;
+    if expects_path {
+        let path = type_of_expr(&args[2], env, signatures)?;
+        require_type(
+            args[2].span,
+            &Type::Str,
+            &path,
+            "websocket.connectPath path",
+        )?;
+    }
+    Ok(vec![Type::I64, Type::Error])
+}
+
 fn check_websocket_handshake_timeout_call(
     name: &str,
     span: SourceSpan,
@@ -8260,10 +8304,10 @@ fn check_websocket_handshake_timeout_call(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<Vec<Type>, Diagnostic> {
-    let (expected_count, timeout_index) = if name == "connectTimeout" {
-        (3, 2)
-    } else {
-        (2, 1)
+    let (expected_count, timeout_index, host_index, path_index) = match name {
+        "connectTimeout" => (3, 2, Some(1), None),
+        "connectPathTimeout" => (4, 3, Some(1), Some(2)),
+        _ => (2, 1, None, None),
     };
     if args.len() != expected_count {
         return Err(diag(
@@ -8281,13 +8325,22 @@ fn check_websocket_handshake_timeout_call(
         &socket,
         &format!("websocket.{name} socket"),
     )?;
-    if name == "connectTimeout" {
-        let host = type_of_expr(&args[1], env, signatures)?;
+    if let Some(host_index) = host_index {
+        let host = type_of_expr(&args[host_index], env, signatures)?;
         require_type(
-            args[1].span,
+            args[host_index].span,
             &Type::Str,
             &host,
-            "websocket.connectTimeout host",
+            &format!("websocket.{name} host"),
+        )?;
+    }
+    if let Some(path_index) = path_index {
+        let path = type_of_expr(&args[path_index], env, signatures)?;
+        require_type(
+            args[path_index].span,
+            &Type::Str,
+            &path,
+            &format!("websocket.{name} path"),
         )?;
     }
     let timeout = type_of_expr(&args[timeout_index], env, signatures)?;
@@ -8976,25 +9029,10 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "connect" => {
-                if args.len() != 2 {
-                    return Err(diag(
-                        span,
-                        &format!("websocket.connect expects 2 arguments, got {}", args.len()),
-                    ));
-                }
-                let socket = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::I64,
-                    &socket,
-                    "websocket.connect socket",
-                )?;
-                let host = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::Str, &host, "websocket.connect host")?;
-                return Ok(vec![Type::I64, Type::Error]);
+            "connect" | "connectPath" => {
+                return check_websocket_connect_call(name, span, args, env, signatures);
             }
-            "connectTimeout" => {
+            "connectTimeout" | "connectPathTimeout" => {
                 return check_websocket_handshake_timeout_call(name, span, args, env, signatures);
             }
             "accept" => {

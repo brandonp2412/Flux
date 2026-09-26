@@ -1383,6 +1383,10 @@ fn add_qualified_namespace_completions(
                 "connect",
                 "fn websocket.connect(socket: i64, host: str) -> (i64, error)",
             ),
+            (
+                "connectPath",
+                "fn websocket.connectPath(socket: i64, host: str, path: str) -> (i64, error)",
+            ),
             ("accept", "fn websocket.accept(socket: i64) -> (i64, error)"),
             (
                 "acceptTimeout",
@@ -1391,6 +1395,10 @@ fn add_qualified_namespace_completions(
             (
                 "connectTimeout",
                 "fn websocket.connectTimeout(socket: i64, host: str, timeoutMillis: i64) -> (i64, error)",
+            ),
+            (
+                "connectPathTimeout",
+                "fn websocket.connectPathTimeout(socket: i64, host: str, path: str, timeoutMillis: i64) -> (i64, error)",
             ),
             (
                 "readText",
@@ -4798,6 +4806,11 @@ fn signature_help_for_document_cached(
                     vec!["socket: i64", "host: str"],
                     "(i64, error)",
                 ),
+                "connectPath" => (
+                    "websocket.connectPath",
+                    vec!["socket: i64", "host: str", "path: str"],
+                    "(i64, error)",
+                ),
                 "accept" => ("websocket.accept", vec!["socket: i64"], "(i64, error)"),
                 "acceptTimeout" => (
                     "websocket.acceptTimeout",
@@ -4807,6 +4820,16 @@ fn signature_help_for_document_cached(
                 "connectTimeout" => (
                     "websocket.connectTimeout",
                     vec!["socket: i64", "host: str", "timeoutMillis: i64"],
+                    "(i64, error)",
+                ),
+                "connectPathTimeout" => (
+                    "websocket.connectPathTimeout",
+                    vec![
+                        "socket: i64",
+                        "host: str",
+                        "path: str",
+                        "timeoutMillis: i64",
+                    ],
                     "(i64, error)",
                 ),
                 "readText" => (

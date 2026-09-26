@@ -78148,6 +78148,27 @@ fn main() -> i64 {
 }
 
 #[test]
+fn websocket_client_supports_non_root_request_paths() {
+    let source = r#"
+fn main() -> i64 {
+    let (session, connectError) = websocket.connectPath(3, "localhost", "/chat?room=flux")
+    if connectError != nil:
+        return 1
+    let (timedSession, timedError) = websocket.connectPathTimeout(4, "localhost", "/events", 250)
+    if timedError != nil:
+        return 2
+    return session + timedSession
+}
+"#;
+    check_source(source).expect("WebSocket path-aware client surface should typecheck");
+    let generated = compile_to_c(source).expect("WebSocket path-aware client surface should lower");
+    assert!(generated.contains("flux__websocket_connect_path("));
+    assert!(generated.contains("flux__websocket_connect_path_timeout("));
+    assert!(generated.contains("GET %s HTTP/1.1"));
+    assert!(generated.contains("invalid WebSocket client path"));
+}
+
+#[test]
 fn websocket_client_rejects_host_header_injection() {
     let source = r#"
 fn main() -> i64 {
