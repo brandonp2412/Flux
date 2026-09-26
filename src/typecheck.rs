@@ -8253,6 +8253,62 @@ pub(crate) fn value_types_of_expr(
     }
 }
 
+fn check_websocket_handshake_timeout_call(
+    name: &str,
+    span: SourceSpan,
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Vec<Type>, Diagnostic> {
+    let (expected_count, timeout_index) = if name == "connectTimeout" {
+        (3, 2)
+    } else {
+        (2, 1)
+    };
+    if args.len() != expected_count {
+        return Err(diag(
+            span,
+            &format!(
+                "websocket.{name} expects {expected_count} arguments, got {}",
+                args.len()
+            ),
+        ));
+    }
+    let socket = type_of_expr(&args[0], env, signatures)?;
+    require_type(
+        args[0].span,
+        &Type::I64,
+        &socket,
+        &format!("websocket.{name} socket"),
+    )?;
+    if name == "connectTimeout" {
+        let host = type_of_expr(&args[1], env, signatures)?;
+        require_type(
+            args[1].span,
+            &Type::Str,
+            &host,
+            "websocket.connectTimeout host",
+        )?;
+    }
+    let timeout = type_of_expr(&args[timeout_index], env, signatures)?;
+    require_type(
+        args[timeout_index].span,
+        &Type::I64,
+        &timeout,
+        &format!("websocket.{name} timeoutMillis"),
+    )?;
+    if matches!(
+        constant_primitive_value(&args[timeout_index], signatures),
+        Some(ConstantValue::I64(value)) if !(-1..=i64::from(i32::MAX)).contains(&value)
+    ) {
+        return Err(diag(
+            args[timeout_index].span,
+            &format!("websocket.{name} timeoutMillis must be -1 or between 0 and 2147483647"),
+        ));
+    }
+    Ok(vec![Type::I64, Type::Error])
+}
+
 fn check_qualified_call(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -8938,6 +8994,9 @@ fn check_qualified_call(
                 require_type(args[1].span, &Type::Str, &host, "websocket.connect host")?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "connectTimeout" => {
+                return check_websocket_handshake_timeout_call(name, span, args, env, signatures);
+            }
             "accept" => {
                 if args.len() != 1 {
                     return Err(diag(
@@ -8948,6 +9007,9 @@ fn check_qualified_call(
                 let socket = type_of_expr(&args[0], env, signatures)?;
                 require_type(args[0].span, &Type::I64, &socket, "websocket.accept socket")?;
                 return Ok(vec![Type::I64, Type::Error]);
+            }
+            "acceptTimeout" => {
+                return check_websocket_handshake_timeout_call(name, span, args, env, signatures);
             }
             "readText" => {
                 if args.len() != 3 {

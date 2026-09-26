@@ -1385,6 +1385,14 @@ fn add_qualified_namespace_completions(
             ),
             ("accept", "fn websocket.accept(socket: i64) -> (i64, error)"),
             (
+                "acceptTimeout",
+                "fn websocket.acceptTimeout(socket: i64, timeoutMillis: i64) -> (i64, error)",
+            ),
+            (
+                "connectTimeout",
+                "fn websocket.connectTimeout(socket: i64, host: str, timeoutMillis: i64) -> (i64, error)",
+            ),
+            (
                 "readText",
                 "fn websocket.readText(session: i64, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)",
             ),
@@ -4791,6 +4799,16 @@ fn signature_help_for_document_cached(
                     "(i64, error)",
                 ),
                 "accept" => ("websocket.accept", vec!["socket: i64"], "(i64, error)"),
+                "acceptTimeout" => (
+                    "websocket.acceptTimeout",
+                    vec!["socket: i64", "timeoutMillis: i64"],
+                    "(i64, error)",
+                ),
+                "connectTimeout" => (
+                    "websocket.connectTimeout",
+                    vec!["socket: i64", "host: str", "timeoutMillis: i64"],
+                    "(i64, error)",
+                ),
                 "readText" => (
                     "websocket.readText",
                     vec!["session: i64", "maxBytes: i64", "callback: fn(str) -> void"],

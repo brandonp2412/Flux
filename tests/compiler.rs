@@ -77277,6 +77277,8 @@ fn onText(value: str) -> void {
 
 fn main() -> i64 {
     let (session, acceptError) = websocket.accept(1)
+    let (_timedSession, timedAcceptError) = websocket.acceptTimeout(1, 250)
+    print(timedAcceptError)
     if acceptError != nil:
         return 1
     let (_bytes, readError) = websocket.readText(session, 1024, onText)
@@ -77294,6 +77296,8 @@ fn main() -> i64 {
     check_source(source).expect("WebSocket server surface should typecheck");
     let generated = compile_to_c(source).expect("WebSocket server surface should lower");
     assert!(generated.contains("flux__websocket_accept("));
+    assert!(generated.contains("flux__websocket_accept_timeout("));
+    assert!(generated.contains("WebSocket accept handshake timed out"));
     assert!(generated.contains("WebSocket requires a TCP socket"));
     assert!(generated.contains("WebSocket requires a connected TCP socket"));
     assert!(generated.contains("flux__websocket_read_text("));
@@ -77335,10 +77339,68 @@ fn main() -> i64 {
 }
 
 #[test]
+fn websocket_connect_timeout_expires_against_stalled_peer() {
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).expect("WebSocket timeout fixture port should bind");
+    let port = listener.local_addr().unwrap().port();
+    let peer = thread::spawn(move || {
+        let (_socket, _) = listener
+            .accept()
+            .expect("WebSocket timeout fixture should accept");
+        thread::sleep(Duration::from_millis(250));
+    });
+
+    let root = std::env::temp_dir().join(format!("flux-websocket-timeout-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("WebSocket timeout fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(
+        &source_path,
+        format!(
+            r#"
+fn main() -> i64 {{
+    let (socket, connectError) = net.connect("127.0.0.1", {port})
+    let (session, websocketError) = websocket.connectTimeout(socket, "127.0.0.1:{port}", 50)
+    print(connectError)
+    print(session)
+    print(websocketError)
+    return 0
+}}
+"#
+        ),
+    )
+    .expect("WebSocket timeout source should be writable");
+    let binary = root.join("websocket-timeout");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("WebSocket timeout binary should build");
+    assert!(
+        built.status.success(),
+        "WebSocket timeout build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("WebSocket timeout binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\n-1\nWebSocket connect handshake timed out\n"
+    );
+    peer.join()
+        .expect("WebSocket timeout fixture peer should finish");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn websocket_client_handshake_surface_is_typed_and_native() {
     let source = r#"
 fn main() -> i64 {
     let (session, handshakeError) = websocket.connect(3, "localhost")
+    let (_timedSession, timedHandshakeError) = websocket.connectTimeout(3, "localhost", 250)
+    print(timedHandshakeError)
     if handshakeError != nil:
         return 1
     let (_bytes, readError) = websocket.readText(session, 1024, fn(value: str) { print(value) })
@@ -77362,6 +77424,9 @@ fn main() -> i64 {
     check_source(source).expect("WebSocket client surface should typecheck");
     let generated = compile_to_c(source).expect("WebSocket client surface should lower");
     assert!(generated.contains("flux__websocket_connect("));
+    assert!(generated.contains("flux__websocket_connect_timeout("));
+    assert!(generated.contains("WebSocket connect handshake timed out"));
+    assert!(generated.contains("flux__websocket_deadline_wait("));
     assert!(generated.contains("WebSocket requires a TCP socket"));
     assert!(generated.contains("WebSocket requires a connected TCP socket"));
     assert!(generated.contains("flux__websocket_bounded_length(host, 255, &host_length)"));
@@ -77393,6 +77458,37 @@ fn main() -> i64 {
     assert!(generated.contains("failed to create WebSocket control mask"));
     assert!(generated.contains("fread(mask, 1, sizeof(mask), random_source) != sizeof(mask)"));
     assert!(generated.contains("WebSocket text frame contains invalid UTF-8"));
+}
+
+#[test]
+fn websocket_handshake_timeout_literals_are_bounded() {
+    let connect = check_source(
+        r#"fn main() -> i64 {
+    let (_session, _error) = websocket.connectTimeout(3, "localhost", -2)
+    return 0
+}
+"#,
+    )
+    .expect_err("negative WebSocket connect timeout should fail");
+    assert!(
+        connect
+            .message
+            .contains("websocket.connectTimeout timeoutMillis")
+    );
+
+    let accept = check_source(
+        r#"fn main() -> i64 {
+    let (_session, _error) = websocket.acceptTimeout(3, 2147483648)
+    return 0
+}
+"#,
+    )
+    .expect_err("oversized WebSocket accept timeout should fail");
+    assert!(
+        accept
+            .message
+            .contains("websocket.acceptTimeout timeoutMillis")
+    );
 }
 
 #[test]
@@ -77639,7 +77735,9 @@ fn main() -> i64 {{
     let generated =
         compile_to_c(&source).expect("worker-cancellable WebSocket read should lower natively");
     assert!(generated.contains("static inline int flux__net_poll_cancellable"));
-    assert!(generated.contains("int ready = flux__net_poll_cancellable(&descriptor, 1, -1);"));
+    assert!(
+        generated.contains("int ready = flux__net_poll_cancellable(&descriptor, 1, wait_millis);")
+    );
     assert!(generated.contains("MSG_DONTWAIT"));
     assert!(generated.contains("errno = ECANCELED"));
     assert!(generated.contains("WebSocket read cancelled by worker scope"));
