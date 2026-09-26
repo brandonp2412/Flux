@@ -23491,6 +23491,75 @@ fn main() -> i64 {
 }
 
 #[test]
+fn inline_sequence_callbacks_capture_borrowed_optional_collections() {
+    let source = r#"
+fn main() -> i64 {
+    let offsets: i64[]? = [10]
+    let weights: map<i64, i64>? = map{1: 20, 2: 40}
+    let values: i64[] = [1, 2]
+    let mapped: i64[] = map(values, fn(value: i64) { value + (offsets?[0] ?? 0) + (weights?[value] ?? 0) })
+    print(mapped.first)
+    print(mapped.last)
+    return 0
+}
+"#;
+
+    check_source(source).expect("inline callbacks may borrow optional collection captures");
+    let generated =
+        compile_to_c(source).expect("optional collection captures should lower directly");
+    assert!(!generated.contains("flux__lambda_"));
+    assert!(generated.contains("flux__local_offsets"));
+    assert!(generated.contains("flux__local_weights"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-inline-optional-capture-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary optional capture directory should be writable");
+    let c_path = root.join("capture.c");
+    let exe_path = root.join("capture");
+    fs::write(&c_path, generated).expect("generated optional capture C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile optional collection captures");
+    assert!(
+        compile.status.success(),
+        "optional collection capture C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional collection capture program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "31\n52\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let moved_before_capture = r#"
+fn main() -> i64 {
+    let weights: map<i64, i64>? = map{1: 20}
+    let moved: map<i64, i64>? = weights
+    let values: i64[] = [1]
+    let mapped: i64[] = map(values, fn(value: i64) { value + (weights?[value] ?? 0) })
+    print(moved?[1] ?? 0)
+    return mapped.first
+}
+"#;
+    let error = check_source(moved_before_capture)
+        .expect_err("optional collection capture must not read a moved owner");
+    assert!(
+        error
+            .message
+            .contains("use of moved non-copy binding 'weights'")
+    );
+}
+
+#[test]
 fn inline_reductions_capture_copy_values_without_closure_allocation() {
     let source = r#"
 fn main() -> i64 {
