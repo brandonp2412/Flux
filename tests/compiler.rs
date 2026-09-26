@@ -78242,6 +78242,8 @@ fn main() -> i64 {
     assert!(generated.contains("folded WebSocket headers are not supported"));
     assert!(generated.contains("invalid WebSocket header name"));
     assert!(generated.contains("invalid WebSocket header value"));
+    assert!(generated.contains("WebSocket request target must not be empty"));
+    assert!(generated.contains("invalid WebSocket request target"));
 }
 
 #[test]
