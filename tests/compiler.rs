@@ -78357,6 +78357,9 @@ fn main() -> i64 {
     assert!(generated.contains("flux__websocket_begin_write(session)"));
     assert!(generated.contains("WebSocket session already has an active writer"));
     assert!(generated.contains("flux__websocket_end_write(session)"));
+    assert!(generated.contains("flux__websocket_begin_read(session)"));
+    assert!(generated.contains("WebSocket session already has an active reader"));
+    assert!(generated.contains("flux__websocket_end_read(session)"));
 }
 
 #[test]
@@ -78795,6 +78798,116 @@ fn main() -> i64 {{
         String::from_utf8_lossy(&output.stdout)
             .contains("WebSocket session already has an active writer"),
         "concurrent WebSocket writer should be rejected without interleaving: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    drop(client);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn websocket_concurrent_readers_do_not_split_frames() {
+    let probe = TcpListener::bind("127.0.0.1:0").expect("WebSocket reader probe should bind");
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let source = format!(
+        r#"fn consume(_value: str) -> void {{
+}}
+
+fn blockedReader(session: i64) -> void {{
+    let (_received, _readError) = websocket.readText(session, 64, consume)
+}}
+
+fn probeReader(session: i64) -> void {{
+    let (_received, readError) = websocket.readText(session, 64, consume)
+    if readError != nil:
+        print(readError)
+}}
+
+fn main() -> i64 {{
+    let (listener, listenError) = net.listen("127.0.0.1", {port}, 8)
+    if listenError != nil:
+        return 1
+    let (socket, acceptError) = net.accept(listener)
+    if acceptError != nil:
+        return 2
+    let (session, handshakeError) = websocket.accept(socket)
+    if handshakeError != nil:
+        return 3
+    let (blockedHandle, blockedError) = worker.startWith(blockedReader, session)
+    if blockedError != nil:
+        return 4
+    time.sleep(100)
+    let (probeHandle, probeError) = worker.startWith(probeReader, session)
+    if probeError != nil:
+        return 5
+    let probeJoinError: error = worker.join(probeHandle)
+    if probeJoinError != nil:
+        return 6
+    let cancelError: error = worker.cancel(blockedHandle)
+    if cancelError != nil:
+        return 7
+    let blockedJoinError: error = worker.join(blockedHandle)
+    if blockedJoinError != nil:
+        return 8
+    return 0
+}}
+"#
+    );
+    let root = std::env::temp_dir().join(format!(
+        "flux-websocket-concurrent-read-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("WebSocket concurrent-read fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("WebSocket concurrent-read source should be writable");
+    let binary = root.join("websocket-concurrent-read");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("WebSocket concurrent-read binary should build");
+    assert!(
+        built.status.success(),
+        "WebSocket concurrent-read build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let server = thread::spawn(move || {
+        Command::new(&binary)
+            .output()
+            .expect("WebSocket concurrent-read server should run")
+    });
+    thread::sleep(Duration::from_millis(100));
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port))
+        .expect("WebSocket concurrent-read client should connect");
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    client
+        .write_all(
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .unwrap();
+    let mut handshake = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !handshake.ends_with(b"\r\n\r\n") {
+        client.read_exact(&mut byte).unwrap();
+        handshake.push(byte[0]);
+    }
+    assert!(String::from_utf8_lossy(&handshake).contains("101 Switching Protocols"));
+    let output = server
+        .join()
+        .expect("WebSocket concurrent-read server thread should finish");
+    assert!(
+        output.status.success(),
+        "concurrent WebSocket reader server failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("WebSocket session already has an active reader"),
+        "concurrent WebSocket reader should be rejected before consuming frame bytes: {}",
         String::from_utf8_lossy(&output.stdout)
     );
     drop(client);
