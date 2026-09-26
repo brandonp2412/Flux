@@ -23560,6 +23560,56 @@ fn main() -> i64 {
 }
 
 #[test]
+fn nested_inline_sequence_callbacks_capture_outer_callback_bindings() {
+    let source = r#"
+fn main() -> i64 {
+    let offsets: i64[] = [10, 20]
+    let values: i64[] = [1, 2]
+    let mapped: i64[] = map(values, fn(value: i64) { fold(offsets, value, fn(total: i64, offset: i64) { total + offset + value }) })
+    print(mapped.first)
+    print(mapped.last)
+    return 0
+}
+"#;
+
+    check_source(source).expect("nested inline callbacks may capture outer callback bindings");
+    let generated =
+        compile_to_c(source).expect("nested inline callback captures should lower directly");
+    assert!(!generated.contains("flux__lambda_"));
+    assert!(generated.contains("flux__local_value"));
+    assert!(generated.contains("flux__local_offsets"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-nested-inline-capture-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary nested capture directory should be writable");
+    let c_path = root.join("capture.c");
+    let exe_path = root.join("capture");
+    fs::write(&c_path, generated).expect("generated nested capture C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile nested inline captures");
+    assert!(
+        compile.status.success(),
+        "nested inline capture C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("nested inline capture program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "33\n36\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn inline_reductions_capture_copy_values_without_closure_allocation() {
     let source = r#"
 fn main() -> i64 {

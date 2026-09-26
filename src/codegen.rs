@@ -48056,6 +48056,130 @@ fn json_array_encoding_shape(
     }
 }
 
+fn emit_sequence_reduction_expr(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Option<EmittedExpr>, Diagnostic> {
+    let Some(reduction) = sequence_reduction(expr) else {
+        return Ok(None);
+    };
+    let (list_expr, initial, reducer_expr, reduce) = match reduction {
+        SequenceReduction::Fold {
+            list,
+            initial,
+            reducer,
+        } => (list, Some(initial), reducer, false),
+        SequenceReduction::Reduce { list, reducer } => (list, None, reducer, true),
+    };
+    let source = emit_expr(list_expr, env, signatures)?;
+    let Type::List(element) = signatures.canonical_type(&source.ty) else {
+        return Err(diag(expr.span, "sequence reduction requires a list source"));
+    };
+    let element = signatures.canonical_type(&element);
+    let result_ty = if let Some(initial) = initial {
+        signatures.canonical_type(&emit_expr(initial, env, signatures)?.ty)
+    } else {
+        element.clone()
+    };
+    let source_name = format!(
+        "flux__reduce_expr_source_{}_{}",
+        expr.span.line, expr.span.column
+    );
+    let index_name = format!(
+        "flux__reduce_expr_index_{}_{}",
+        expr.span.line, expr.span.column
+    );
+    let item_name = format!(
+        "flux__reduce_expr_item_{}_{}",
+        expr.span.line, expr.span.column
+    );
+    let result_name = format!(
+        "flux__reduce_expr_result_{}_{}",
+        expr.span.line, expr.span.column
+    );
+    let has_value_name = format!(
+        "flux__reduce_expr_has_value_{}_{}",
+        expr.span.line, expr.span.column
+    );
+    let element_c = c_type(&element, signatures);
+    let result_c = c_type(&result_ty, signatures);
+    let mut code = String::new();
+    code.push_str("__extension__ ({ ");
+    code.push_str(&format!(
+        "struct flux__list {source_name} = {}; ",
+        source.code
+    ));
+    if reduce {
+        code.push_str(&format!(
+            "{result_c} {result_name}; bool {has_value_name} = false; "
+        ));
+    } else {
+        let initial = emit_expr(
+            initial.expect("fold reduction has an initial value"),
+            env,
+            signatures,
+        )?;
+        code.push_str(&format!("{result_c} {result_name} = {}; ", initial.code));
+    }
+    code.push_str(&format!(
+        "for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ "
+    ));
+    code.push_str(&format!(
+        "{element_c} {item_name} = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c}))); "
+    ));
+    if reduce {
+        code.push_str(&format!(
+            "if (!{has_value_name}) {{ {result_name} = {item_name}; {has_value_name} = true; }} else {{ "
+        ));
+    }
+    if let ExprKind::AnonymousFunction { params, body, .. } = &reducer_expr.kind {
+        if params.len() != 2 {
+            return Err(diag(
+                reducer_expr.span,
+                "inline sequence reducer requires exactly two parameters",
+            ));
+        }
+        let mut callback_env = env.clone();
+        callback_env.insert(
+            params[0].name.clone(),
+            signatures.canonical_type(&params[0].ty),
+        );
+        callback_env.insert(
+            params[1].name.clone(),
+            signatures.canonical_type(&params[1].ty),
+        );
+        let reduced = emit_expr(body, &callback_env, signatures)?.code;
+        code.push_str(&format!(
+            "{{ {} {} = {result_name}; {} {} = {item_name}; {result_name} = {reduced}; }} ",
+            c_type(&params[0].ty, signatures),
+            local_c_name(&params[0].name),
+            c_type(&params[1].ty, signatures),
+            local_c_name(&params[1].name),
+        ));
+    } else {
+        let reducer = emit_expr(reducer_expr, env, signatures)?;
+        code.push_str(&format!(
+            "{result_name} = {}({result_name}, {item_name}); ",
+            reducer.code
+        ));
+    }
+    if reduce {
+        code.push_str("} ");
+    }
+    code.push_str("} ");
+    if reduce {
+        code.push_str(&format!(
+            "if (!{has_value_name}) {{ fputs(\"Flux runtime error: reduce requires a non-empty list\\n\", stderr); abort(); }} "
+        ));
+    }
+    code.push_str(&format!("{result_name}; }})"));
+    Ok(Some(EmittedExpr {
+        code,
+        ty: result_ty,
+    }))
+}
+
 fn emit_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -48776,10 +48900,12 @@ fn emit_expr(
             ));
         }
         ExprKind::Call { name, .. } if name == "fold" || name == "reduce" => {
-            return Err(diag(
-                expr.span,
-                "fold/reduce currently lower only when bound directly to a local value",
-            ));
+            emit_sequence_reduction_expr(expr, env, signatures)?.ok_or_else(|| {
+                diag(
+                    expr.span,
+                    "invalid fold/reduce expression reached code generation",
+                )
+            })?
         }
         ExprKind::Call {
             name,
