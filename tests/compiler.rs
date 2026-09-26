@@ -78080,6 +78080,8 @@ fn main() -> i64 {
     assert!(generated.contains("flux__websocket_write_control"));
     assert!(generated.contains("WebSocket control frame must be final and at most 125 bytes"));
     assert!(generated.contains("WebSocket opcode is reserved or unsupported"));
+    assert!(generated.contains("WebSocket frame length is not minimally encoded"));
+    assert!(generated.contains("WebSocket frame length exceeds 63-bit range"));
     assert!(generated.contains("flux__websocket_write_ping("));
     assert!(generated.contains("flux__websocket_write_pong("));
     assert!(generated.contains("flux__websocket_bounded_length(value, 125"));
@@ -78366,6 +78368,93 @@ fn main() -> i64 {
     assert!(generated.contains("invalid WebSocket header value"));
     assert!(generated.contains("WebSocket request target must not be empty"));
     assert!(generated.contains("invalid WebSocket request target"));
+}
+
+#[test]
+fn websocket_server_rejects_non_minimal_extended_frame_lengths() {
+    let probe = TcpListener::bind("127.0.0.1:0").expect("WebSocket frame-length probe should bind");
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let source = format!(
+        r#"fn onText(_value: str) -> void {{
+}}
+
+fn main() -> i64 {{
+    let (listener, listenError) = net.listen("127.0.0.1", {port}, 8)
+    if listenError != nil:
+        return 1
+    let (socket, acceptError) = net.accept(listener)
+    if acceptError != nil:
+        return 2
+    let (session, handshakeError) = websocket.accept(socket)
+    if handshakeError != nil:
+        return 3
+    let (_bytes, readError) = websocket.readText(session, 64, onText)
+    if readError != nil:
+        return 0
+    return 4
+}}
+"#
+    );
+    let root = std::env::temp_dir().join(format!(
+        "flux-websocket-frame-length-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("WebSocket frame-length fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("WebSocket frame-length source should be writable");
+    let binary = root.join("websocket-frame-length");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("WebSocket frame-length binary should build");
+    assert!(
+        built.status.success(),
+        "WebSocket frame-length build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        Command::new(&binary)
+            .output()
+            .expect("WebSocket frame-length server should run")
+    });
+    thread::sleep(Duration::from_millis(100));
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port))
+        .expect("WebSocket frame-length client should connect");
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    client
+        .write_all(
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .unwrap();
+    let mut handshake = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !handshake.ends_with(b"\r\n\r\n") {
+        client.read_exact(&mut byte).unwrap();
+        handshake.push(byte[0]);
+    }
+    assert!(String::from_utf8_lossy(&handshake).contains("101 Switching Protocols"));
+
+    client
+        .write_all(&[0x81, 0xfe, 0x00, 0x01, 1, 2, 3, 4, b'x' ^ 1])
+        .expect("non-minimal WebSocket frame should be sent");
+    drop(client);
+
+    let output = server
+        .join()
+        .expect("WebSocket frame-length server thread should finish");
+    assert!(
+        output.status.success(),
+        "server accepted a non-minimal WebSocket frame length: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
