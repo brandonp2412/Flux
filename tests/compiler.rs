@@ -23783,8 +23783,11 @@ fn main() -> i64 {
     let limits: i64[] = [1, 2, 3, 4]
     let values: i64[] = [1, 3]
     let selected: i64[] = map(values, fn(value: i64) { filter(map(limits, fn(limit: i64) { limit + value }), fn(adjusted: i64) { adjusted > value + 1 })[1] })
+    let selectedLast: i64[] = map(values, fn(value: i64) { filter(map(limits, fn(limit: i64) { limit + value }), fn(adjusted: i64) { adjusted > value + 1 })[-1] })
     print(selected.first)
     print(selected.last)
+    print(selectedLast.first)
+    print(selectedLast.last)
     return 0
 }
 "#;
@@ -23826,6 +23829,8 @@ fn main() -> i64 {
         String::from_utf8_lossy(&output.stdout),
         "4
 6
+5
+7
 "
     );
     let _ = fs::remove_dir_all(&root);

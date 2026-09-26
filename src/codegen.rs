@@ -48672,7 +48672,7 @@ fn emit_expr(
                 && sequence_transform(base).is_some()
                 && let Some(ConstantValue::I64(static_index)) =
                     typecheck::constant_primitive_value(index, signatures)
-                && static_index >= 0
+                && static_index >= -1
             {
                 let mut stages = Vec::new();
                 let source_expr = collect_sequence_transform_chain(base, &mut stages);
@@ -48760,9 +48760,15 @@ fn emit_expr(
                         "transformed list index value type mismatch reached code generation",
                     ));
                 }
-                code.push_str(&format!(
-                    "if ({output_index_name} == (size_t)INT64_C({static_index})) {{ {result_name} = {value_name}; {found_name} = true; }} ++{output_index_name}; }} "
-                ));
+                if static_index == -1 {
+                    code.push_str(&format!(
+                        "{result_name} = {value_name}; {found_name} = true; ++{output_index_name}; }} "
+                    ));
+                } else {
+                    code.push_str(&format!(
+                        "if ({output_index_name} == (size_t)INT64_C({static_index})) {{ {result_name} = {value_name}; {found_name} = true; }} ++{output_index_name}; }} "
+                    ));
+                }
                 code.push_str(&format!(
                     r#"if (!{found_name}) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {result_name}; }})"#
                 ));
