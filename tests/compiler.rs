@@ -23717,6 +23717,66 @@ fn main() -> i64 {
 }
 
 #[test]
+fn nested_inline_transform_metadata_fuses_without_temporary_lists() {
+    let source = r#"
+fn main() -> i64 {
+    let limits: i64[] = [1, 2, 3]
+    let values: i64[] = [1, 3]
+    let counts: i64[] = map(values, fn(value: i64) { filter(map(limits, fn(limit: i64) { limit + value }), fn(adjusted: i64) { adjusted > 3 }).length })
+    let empties: bool[] = map(values, fn(value: i64) { filter(limits, fn(limit: i64) { limit > value }).isEmpty })
+    let nonempties: bool[] = map(values, fn(value: i64) { filter(limits, fn(limit: i64) { limit > value }).isNotEmpty })
+    print(counts.first)
+    print(counts.last)
+    print(empties.first)
+    print(empties.last)
+    print(nonempties.first)
+    print(nonempties.last)
+    return 0
+}
+"#;
+
+    check_source(source)
+        .expect("nested transformed list metadata may capture outer callback bindings");
+    let generated = compile_to_c(source).expect(
+        "nested transformed list metadata should fuse without materializing temporary lists",
+    );
+    assert!(!generated.contains("flux__lambda_"));
+    assert!(generated.contains("flux__metadata_expr_result_"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-nested-transform-metadata-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary nested metadata directory should be writable");
+    let c_path = root.join("capture.c");
+    let exe_path = root.join("capture");
+    fs::write(&c_path, generated).expect("generated nested metadata C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile nested transformed metadata");
+    assert!(
+        compile.status.success(),
+        "nested transformed metadata C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("nested transformed metadata program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "1\n3\nfalse\ntrue\ntrue\nfalse\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn inline_reductions_capture_copy_values_without_closure_allocation() {
     let source = r#"
 fn main() -> i64 {

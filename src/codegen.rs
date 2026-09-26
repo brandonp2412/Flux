@@ -49368,6 +49368,107 @@ fn emit_expr(
                     ty: constant.ty.clone(),
                 });
             }
+            if !*optional
+                && matches!(
+                    crate::builtin_names::list_member_impl(name),
+                    "length" | "isEmpty" | "isNotEmpty"
+                )
+                && sequence_transform(base).is_some()
+            {
+                let mut stages = Vec::new();
+                let source_expr = collect_sequence_transform_chain(base, &mut stages);
+                let source = emit_expr(source_expr, env, signatures)?;
+                let Type::List(source_element) = signatures.canonical_type(&source.ty) else {
+                    return Err(diag(
+                        expr.span,
+                        "transformed list property requires a list source",
+                    ));
+                };
+                let source_element = signatures.canonical_type(&source_element);
+                let transformed_ty = sequence_transform_result_type(
+                    &stages,
+                    &source_element,
+                    env,
+                    signatures,
+                    None,
+                )?;
+                let Type::List(_) = transformed_ty else {
+                    return Err(diag(
+                        expr.span,
+                        "transformed list property requires a list result",
+                    ));
+                };
+                let source_name = format!(
+                    "flux__metadata_expr_source_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let index_name = format!(
+                    "flux__metadata_expr_index_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let item_name = format!(
+                    "flux__metadata_expr_item_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let result_name = format!(
+                    "flux__metadata_expr_result_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let source_element_c = c_type(&source_element, signatures);
+                let member = crate::builtin_names::list_member_impl(name);
+                let (result_c, initial) = match member {
+                    "length" => ("int64_t", "INT64_C(0)"),
+                    "isEmpty" => ("bool", "true"),
+                    "isNotEmpty" => ("bool", "false"),
+                    _ => unreachable!("transformed list metadata member validated above"),
+                };
+                let mut code = String::new();
+                code.push_str("__extension__ ({ ");
+                code.push_str(&format!(
+                    "struct flux__list {source_name} = {}; {result_c} {result_name} = {initial}; ",
+                    source.code
+                ));
+                code.push_str(&format!(
+                    "for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ "
+                ));
+                code.push_str(&format!(
+                    "{source_element_c} {item_name} = *(({source_element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({source_element_c}))); "
+                ));
+                let mut temp_counter = 0;
+                let _ = emit_sequence_transform_stages(
+                    &mut code,
+                    "",
+                    &stages,
+                    item_name,
+                    source_element,
+                    env,
+                    signatures,
+                    None,
+                    &mut temp_counter,
+                )?;
+                match member {
+                    "length" => {
+                        code.push_str(&format!("{result_name} += INT64_C(1); "));
+                    }
+                    "isEmpty" => {
+                        code.push_str(&format!("{result_name} = false; "));
+                    }
+                    "isNotEmpty" => {
+                        code.push_str(&format!("{result_name} = true; "));
+                    }
+                    _ => unreachable!("transformed list metadata member validated above"),
+                }
+                code.push_str("} ");
+                code.push_str(&format!("{result_name}; }})"));
+                return Ok(EmittedExpr {
+                    code,
+                    ty: if member == "length" {
+                        Type::I64
+                    } else {
+                        Type::Bool
+                    },
+                });
+            }
             let static_len = if *optional {
                 None
             } else {
