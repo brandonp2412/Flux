@@ -26919,6 +26919,7 @@ fn main() -> i64 {
     let (socket, connect_error) = net.connect("example.com", 443)
     let (session, tls_error) = tls.wrap(socket, "example.com", "")
     let (was_resumed, resumed_error) = tls.resumed(session)
+    let (pending_bytes, pending_error) = tls.pending(session)
     let (server_session, server_error) = tls.listen(socket, "server.crt", "server.key")
     let write_error: error = tls.write(session, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
     let (timed_written, timed_complete, timed_write_error) = tls.writeTimeout(session, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n", 0)
@@ -26930,6 +26931,8 @@ fn main() -> i64 {
     print(tls_error)
     print(was_resumed)
     print(resumed_error)
+    print(pending_bytes)
+    print(pending_error)
     print(write_error)
     print(timed_written)
     print(timed_complete)
@@ -26955,6 +26958,8 @@ fn main() -> i64 {
     assert!(generated.contains("flux__tls_resumption_slots"));
     assert!(generated.contains("flux__tls_resumed("));
     assert!(generated.contains("SSL_session_reused(slot->session) == 1"));
+    assert!(generated.contains("flux__tls_pending("));
+    assert!(generated.contains("SSL_pending(slot->session)"));
     assert!(generated.contains("SSL_get_verify_result"));
     assert!(generated.contains("TLS wrap string exceeds 65536 bytes"));
     assert!(generated.contains("TLS server path exceeds 65536 bytes"));
@@ -26994,6 +26999,11 @@ fn main() -> i64 {
     )
     .expect_err("tls.resumed should require a TLS session handle");
     assert!(invalid_resumed.message.contains("tls.resumed session"));
+    let invalid_pending = check_source(
+        "fn main() -> i64 {\n    let (_pending, _failure) = tls.pending(\"invalid\")\n    return 0\n}\n",
+    )
+    .expect_err("tls.pending should require a TLS session handle");
+    assert!(invalid_pending.message.contains("tls.pending session"));
 
     let root = std::env::temp_dir().join(format!("flux-tls-contract-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
