@@ -48960,21 +48960,110 @@ fn emit_expr(
                     "invalid boolean sequence call reached code generation",
                 ));
             }
-            let list = emit_expr(&args[0], env, signatures)?;
-            if list.ty != Type::List(Box::new(Type::Bool)) {
-                return Err(diag(
-                    expr.span,
-                    "boolean sequence operation requires a bool[] value",
+            if sequence_transform(&args[0]).is_some() {
+                let mut stages = Vec::new();
+                let source_expr = collect_sequence_transform_chain(&args[0], &mut stages);
+                let source = emit_expr(source_expr, env, signatures)?;
+                let Type::List(source_element) = signatures.canonical_type(&source.ty) else {
+                    return Err(diag(
+                        expr.span,
+                        "boolean sequence operation requires a list source",
+                    ));
+                };
+                let source_element = signatures.canonical_type(&source_element);
+                let result_ty = sequence_transform_result_type(
+                    &stages,
+                    &source_element,
+                    env,
+                    signatures,
+                    None,
+                )?;
+                if result_ty != Type::List(Box::new(Type::Bool)) {
+                    return Err(diag(
+                        expr.span,
+                        "boolean sequence operation requires a bool[] value",
+                    ));
+                }
+                let source_name = format!(
+                    "flux__boolean_expr_source_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let index_name = format!(
+                    "flux__boolean_expr_index_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let item_name = format!(
+                    "flux__boolean_expr_item_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let result_name = format!(
+                    "flux__boolean_expr_result_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let source_element_c = c_type(&source_element, signatures);
+                let mut code = String::new();
+                let initial = if name == "every" { "true" } else { "false" };
+                code.push_str("__extension__ ({ ");
+                code.push_str(&format!(
+                    "struct flux__list {source_name} = {}; bool {result_name} = {initial}; ",
+                    source.code
                 ));
-            }
-            let helper = if name == "any" {
-                "flux_list_any_bool"
+                code.push_str(&format!(
+                    "for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ "
+                ));
+                code.push_str(&format!(
+                    "{source_element_c} {item_name} = *(({source_element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({source_element_c}))); "
+                ));
+                let mut temp_counter = 0;
+                let (value_name, value_ty) = emit_sequence_transform_stages(
+                    &mut code,
+                    "",
+                    &stages,
+                    item_name,
+                    source_element,
+                    env,
+                    signatures,
+                    None,
+                    &mut temp_counter,
+                )?;
+                if value_ty != Type::Bool {
+                    return Err(diag(
+                        expr.span,
+                        "boolean sequence transformed value must be bool",
+                    ));
+                }
+                if name == "any" {
+                    code.push_str(&format!(
+                        "if ({value_name}) {{ {result_name} = true; break; }} "
+                    ));
+                } else {
+                    code.push_str(&format!(
+                        "if (!({value_name})) {{ {result_name} = false; break; }} "
+                    ));
+                }
+                code.push_str("} ");
+                code.push_str(&format!("{result_name}; }})"));
+                EmittedExpr {
+                    code,
+                    ty: Type::Bool,
+                }
             } else {
-                "flux_list_every_bool"
-            };
-            EmittedExpr {
-                code: format!("{helper}({})", list.code),
-                ty: Type::Bool,
+                let list = emit_expr(&args[0], env, signatures)?;
+                if list.ty != Type::List(Box::new(Type::Bool)) {
+                    return Err(diag(
+                        expr.span,
+                        "boolean sequence operation requires a bool[] value",
+                    ));
+                }
+                let helper = if name == "any" {
+                    "flux_list_any_bool"
+                } else {
+                    "flux_list_every_bool"
+                };
+                EmittedExpr {
+                    code: format!("{helper}({})", list.code),
+                    ty: Type::Bool,
+                }
             }
         }
         ExprKind::Call {

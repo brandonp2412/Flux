@@ -23661,6 +23661,62 @@ fn main() -> i64 {
 }
 
 #[test]
+fn nested_inline_boolean_queries_fuse_transformed_sources_with_outer_captures() {
+    let source = r#"
+fn main() -> i64 {
+    let limits: i64[] = [1, 2]
+    let values: i64[] = [1, 2]
+    let anyResults: bool[] = map(values, fn(value: i64) { any(map(limits, fn(limit: i64) { value < limit })) })
+    let everyResults: bool[] = map(values, fn(value: i64) { every(map(limits, fn(limit: i64) { value >= limit })) })
+    print(anyResults.first)
+    print(anyResults.last)
+    print(everyResults.first)
+    print(everyResults.last)
+    return 0
+}
+"#;
+
+    check_source(source)
+        .expect("nested transformed boolean queries may capture outer callback bindings");
+    let generated = compile_to_c(source)
+        .expect("nested transformed boolean queries should fuse without materializing a closure");
+    assert!(!generated.contains("flux__lambda_"));
+    assert!(generated.contains("flux__boolean_expr_result_"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-nested-boolean-transform-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary nested boolean directory should be writable");
+    let c_path = root.join("capture.c");
+    let exe_path = root.join("capture");
+    fs::write(&c_path, generated).expect("generated nested boolean C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile nested transformed boolean queries");
+    assert!(
+        compile.status.success(),
+        "nested transformed boolean query C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("nested transformed boolean query program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true\nfalse\nfalse\ntrue\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn inline_reductions_capture_copy_values_without_closure_allocation() {
     let source = r#"
 fn main() -> i64 {
