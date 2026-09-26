@@ -23777,6 +23777,66 @@ fn main() -> i64 {
 }
 
 #[test]
+fn nested_inline_transform_projections_fuse_without_temporary_lists() {
+    let source = r#"
+fn main() -> i64 {
+    let limits: i64[] = [1, 2, 3]
+    let values: i64[] = [1, 3]
+    let firsts: i64[] = map(values, fn(value: i64) { filter(map(limits, fn(limit: i64) { limit + value }), fn(adjusted: i64) { adjusted > 3 }).first })
+    let lasts: i64[] = map(values, fn(value: i64) { filter(map(limits, fn(limit: i64) { limit + value }), fn(adjusted: i64) { adjusted > 3 }).last })
+    let singles: i64[] = map(values, fn(value: i64) { filter(map(limits, fn(limit: i64) { limit + value }), fn(adjusted: i64) { adjusted == value + 2 }).single })
+    print(firsts.first)
+    print(firsts.last)
+    print(lasts.first)
+    print(lasts.last)
+    print(singles.first)
+    print(singles.last)
+    return 0
+}
+"#;
+
+    check_source(source)
+        .expect("nested transformed list projections may capture outer callback bindings");
+    let generated = compile_to_c(source).expect(
+        "nested transformed list projections should fuse without materializing temporary lists",
+    );
+    assert!(!generated.contains("flux__lambda_"));
+    assert!(generated.contains("flux__projection_expr_result_"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-nested-transform-projections-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary nested projection directory should be writable");
+    let c_path = root.join("capture.c");
+    let exe_path = root.join("capture");
+    fs::write(&c_path, generated).expect("generated nested projection C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile nested transformed projections");
+    assert!(
+        compile.status.success(),
+        "nested transformed projection C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("nested transformed projection program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "4\n4\n4\n6\n3\n5\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn inline_reductions_capture_copy_values_without_closure_allocation() {
     let source = r#"
 fn main() -> i64 {

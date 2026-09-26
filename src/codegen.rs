@@ -49371,6 +49371,128 @@ fn emit_expr(
             if !*optional
                 && matches!(
                     crate::builtin_names::list_member_impl(name),
+                    "first" | "last" | "single"
+                )
+                && sequence_transform(base).is_some()
+            {
+                let mut stages = Vec::new();
+                let source_expr = collect_sequence_transform_chain(base, &mut stages);
+                let source = emit_expr(source_expr, env, signatures)?;
+                let Type::List(source_element) = signatures.canonical_type(&source.ty) else {
+                    return Err(diag(
+                        expr.span,
+                        "transformed list projection requires a list source",
+                    ));
+                };
+                let source_element = signatures.canonical_type(&source_element);
+                let transformed_ty = sequence_transform_result_type(
+                    &stages,
+                    &source_element,
+                    env,
+                    signatures,
+                    None,
+                )?;
+                let Type::List(result_element) = transformed_ty else {
+                    return Err(diag(
+                        expr.span,
+                        "transformed list projection requires a list result",
+                    ));
+                };
+                let result_element = signatures.canonical_type(&result_element);
+                let source_name = format!(
+                    "flux__projection_expr_source_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let index_name = format!(
+                    "flux__projection_expr_index_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let item_name = format!(
+                    "flux__projection_expr_item_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let result_name = format!(
+                    "flux__projection_expr_result_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let has_value_name = format!(
+                    "flux__projection_expr_has_value_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let count_name = format!(
+                    "flux__projection_expr_count_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let source_element_c = c_type(&source_element, signatures);
+                let result_element_c = c_type(&result_element, signatures);
+                let member = crate::builtin_names::list_member_impl(name);
+                let mut code = String::new();
+                code.push_str("__extension__ ({ ");
+                code.push_str(&format!(
+                    "struct flux__list {source_name} = {}; {result_element_c} {result_name}; bool {has_value_name} = false; size_t {count_name} = 0; ",
+                    source.code
+                ));
+                code.push_str(&format!(
+                    "for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ "
+                ));
+                code.push_str(&format!(
+                    "{source_element_c} {item_name} = *(({source_element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({source_element_c}))); "
+                ));
+                let mut temp_counter = 0;
+                let (value_name, value_ty) = emit_sequence_transform_stages(
+                    &mut code,
+                    "",
+                    &stages,
+                    item_name,
+                    source_element,
+                    env,
+                    signatures,
+                    None,
+                    &mut temp_counter,
+                )?;
+                if signatures.canonical_type(&value_ty) != result_element {
+                    return Err(diag(
+                        expr.span,
+                        "transformed list projection value type mismatch reached code generation",
+                    ));
+                }
+                match member {
+                    "first" => {
+                        code.push_str(&format!(
+                            "if (!{has_value_name}) {{ {result_name} = {value_name}; {has_value_name} = true; }} "
+                        ));
+                    }
+                    "last" => {
+                        code.push_str(&format!(
+                            "{result_name} = {value_name}; {has_value_name} = true; "
+                        ));
+                    }
+                    "single" => {
+                        code.push_str(&format!(
+                            "if ({count_name} == 0) {{ {result_name} = {value_name}; }} ++{count_name}; "
+                        ));
+                    }
+                    _ => unreachable!("transformed list projection member validated above"),
+                }
+                code.push_str("} ");
+                if member == "single" {
+                    code.push_str(&format!(
+                        r#"if ({count_name} != 1) {{ fputs("Flux runtime error: list.single requires exactly one element\n", stderr); abort(); }} "#
+                    ));
+                } else {
+                    code.push_str(&format!(
+                        r#"if (!{has_value_name}) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} "#
+                    ));
+                }
+                code.push_str(&format!("{result_name}; }})"));
+                return Ok(EmittedExpr {
+                    code,
+                    ty: result_element,
+                });
+            }
+            if !*optional
+                && matches!(
+                    crate::builtin_names::list_member_impl(name),
                     "length" | "isEmpty" | "isNotEmpty"
                 )
                 && sequence_transform(base).is_some()
