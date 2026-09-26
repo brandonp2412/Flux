@@ -78461,6 +78461,104 @@ fn main() -> i64 {{
 }
 
 #[test]
+fn websocket_text_protocol_errors_invalidate_session() {
+    let probe = TcpListener::bind("127.0.0.1:0").expect("WebSocket protocol-error probe should bind");
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let source = format!(
+        r#"fn onText(_value: str) -> void {{
+}}
+
+fn main() -> i64 {{
+    let (listener, listenError) = net.listen("127.0.0.1", {port}, 8)
+    if listenError != nil:
+        return 1
+    let (socket, acceptError) = net.accept(listener)
+    if acceptError != nil:
+        return 2
+    let (session, handshakeError) = websocket.accept(socket)
+    if handshakeError != nil:
+        return 3
+    let (_bytes, readError) = websocket.readText(session, 64, onText)
+    if readError == nil:
+        return 4
+    let writeError: error = websocket.writeText(session, "should fail")
+    if writeError == nil:
+        return 5
+    return 0
+}}
+"#
+    );
+    let root = std::env::temp_dir().join(format!(
+        "flux-websocket-protocol-error-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("WebSocket protocol-error fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("WebSocket protocol-error source should be writable");
+    let binary = root.join("websocket-protocol-error");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("WebSocket protocol-error binary should build");
+    assert!(
+        built.status.success(),
+        "WebSocket protocol-error build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        Command::new(&binary)
+            .output()
+            .expect("WebSocket protocol-error server should run")
+    });
+    thread::sleep(Duration::from_millis(100));
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port))
+        .expect("WebSocket protocol-error client should connect");
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    client
+        .write_all(
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .unwrap();
+    let mut handshake = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !handshake.ends_with(b"\r\n\r\n") {
+        client.read_exact(&mut byte).unwrap();
+        handshake.push(byte[0]);
+    }
+    assert!(String::from_utf8_lossy(&handshake).contains("101 Switching Protocols"));
+
+    let mask = [0x11_u8, 0x22, 0x33, 0x44];
+    let payload = [0x7f_u8];
+    let frame = [
+        0x82_u8,
+        0x81,
+        mask[0],
+        mask[1],
+        mask[2],
+        mask[3],
+        payload[0] ^ mask[0],
+    ];
+    client.write_all(&frame).unwrap();
+
+    let output = server
+        .join()
+        .expect("WebSocket protocol-error server thread should finish");
+    assert!(
+        output.status.success(),
+        "server retained a WebSocket session after a fatal message error: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn websocket_server_reads_fragmented_text_and_answers_ping() {
     let probe = TcpListener::bind("127.0.0.1:0").expect("WebSocket probe should bind");
     let port = probe.local_addr().unwrap().port();

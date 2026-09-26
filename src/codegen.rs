@@ -10618,6 +10618,7 @@ static inline int flux__websocket_base64_value(unsigned char value) { if (value 
 static inline bool flux__websocket_valid_client_key(const char *key) { size_t length = 0; if (!flux__websocket_bounded_length(key, 24, &length) || length != 24 || key[22] != '=' || key[23] != '=') return false; for (size_t index = 0; index < 22; index += 1) if (flux__websocket_base64_value((unsigned char)key[index]) < 0) return false; return (flux__websocket_base64_value((unsigned char)key[21]) & 15) == 0; }
 static inline const char *flux__websocket_find_bytes(const char *value, size_t length, const char *needle, size_t needle_length) { if (value == NULL || needle == NULL) return NULL; if (needle_length == 0) return value; if (needle_length > length) return NULL; for (size_t offset = 0; offset + needle_length <= length; offset += 1) if (memcmp(value + offset, needle, needle_length) == 0) return value + offset; return NULL; }
 static inline const char *flux__websocket_read_error(const char *fallback) { return errno == ECANCELED ? "WebSocket read cancelled by worker scope" : fallback; }
+static inline struct flux__net_i64_error flux__websocket_fail_read(int64_t session, const char *error) { (void)flux__websocket_release(session); return flux__websocket_result(-1, error); }
 static inline const char *flux__websocket_write_error(const char *fallback) { return errno == ECANCELED ? "WebSocket write cancelled by worker scope" : fallback; }
 static inline int flux__websocket_deadline_wait(int64_t deadline) {
     if (deadline < 0) return -1;
@@ -10773,36 +10774,36 @@ static inline struct flux__net_i64_error flux__websocket_read_text(int64_t sessi
     int role = flux__websocket_role(session); if (role < 0) return flux__websocket_result(-1, "WebSocket session has not completed an upgrade");
     unsigned char frame_payload[65536]; char payload[65537]; size_t total = 0; bool started = false;
     for (;;) {
-        struct flux__websocket_frame frame; struct flux__net_i64_error result = flux__websocket_read_frame((int)session, &frame, frame_payload, sizeof(frame_payload), role == 0); if (result.v1 != NULL) { if (strcmp(result.v1, "WebSocket read cancelled by worker scope") != 0) (void)flux__websocket_release(session); return result; }
+        struct flux__websocket_frame frame; struct flux__net_i64_error result = flux__websocket_read_frame((int)session, &frame, frame_payload, sizeof(frame_payload), role == 0); if (result.v1 != NULL) { if (strcmp(result.v1, "WebSocket read cancelled by worker scope") == 0) return result; return flux__websocket_fail_read(session, result.v1); }
         if (frame.opcode == 8 || frame.opcode == 9 || frame.opcode == 10) {
-            if (!frame.final || frame.length > 125) return flux__websocket_result(-1, "invalid WebSocket control frame");
-            if (frame.opcode == 8) { if (!flux__websocket_valid_close_payload(frame_payload, (size_t)frame.length)) return flux__websocket_result(-1, "invalid WebSocket close payload"); const char *ack_error = flux__websocket_write_control(session, 8, frame_payload, (size_t)frame.length); const char *ack_result = ack_error == NULL ? NULL : flux__websocket_write_error("failed to acknowledge WebSocket close"); const char *release_error = flux__websocket_release(session); if (ack_result != NULL) return flux__websocket_result(-1, ack_result); if (release_error != NULL) return flux__websocket_result(-1, release_error); return flux__websocket_result(0, "WebSocket peer closed"); }
+            if (!frame.final || frame.length > 125) return flux__websocket_fail_read(session, "invalid WebSocket control frame");
+            if (frame.opcode == 8) { if (!flux__websocket_valid_close_payload(frame_payload, (size_t)frame.length)) return flux__websocket_fail_read(session, "invalid WebSocket close payload"); const char *ack_error = flux__websocket_write_control(session, 8, frame_payload, (size_t)frame.length); const char *ack_result = ack_error == NULL ? NULL : flux__websocket_write_error("failed to acknowledge WebSocket close"); const char *release_error = flux__websocket_release(session); if (ack_result != NULL) return flux__websocket_result(-1, ack_result); if (release_error != NULL) return flux__websocket_result(-1, release_error); return flux__websocket_result(0, "WebSocket peer closed"); }
             if (frame.opcode == 9) { const char *pong_error = flux__websocket_write_control(session, 10, frame_payload, (size_t)frame.length); if (pong_error != NULL) return flux__websocket_result(-1, flux__websocket_write_error("failed to send WebSocket pong")); }
             continue;
         }
-        if (!started) { if (frame.opcode != 1) return flux__websocket_result(-1, "WebSocket message must start with a text frame"); started = true; }
-        else if (frame.opcode != 0) return flux__websocket_result(-1, "WebSocket continuation frame expected");
-        if (frame.length > (uint64_t)max_bytes - total) return flux__websocket_result(-1, "WebSocket text message exceeds maxBytes");
+        if (!started) { if (frame.opcode != 1) return flux__websocket_fail_read(session, "WebSocket message must start with a text frame"); started = true; }
+        else if (frame.opcode != 0) return flux__websocket_fail_read(session, "WebSocket continuation frame expected");
+        if (frame.length > (uint64_t)max_bytes - total) return flux__websocket_fail_read(session, "WebSocket text message exceeds maxBytes");
         memcpy(payload + total, frame_payload, (size_t)frame.length); total += (size_t)frame.length;
         if (frame.final) break;
     }
-    payload[total] = '\0'; if (memchr(payload, '\0', total) != NULL) return flux__websocket_result(-1, "WebSocket text message contains a NUL byte"); if (!flux__websocket_valid_utf8((const unsigned char *)payload, total)) return flux__websocket_result(-1, "WebSocket text message contains invalid UTF-8"); callback(payload); return flux__websocket_result((int64_t)total, NULL);
+    payload[total] = '\0'; if (memchr(payload, '\0', total) != NULL) return flux__websocket_fail_read(session, "WebSocket text message contains a NUL byte"); if (!flux__websocket_valid_utf8((const unsigned char *)payload, total)) return flux__websocket_fail_read(session, "WebSocket text message contains invalid UTF-8"); callback(payload); return flux__websocket_result((int64_t)total, NULL);
 }
 static inline struct flux__net_i64_error flux__websocket_read_bytes(int64_t session, int64_t max_bytes, void (*callback)(struct flux__list)) {
     if (session < 0 || session > INT_MAX || max_bytes < 1 || max_bytes > 65536 || callback == NULL) return flux__websocket_result(-1, "invalid WebSocket binary read arguments");
     int role = flux__websocket_role(session); if (role < 0) return flux__websocket_result(-1, "WebSocket session has not completed an upgrade");
     unsigned char frame_payload[65536]; int64_t payload[65536]; size_t total = 0; bool started = false;
     for (;;) {
-        struct flux__websocket_frame frame; struct flux__net_i64_error result = flux__websocket_read_frame((int)session, &frame, frame_payload, sizeof(frame_payload), role == 0); if (result.v1 != NULL) { if (strcmp(result.v1, "WebSocket read cancelled by worker scope") != 0) (void)flux__websocket_release(session); return result; }
+        struct flux__websocket_frame frame; struct flux__net_i64_error result = flux__websocket_read_frame((int)session, &frame, frame_payload, sizeof(frame_payload), role == 0); if (result.v1 != NULL) { if (strcmp(result.v1, "WebSocket read cancelled by worker scope") == 0) return result; return flux__websocket_fail_read(session, result.v1); }
         if (frame.opcode == 8 || frame.opcode == 9 || frame.opcode == 10) {
-            if (!frame.final || frame.length > 125) return flux__websocket_result(-1, "invalid WebSocket control frame");
-            if (frame.opcode == 8) { if (!flux__websocket_valid_close_payload(frame_payload, (size_t)frame.length)) return flux__websocket_result(-1, "invalid WebSocket close payload"); const char *ack_error = flux__websocket_write_control(session, 8, frame_payload, (size_t)frame.length); const char *ack_result = ack_error == NULL ? NULL : flux__websocket_write_error("failed to acknowledge WebSocket close"); const char *release_error = flux__websocket_release(session); if (ack_result != NULL) return flux__websocket_result(-1, ack_result); if (release_error != NULL) return flux__websocket_result(-1, release_error); return flux__websocket_result(0, "WebSocket peer closed"); }
+            if (!frame.final || frame.length > 125) return flux__websocket_fail_read(session, "invalid WebSocket control frame");
+            if (frame.opcode == 8) { if (!flux__websocket_valid_close_payload(frame_payload, (size_t)frame.length)) return flux__websocket_fail_read(session, "invalid WebSocket close payload"); const char *ack_error = flux__websocket_write_control(session, 8, frame_payload, (size_t)frame.length); const char *ack_result = ack_error == NULL ? NULL : flux__websocket_write_error("failed to acknowledge WebSocket close"); const char *release_error = flux__websocket_release(session); if (ack_result != NULL) return flux__websocket_result(-1, ack_result); if (release_error != NULL) return flux__websocket_result(-1, release_error); return flux__websocket_result(0, "WebSocket peer closed"); }
             if (frame.opcode == 9) { const char *pong_error = flux__websocket_write_control(session, 10, frame_payload, (size_t)frame.length); if (pong_error != NULL) return flux__websocket_result(-1, flux__websocket_write_error("failed to send WebSocket pong")); }
             continue;
         }
-        if (!started) { if (frame.opcode != 2) return flux__websocket_result(-1, "WebSocket binary message must start with a binary frame"); started = true; }
-        else if (frame.opcode != 0) return flux__websocket_result(-1, "WebSocket binary continuation frame expected");
-        if (frame.length > (uint64_t)max_bytes - total) return flux__websocket_result(-1, "WebSocket binary message exceeds maxBytes");
+        if (!started) { if (frame.opcode != 2) return flux__websocket_fail_read(session, "WebSocket binary message must start with a binary frame"); started = true; }
+        else if (frame.opcode != 0) return flux__websocket_fail_read(session, "WebSocket binary continuation frame expected");
+        if (frame.length > (uint64_t)max_bytes - total) return flux__websocket_fail_read(session, "WebSocket binary message exceeds maxBytes");
         for (size_t index = 0; index < (size_t)frame.length; index += 1) payload[total + index] = (int64_t)frame_payload[index]; total += (size_t)frame.length;
         if (frame.final) break;
     }
