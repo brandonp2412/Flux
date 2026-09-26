@@ -48855,6 +48855,109 @@ fn emit_expr(
                     "invalid contains call reached code generation",
                 ));
             }
+            if sequence_transform(&args[0]).is_some()
+                && (matches!(args[1].kind, ExprKind::Var(_))
+                    || typecheck::constant_primitive_value(&args[1], signatures).is_some())
+            {
+                let mut stages = Vec::new();
+                let source_expr = collect_sequence_transform_chain(&args[0], &mut stages);
+                let source = emit_expr(source_expr, env, signatures)?;
+                let Type::List(source_element) = signatures.canonical_type(&source.ty) else {
+                    return Err(diag(
+                        expr.span,
+                        "transformed contains requires a list source",
+                    ));
+                };
+                let source_element = signatures.canonical_type(&source_element);
+                let transformed_ty = sequence_transform_result_type(
+                    &stages,
+                    &source_element,
+                    env,
+                    signatures,
+                    None,
+                )?;
+                let Type::List(result_element) = transformed_ty else {
+                    return Err(diag(
+                        expr.span,
+                        "transformed contains requires a list result",
+                    ));
+                };
+                let result_element = signatures.canonical_type(&result_element);
+                if !matches!(result_element, Type::Bool | Type::I64 | Type::Str) {
+                    return Err(diag(expr.span, "contains requires a scalar collection key"));
+                }
+                let searched = emit_expr(&args[1], env, signatures)?;
+                if signatures.canonical_type(&searched.ty) != result_element {
+                    return Err(diag(
+                        expr.span,
+                        "contains search value type mismatch reached code generation",
+                    ));
+                }
+                let source_name = format!(
+                    "flux__contains_transform_source_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let searched_name = format!(
+                    "flux__contains_transform_value_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let result_name = format!(
+                    "flux__contains_transform_result_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let index_name = format!(
+                    "flux__contains_transform_index_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let item_name = format!(
+                    "flux__contains_transform_item_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let source_element_c = c_type(&source_element, signatures);
+                let result_element_c = c_type(&result_element, signatures);
+                let mut code = String::new();
+                code.push_str("__extension__ ({ ");
+                code.push_str(&format!(
+                    "struct flux__list {source_name} = {}; {result_element_c} {searched_name} = {}; bool {result_name} = false; ",
+                    source.code, searched.code
+                ));
+                code.push_str(&format!(
+                    "for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ "
+                ));
+                code.push_str(&format!(
+                    "{source_element_c} {item_name} = *(({source_element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({source_element_c}))); "
+                ));
+                let mut temp_counter = 0;
+                let (value_name, value_ty) = emit_sequence_transform_stages(
+                    &mut code,
+                    "",
+                    &stages,
+                    item_name,
+                    source_element,
+                    env,
+                    signatures,
+                    None,
+                    &mut temp_counter,
+                )?;
+                if signatures.canonical_type(&value_ty) != result_element {
+                    return Err(diag(
+                        expr.span,
+                        "transformed contains value type mismatch reached code generation",
+                    ));
+                }
+                let equality = match result_element {
+                    Type::Str => format!("strcmp({searched_name}, {value_name}) == 0"),
+                    Type::Bool | Type::I64 => format!("{searched_name} == {value_name}"),
+                    _ => unreachable!("transformed contains scalar type validated above"),
+                };
+                code.push_str(&format!(
+                    "if ({equality}) {{ {result_name} = true; break; }} }} {result_name}; }})"
+                ));
+                return Ok(EmittedExpr {
+                    code,
+                    ty: Type::Bool,
+                });
+            }
             let collection = emit_expr(&args[0], env, signatures)?;
             let searched = emit_expr(&args[1], env, signatures)?;
             let collection_ty = signatures.canonical_type(&collection.ty);
