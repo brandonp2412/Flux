@@ -78093,6 +78093,128 @@ fn main() -> i64 {
 }
 
 #[test]
+fn websocket_client_rejects_unsolicited_subprotocol_at_runtime() {
+    if Command::new("openssl").arg("version").output().is_err() {
+        return;
+    }
+
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).expect("WebSocket negotiation fixture should bind");
+    let port = listener.local_addr().unwrap().port();
+    let root = std::env::temp_dir().join(format!(
+        "flux-websocket-unsolicited-negotiation-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("WebSocket negotiation fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(
+        &source_path,
+        format!(
+            r#"fn main() -> i64 {{
+    let (socket, connectError) = net.connect("127.0.0.1", {port})
+    if connectError != nil:
+        return 2
+    let (_session, handshakeError) = websocket.connect(socket, "127.0.0.1:{port}")
+    if handshakeError != nil:
+        return 0
+    return 1
+}}
+"#
+        ),
+    )
+    .expect("WebSocket negotiation source should be writable");
+    let binary = root.join("websocket-unsolicited-negotiation");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("WebSocket negotiation fixture should build");
+    assert!(
+        built.status.success(),
+        "WebSocket negotiation build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let fixture_root = root.clone();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("Flux WebSocket client should connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("WebSocket negotiation read timeout should be set");
+        let mut request = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            stream
+                .read_exact(&mut byte)
+                .expect("WebSocket negotiation fixture should receive handshake");
+            request.push(byte[0]);
+            assert!(request.len() <= 8192);
+        }
+        let request = String::from_utf8(request).expect("WebSocket request should be UTF-8");
+        let key = request
+            .lines()
+            .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
+            .expect("WebSocket request should contain a key");
+
+        let sha_input = fixture_root.join("accept-input");
+        let digest = fixture_root.join("accept-digest");
+        fs::write(
+            &sha_input,
+            format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11"),
+        )
+        .expect("WebSocket accept input should be writable");
+        let hashed = Command::new("openssl")
+            .args(["dgst", "-sha1", "-binary", "-out"])
+            .arg(&digest)
+            .arg(&sha_input)
+            .output()
+            .expect("OpenSSL should hash WebSocket accept input");
+        assert!(
+            hashed.status.success(),
+            "WebSocket accept SHA-1 failed: {}",
+            String::from_utf8_lossy(&hashed.stderr)
+        );
+        let encoded = Command::new("openssl")
+            .args(["base64", "-A", "-in"])
+            .arg(&digest)
+            .output()
+            .expect("OpenSSL should encode WebSocket accept digest");
+        assert!(
+            encoded.status.success(),
+            "WebSocket accept Base64 failed: {}",
+            String::from_utf8_lossy(&encoded.stderr)
+        );
+        let accept =
+            String::from_utf8(encoded.stdout).expect("WebSocket accept digest should be ASCII");
+        write!(
+            stream,
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: chat\r\n\r\n"
+        )
+        .expect("WebSocket negotiation fixture should send handshake");
+        stream
+            .flush()
+            .expect("WebSocket negotiation handshake should flush");
+    });
+
+    let run = Command::new(&binary)
+        .output()
+        .expect("WebSocket negotiation client should run");
+    server
+        .join()
+        .expect("WebSocket negotiation fixture should finish");
+    assert!(
+        run.status.success(),
+        "client accepted an unsolicited WebSocket subprotocol: {}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn websocket_handshake_timeout_literals_are_bounded() {
     let connect = check_source(
         r#"fn main() -> i64 {
