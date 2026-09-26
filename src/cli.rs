@@ -10862,7 +10862,9 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
     const TLS_RESUMPTION_SLOTS: &str =
         "static struct flux__tls_resumption_slot flux__tls_resumption_slots[64];";
     const TLS_REGISTERED: &str = "static bool flux__tls_cleanup_registered = false;";
-    const WEBSOCKET_CLIENT_SESSIONS: &str = "static bool flux__websocket_client_sessions[1024];";
+    const WEBSOCKET_CLIENT_SESSIONS: &str = "static int flux__websocket_client_sessions[256];";
+    const WEBSOCKET_CLIENT_SESSION_COUNT: &str =
+        "static size_t flux__websocket_client_session_count = 0;";
     const LINUX_SECURE_SCHEMA: &str = "static const SecretSchema flux__linux_secure_schema = { .name = \"app.flux.secure\", .flags = SECRET_SCHEMA_NONE, .attributes = { { \"application\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { \"key\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { NULL, 0 } } };";
     const MENU_CALLBACK: &str = "static void (*flux__menu_callback)(int64_t) = NULL;";
     const MENU_BAR: &str = "static GtkWidget *flux__menu_bar = NULL;";
@@ -10974,13 +10976,22 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
         isolated = true;
     }
 
-    if prefix.contains(WEBSOCKET_CLIENT_SESSIONS) {
-        partition_prefix = partition_prefix.replacen(
-            WEBSOCKET_CLIENT_SESSIONS,
-            "extern bool flux__websocket_client_sessions[1024];",
-            1,
+    if prefix.contains(WEBSOCKET_CLIENT_SESSIONS) && prefix.contains(WEBSOCKET_CLIENT_SESSION_COUNT)
+    {
+        partition_prefix = partition_prefix
+            .replacen(
+                WEBSOCKET_CLIENT_SESSIONS,
+                "extern int flux__websocket_client_sessions[256];",
+                1,
+            )
+            .replacen(
+                WEBSOCKET_CLIENT_SESSION_COUNT,
+                "extern size_t flux__websocket_client_session_count;",
+                1,
+            );
+        definitions.push_str(
+            "\nint flux__websocket_client_sessions[256];\nsize_t flux__websocket_client_session_count = 0;\n",
         );
-        definitions.push_str("\nbool flux__websocket_client_sessions[1024];\n");
         isolated = true;
     }
 
@@ -13974,7 +13985,7 @@ app OverlayDemo(title: "Overlay")
             "TLS cleanup registration must have exactly one process-wide definition"
         );
 
-        let websocket = "#include <stdbool.h>\n#include <stdint.h>\nstatic bool flux__websocket_client_sessions[1024];\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        let websocket = "#include <stdbool.h>\n#include <stdint.h>\n#include <stddef.h>\nstatic int flux__websocket_client_sessions[256];\nstatic size_t flux__websocket_client_session_count = 0;\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
         let websocket_units = partition_native_c_by_source(websocket)
             .expect("WebSocket client mode state should move into one shared runtime unit");
         assert_eq!(websocket_units.len(), 3);
@@ -13983,10 +13994,20 @@ app OverlayDemo(title: "Overlay")
                 .iter()
                 .filter(|unit| unit
                     .lines()
-                    .any(|line| line == "bool flux__websocket_client_sessions[1024];"))
+                    .any(|line| line == "int flux__websocket_client_sessions[256];"))
                 .count(),
             1,
             "the WebSocket client-mode table must have exactly one process-wide definition"
+        );
+        assert_eq!(
+            websocket_units
+                .iter()
+                .filter(|unit| unit
+                    .lines()
+                    .any(|line| { line == "size_t flux__websocket_client_session_count = 0;" }))
+                .count(),
+            1,
+            "the WebSocket client-mode count must have exactly one process-wide definition"
         );
 
         let linux_secure = "#include <stdint.h>\ntypedef struct { const char *name; int flags; struct { const char *name; int type; } attributes[3]; } SecretSchema;\n#define SECRET_SCHEMA_NONE 0\n#define SECRET_SCHEMA_ATTRIBUTE_STRING 1\nstatic const SecretSchema flux__linux_secure_schema = { .name = \"app.flux.secure\", .flags = SECRET_SCHEMA_NONE, .attributes = { { \"application\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { \"key\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { NULL, 0 } } };\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
