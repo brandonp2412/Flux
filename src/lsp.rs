@@ -1329,8 +1329,16 @@ fn add_qualified_namespace_completions(
                 "fn tls.wrap(socket: i64, serverName: str, caFile: str) -> (i64, error)",
             ),
             (
+                "wrapTimeout",
+                "fn tls.wrapTimeout(socket: i64, serverName: str, caFile: str, timeoutMillis: i64) -> (i64, error)",
+            ),
+            (
                 "listen",
                 "fn tls.listen(socket: i64, certificate: str, key: str) -> (i64, error)",
+            ),
+            (
+                "listenTimeout",
+                "fn tls.listenTimeout(socket: i64, certificate: str, key: str, timeoutMillis: i64) -> (i64, error)",
             ),
             ("resumed", "fn tls.resumed(session: i64) -> (bool, error)"),
             ("pending", "fn tls.pending(session: i64) -> (i64, error)"),
@@ -4688,9 +4696,29 @@ fn signature_help_for_document_cached(
                     vec!["socket: i64", "serverName: str", "caFile: str"],
                     "(i64, error)",
                 ),
+                "wrapTimeout" => (
+                    "tls.wrapTimeout",
+                    vec![
+                        "socket: i64",
+                        "serverName: str",
+                        "caFile: str",
+                        "timeoutMillis: i64",
+                    ],
+                    "(i64, error)",
+                ),
                 "listen" => (
                     "tls.listen",
                     vec!["socket: i64", "certificate: str", "key: str"],
+                    "(i64, error)",
+                ),
+                "listenTimeout" => (
+                    "tls.listenTimeout",
+                    vec![
+                        "socket: i64",
+                        "certificate: str",
+                        "key: str",
+                        "timeoutMillis: i64",
+                    ],
                     "(i64, error)",
                 ),
                 "resumed" => ("tls.resumed", vec!["session: i64"], "(bool, error)"),

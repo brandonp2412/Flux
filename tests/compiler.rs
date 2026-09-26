@@ -26918,9 +26918,11 @@ fn show(value: str) -> void {
 fn main() -> i64 {
     let (socket, connect_error) = net.connect("example.com", 443)
     let (session, tls_error) = tls.wrap(socket, "example.com", "")
+    let (_timed_session, timed_tls_error) = tls.wrapTimeout(socket, "example.com", "", 250)
     let (was_resumed, resumed_error) = tls.resumed(session)
     let (pending_bytes, pending_error) = tls.pending(session)
     let (server_session, server_error) = tls.listen(socket, "server.crt", "server.key")
+    let (_timed_server_session, timed_server_error) = tls.listenTimeout(socket, "server.crt", "server.key", 250)
     let write_error: error = tls.write(session, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
     let (timed_written, timed_complete, timed_write_error) = tls.writeTimeout(session, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n", 0)
     let (received, read_error) = tls.read(session, 1024, show)
@@ -26929,6 +26931,8 @@ fn main() -> i64 {
     let server_close_error: error = tls.close(server_session)
     print(connect_error)
     print(tls_error)
+    print(timed_tls_error)
+    print(timed_server_error)
     print(was_resumed)
     print(resumed_error)
     print(pending_bytes)
@@ -26956,6 +26960,12 @@ fn main() -> i64 {
     assert!(generated.contains("SSL_set_session(session, resumption->session)"));
     assert!(generated.contains("SSL_get1_session(session)"));
     assert!(generated.contains("flux__tls_resumption_slots"));
+    assert!(generated.contains("flux__tls_wrap_timeout("));
+    assert!(generated.contains("flux__tls_listen_timeout("));
+    assert!(generated.contains("TLS handshake timed out"));
+    assert!(generated.contains("TLS server handshake timed out"));
+    assert!(generated.contains("tls.wrapTimeout requires a nonblocking TCP socket"));
+    assert!(generated.contains("tls.listenTimeout requires a nonblocking TCP socket"));
     assert!(generated.contains("flux__tls_resumed("));
     assert!(generated.contains("SSL_session_reused(slot->session) == 1"));
     assert!(generated.contains("flux__tls_pending("));
@@ -26973,7 +26983,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux__net_poll_cancellable(&descriptor, 1, wait_millis)"));
     assert!(generated.contains("SSL_ERROR_WANT_WRITE"));
     assert!(generated.contains("flux__tls_handshake"));
-    assert!(generated.contains("flux__net_poll_cancellable(&descriptor, 1, -1)"));
+    assert!(generated.contains("flux__net_poll_cancellable(&descriptor, 1, wait_millis)"));
     assert!(generated.contains("TLS requires a TCP stream socket"));
     assert!(generated.contains("TLS requires a connected TCP socket"));
     assert!(generated.contains("TLS close cancelled by worker scope"));
@@ -26993,6 +27003,33 @@ fn main() -> i64 {
     assert!(generated.contains("flux__tls_bounded_length(value, 65536"));
     assert!(generated.contains("TLS read contained NUL in text payload"));
     assert!(generated.contains("invalid or closed TLS session"));
+
+    let invalid_wrap_timeout = check_source(
+        r#"fn main() -> i64 {
+    let (_session, _failure) = tls.wrapTimeout(1, "example.com", "", -2)
+    return 0
+}
+"#,
+    )
+    .expect_err("tls.wrapTimeout should reject invalid literal timeouts");
+    assert!(
+        invalid_wrap_timeout
+            .message
+            .contains("tls.wrapTimeout timeoutMillis")
+    );
+    let invalid_listen_timeout = check_source(
+        r#"fn main() -> i64 {
+    let (_session, _failure) = tls.listenTimeout(1, "server.crt", "server.key", 2147483648)
+    return 0
+}
+"#,
+    )
+    .expect_err("tls.listenTimeout should reject invalid literal timeouts");
+    assert!(
+        invalid_listen_timeout
+            .message
+            .contains("tls.listenTimeout timeoutMillis")
+    );
 
     let invalid_resumed = check_source(
         "fn main() -> i64 {\n    let (_resumed, _failure) = tls.resumed(\"invalid\")\n    return 0\n}\n",
@@ -27183,6 +27220,63 @@ fn main() -> i64 {
         String::from_utf8_lossy(&run.stdout),
         "nil\n-1\nTLS requires a TCP stream socket\nnil\n"
     );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn tls_wrap_timeout_expires_against_stalled_peer() {
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).expect("TLS timeout fixture port should bind");
+    let port = listener.local_addr().unwrap().port();
+    let peer = thread::spawn(move || {
+        let (_socket, _) = listener
+            .accept()
+            .expect("TLS timeout fixture should accept");
+        thread::sleep(Duration::from_millis(250));
+    });
+
+    let root = std::env::temp_dir().join(format!("flux-tls-timeout-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("TLS timeout fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(
+        &source_path,
+        format!(
+            r#"
+fn main() -> i64 {{
+    let (socket, connect_error) = net.connect("127.0.0.1", {port})
+    let nonblocking_error: error = net.nonblocking(socket, true)
+    let (session, tls_error) = tls.wrapTimeout(socket, "127.0.0.1", "", 50)
+    print(connect_error)
+    print(nonblocking_error)
+    print(session)
+    print(tls_error)
+    return 0
+}}
+"#
+        ),
+    )
+    .expect("TLS timeout source should be writable");
+    let binary = root.join("tls-timeout");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("TLS timeout binary should build");
+    assert!(
+        built.status.success(),
+        "TLS timeout build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("TLS timeout binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\nnil\n-1\nTLS handshake timed out\n"
+    );
+    peer.join().expect("TLS timeout fixture peer should finish");
     let _ = fs::remove_dir_all(&root);
 }
 

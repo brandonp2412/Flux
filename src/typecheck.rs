@@ -8500,6 +8500,40 @@ fn check_qualified_call(
                 require_type(args[2].span, &Type::Str, &ca_file, "tls.wrap caFile")?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "wrapTimeout" => {
+                if args.len() != 4 {
+                    return Err(diag(
+                        span,
+                        &format!("tls.wrapTimeout expects 4 arguments, got {}", args.len()),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &socket, "tls.wrapTimeout socket")?;
+                let server_name = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::Str,
+                    &server_name,
+                    "tls.wrapTimeout serverName",
+                )?;
+                let ca_file = type_of_expr(&args[2], env, signatures)?;
+                require_type(args[2].span, &Type::Str, &ca_file, "tls.wrapTimeout caFile")?;
+                let timeout = type_of_expr(&args[3], env, signatures)?;
+                require_type(
+                    args[3].span,
+                    &Type::I64,
+                    &timeout,
+                    "tls.wrapTimeout timeoutMillis",
+                )?;
+                if matches!(constant_primitive_value(&args[3], signatures), Some(ConstantValue::I64(value)) if !(-1..=i64::from(i32::MAX)).contains(&value))
+                {
+                    return Err(diag(
+                        args[3].span,
+                        "tls.wrapTimeout timeoutMillis must be -1 or between 0 and 2147483647",
+                    ));
+                }
+                return Ok(vec![Type::I64, Type::Error]);
+            }
             "listen" => {
                 if args.len() != 3 {
                     return Err(diag(
@@ -8518,6 +8552,45 @@ fn check_qualified_call(
                 )?;
                 let key = type_of_expr(&args[2], env, signatures)?;
                 require_type(args[2].span, &Type::Str, &key, "tls.listen key")?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
+            "listenTimeout" => {
+                if args.len() != 4 {
+                    return Err(diag(
+                        span,
+                        &format!("tls.listenTimeout expects 4 arguments, got {}", args.len()),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &socket,
+                    "tls.listenTimeout socket",
+                )?;
+                let certificate = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::Str,
+                    &certificate,
+                    "tls.listenTimeout certificate",
+                )?;
+                let key = type_of_expr(&args[2], env, signatures)?;
+                require_type(args[2].span, &Type::Str, &key, "tls.listenTimeout key")?;
+                let timeout = type_of_expr(&args[3], env, signatures)?;
+                require_type(
+                    args[3].span,
+                    &Type::I64,
+                    &timeout,
+                    "tls.listenTimeout timeoutMillis",
+                )?;
+                if matches!(constant_primitive_value(&args[3], signatures), Some(ConstantValue::I64(value)) if !(-1..=i64::from(i32::MAX)).contains(&value))
+                {
+                    return Err(diag(
+                        args[3].span,
+                        "tls.listenTimeout timeoutMillis must be -1 or between 0 and 2147483647",
+                    ));
+                }
                 return Ok(vec![Type::I64, Type::Error]);
             }
             "resumed" => {

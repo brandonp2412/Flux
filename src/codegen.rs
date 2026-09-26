@@ -10264,20 +10264,39 @@ static void flux__tls_cleanup(void) { for (int index = 0; index < 64; index += 1
 static inline void flux__tls_register_cleanup(void) { if (!flux__tls_cleanup_registered) { (void)atexit(flux__tls_cleanup); flux__tls_cleanup_registered = true; } }
 static inline bool flux__tls_bounded_length(const char *value, size_t maximum, size_t *length) { if (value == NULL || length == NULL) return false; size_t cursor = 0; while (cursor <= maximum && value[cursor] != '\0') cursor += 1; if (cursor > maximum) return false; *length = cursor; return true; }
 static inline const char *flux__tls_validate_socket(int socket_handle) { int socket_type = 0; socklen_t socket_type_length = sizeof(socket_type); if (getsockopt(socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &socket_type_length) != 0) return "failed to inspect TLS socket"; if (socket_type != SOCK_STREAM) return "TLS requires a TCP stream socket"; struct sockaddr_storage peer; socklen_t peer_length = sizeof(peer); if (getpeername(socket_handle, (struct sockaddr *)&peer, &peer_length) != 0) return "TLS requires a connected TCP socket"; return NULL; }
-static inline int flux__tls_handshake(SSL *session, int socket_handle, bool server) {
+static inline int flux__tls_handshake(SSL *session, int socket_handle, bool server, int64_t timeout_millis) {
+    int64_t deadline = -1;
+    if (timeout_millis >= 0) {
+        struct timespec now;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -3;
+        deadline = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + timeout_millis;
+    }
     for (;;) {
+        if (flux__worker_cancelled()) return -2;
         int result = server ? SSL_accept(session) : SSL_connect(session);
         if (result == 1) return 1;
         int ssl_error = SSL_get_error(session, result);
         if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE) return 0;
+        int wait_millis = -1;
+        if (deadline >= 0) {
+            struct timespec now;
+            if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -3;
+            int64_t current = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+            if (current >= deadline) return -1;
+            int64_t remaining = deadline - current;
+            wait_millis = remaining > INT_MAX ? INT_MAX : (int)remaining;
+        }
         struct pollfd descriptor = { .fd = socket_handle, .events = ssl_error == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT, .revents = 0 };
-        int ready = flux__net_poll_cancellable(&descriptor, 1, -1);
-        if (ready <= 0 || (descriptor.revents & (POLLNVAL | POLLERR | POLLHUP)) != 0) return 0;
+        int ready = flux__net_poll_cancellable(&descriptor, 1, wait_millis);
+        if (ready == -2) return -2;
+        if (ready == 0) return -1;
+        if (ready < 0 || (descriptor.revents & (POLLNVAL | POLLERR | POLLHUP)) != 0) return -3;
     }
 }
-static inline struct flux__net_i64_error flux__tls_wrap(int64_t socket_handle, const char *server_name, const char *ca_file) {
+static inline struct flux__net_i64_error flux__tls_wrap_with_timeout(int64_t socket_handle, const char *server_name, const char *ca_file, int64_t timeout_millis) {
     if (socket_handle < 0 || socket_handle > INT_MAX || server_name == NULL || server_name[0] == '\0' || ca_file == NULL) return flux__tls_result(-1, "invalid TLS wrap arguments");
     const char *socket_error = flux__tls_validate_socket((int)socket_handle); if (socket_error != NULL) return flux__tls_result(-1, socket_error);
+    if (timeout_millis >= 0) { int flags = fcntl((int)socket_handle, F_GETFL, 0); if (flags < 0 || (flags & O_NONBLOCK) == 0) return flux__tls_result(-1, "tls.wrapTimeout requires a nonblocking TCP socket"); }
     size_t server_name_length = 0; size_t ca_file_length = 0;
     if (!flux__tls_bounded_length(server_name, 65536, &server_name_length) || !flux__tls_bounded_length(ca_file, 65536, &ca_file_length)) return flux__tls_result(-1, "TLS wrap string exceeds 65536 bytes");
     (void)server_name_length; (void)ca_file_length;
@@ -10292,15 +10311,24 @@ static inline struct flux__net_i64_error flux__tls_wrap(int64_t socket_handle, c
     struct flux__tls_resumption_slot *resumption = flux__tls_resumption_for(server_name, ca_file);
     if (resumption != NULL) (void)SSL_set_session(session, resumption->session);
     X509_VERIFY_PARAM *parameters = SSL_get0_param(session);
-    if (parameters == NULL || X509_VERIFY_PARAM_set1_host(parameters, server_name, 0) != 1 || !flux__tls_handshake(session, (int)socket_handle, false) || SSL_get_verify_result(session) != X509_V_OK) { SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "TLS handshake or certificate verification failed"); }
+    if (parameters == NULL || X509_VERIFY_PARAM_set1_host(parameters, server_name, 0) != 1) { SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "failed to configure TLS hostname verification"); }
+    int handshake = flux__tls_handshake(session, (int)socket_handle, false, timeout_millis);
+    if (handshake != 1) { SSL_free(session); SSL_CTX_free(context); if (handshake == -1) return flux__tls_result(-1, "TLS handshake timed out"); if (handshake == -2) return flux__tls_result(-1, "TLS handshake cancelled by worker scope"); if (handshake == -3) return flux__tls_result(-1, "TLS handshake readiness failed"); return flux__tls_result(-1, "TLS handshake failed"); }
+    if (SSL_get_verify_result(session) != X509_V_OK) { SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "TLS certificate verification failed"); }
     flux__tls_register_cleanup();
     flux__tls_remember_resumption(server_name, server_name_length, ca_file, ca_file_length, SSL_get1_session(session));
     for (int index = 0; index < 64; index += 1) if (!flux__tls_slots[index].used) { flux__tls_slots[index] = (struct flux__tls_slot){ .context = context, .session = session, .socket = (int)socket_handle, .used = true }; flux__net_unregister_socket((int)socket_handle); flux__tls_register_cleanup(); return flux__tls_result((int64_t)index + 1, NULL); }
     SSL_shutdown(session); SSL_free(session); SSL_CTX_free(context); flux__net_unregister_socket((int)socket_handle); close((int)socket_handle); return flux__tls_result(-1, "too many active TLS sessions");
 }
-static inline struct flux__net_i64_error flux__tls_listen(int64_t socket_handle, const char *certificate, const char *key) {
+static inline struct flux__net_i64_error flux__tls_wrap(int64_t socket_handle, const char *server_name, const char *ca_file) { return flux__tls_wrap_with_timeout(socket_handle, server_name, ca_file, -1); }
+static inline struct flux__net_i64_error flux__tls_wrap_timeout(int64_t socket_handle, const char *server_name, const char *ca_file, int64_t timeout_millis) {
+    if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__tls_result(-1, "tls.wrapTimeout timeoutMillis must be -1 or between 0 and 2147483647");
+    return flux__tls_wrap_with_timeout(socket_handle, server_name, ca_file, timeout_millis);
+}
+static inline struct flux__net_i64_error flux__tls_listen_with_timeout(int64_t socket_handle, const char *certificate, const char *key, int64_t timeout_millis) {
     if (socket_handle < 0 || socket_handle > INT_MAX || certificate == NULL || certificate[0] == '\0' || key == NULL || key[0] == '\0') return flux__tls_result(-1, "invalid TLS server arguments");
     const char *socket_error = flux__tls_validate_socket((int)socket_handle); if (socket_error != NULL) return flux__tls_result(-1, socket_error);
+    if (timeout_millis >= 0) { int flags = fcntl((int)socket_handle, F_GETFL, 0); if (flags < 0 || (flags & O_NONBLOCK) == 0) return flux__tls_result(-1, "tls.listenTimeout requires a nonblocking TCP socket"); }
     size_t certificate_length = 0; size_t key_length = 0;
     if (!flux__tls_bounded_length(certificate, 65536, &certificate_length) || !flux__tls_bounded_length(key, 65536, &key_length)) return flux__tls_result(-1, "TLS server path exceeds 65536 bytes");
     (void)certificate_length; (void)key_length;
@@ -10308,9 +10336,16 @@ static inline struct flux__net_i64_error flux__tls_listen(int64_t socket_handle,
     if (context == NULL) return flux__tls_result(-1, "failed to create TLS server context");
     if (SSL_CTX_use_certificate_file(context, certificate, SSL_FILETYPE_PEM) != 1 || SSL_CTX_use_PrivateKey_file(context, key, SSL_FILETYPE_PEM) != 1 || SSL_CTX_check_private_key(context) != 1) { SSL_CTX_free(context); return flux__tls_result(-1, "failed to load or validate TLS server certificate"); }
     SSL *session = SSL_new(context);
-    if (session == NULL || SSL_set_fd(session, (int)socket_handle) != 1 || !flux__tls_handshake(session, (int)socket_handle, true)) { if (session != NULL) SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "TLS server handshake failed"); }
+    if (session == NULL || SSL_set_fd(session, (int)socket_handle) != 1) { if (session != NULL) SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "failed to configure TLS server session"); }
+    int handshake = flux__tls_handshake(session, (int)socket_handle, true, timeout_millis);
+    if (handshake != 1) { SSL_free(session); SSL_CTX_free(context); if (handshake == -1) return flux__tls_result(-1, "TLS server handshake timed out"); if (handshake == -2) return flux__tls_result(-1, "TLS server handshake cancelled by worker scope"); if (handshake == -3) return flux__tls_result(-1, "TLS server handshake readiness failed"); return flux__tls_result(-1, "TLS server handshake failed"); }
     for (int index = 0; index < 64; index += 1) if (!flux__tls_slots[index].used) { flux__tls_slots[index] = (struct flux__tls_slot){ .context = context, .session = session, .socket = (int)socket_handle, .used = true }; flux__net_unregister_socket((int)socket_handle); flux__tls_register_cleanup(); return flux__tls_result((int64_t)index + 1, NULL); }
     SSL_shutdown(session); SSL_free(session); SSL_CTX_free(context); flux__net_unregister_socket((int)socket_handle); close((int)socket_handle); return flux__tls_result(-1, "too many active TLS sessions");
+}
+static inline struct flux__net_i64_error flux__tls_listen(int64_t socket_handle, const char *certificate, const char *key) { return flux__tls_listen_with_timeout(socket_handle, certificate, key, -1); }
+static inline struct flux__net_i64_error flux__tls_listen_timeout(int64_t socket_handle, const char *certificate, const char *key, int64_t timeout_millis) {
+    if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__tls_result(-1, "tls.listenTimeout timeoutMillis must be -1 or between 0 and 2147483647");
+    return flux__tls_listen_with_timeout(socket_handle, certificate, key, timeout_millis);
 }
 static inline int flux__tls_wait_retry(struct flux__tls_slot *slot, int ssl_error) {
     struct pollfd descriptor = { .fd = slot->socket, .events = ssl_error == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT, .revents = 0 };
@@ -49596,6 +49631,20 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
+            "wrapTimeout" if args.len() == 4 => {
+                let socket = emit_expr(&args[0], env, signatures)?;
+                let server_name = emit_expr(&args[1], env, signatures)?;
+                let ca_file = emit_expr(&args[2], env, signatures)?;
+                let timeout = emit_expr(&args[3], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__tls_wrap_timeout({}, {}, {}, {})",
+                        socket.code, server_name.code, ca_file.code, timeout.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
             "listen" if args.len() == 3 => {
                 let socket = emit_expr(&args[0], env, signatures)?;
                 let certificate = emit_expr(&args[1], env, signatures)?;
@@ -49604,6 +49653,20 @@ fn emit_qualified_call(
                     format!(
                         "flux__tls_listen({}, {}, {})",
                         socket.code, certificate.code, key.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "listenTimeout" if args.len() == 4 => {
+                let socket = emit_expr(&args[0], env, signatures)?;
+                let certificate = emit_expr(&args[1], env, signatures)?;
+                let key = emit_expr(&args[2], env, signatures)?;
+                let timeout = emit_expr(&args[3], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__tls_listen_timeout({}, {}, {}, {})",
+                        socket.code, certificate.code, key.code, timeout.code
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
@@ -90295,6 +90358,26 @@ fn emit_cfg_multi_expr_direct(
                                 format!(
                                     "{helper}({}, {}, {})",
                                     rendered[0], rendered[1], rendered[2]
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
+                    }
+                    "wrapTimeout" | "listenTimeout" if arguments.len() == 4 => {
+                        let helper = if name == "wrapTimeout" {
+                            "flux__tls_wrap_timeout"
+                        } else {
+                            "flux__tls_listen_timeout"
+                        };
+                        let call = emit_cfg_ordered_call_expression_direct(
+                            arguments,
+                            &[Type::I64, Type::Str, Type::Str, Type::I64],
+                            env,
+                            signatures,
+                            |rendered| {
+                                format!(
+                                    "{helper}({}, {}, {}, {})",
+                                    rendered[0], rendered[1], rendered[2], rendered[3]
                                 )
                             },
                         )?;
