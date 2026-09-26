@@ -78040,6 +78040,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("WebSocket client surface should lower");
     assert!(generated.contains("flux__websocket_connect("));
     assert!(generated.contains("flux__websocket_connect_timeout("));
+    assert!(generated.contains("flux__websocket_response_headers_valid"));
     assert!(generated.contains("WebSocket connect handshake timed out"));
     assert!(generated.contains("flux__websocket_deadline_wait("));
     assert!(generated.contains("WebSocket requires a TCP socket"));
@@ -78052,7 +78053,9 @@ fn main() -> i64 {
     assert!(generated.contains("/dev/urandom"));
     assert!(generated.contains("flux__websocket_response_header(response, response_length, \"Sec-WebSocket-Accept\", expected, false)"));
     assert!(generated.contains("flux__websocket_response_has_header(response, response_length, \"Sec-WebSocket-Extensions\")"));
-    assert!(generated.contains("flux__websocket_response_has_header(response, response_length, \"Sec-WebSocket-Protocol\")"));
+    assert!(generated.contains(
+        "flux__websocket_response_has_header(response, response_length, \"Sec-WebSocket-Protocol\")"
+    ));
     assert!(generated.contains("flux__websocket_response_header(response, response_length, \"Upgrade\", \"websocket\", true)"));
     assert!(generated.contains("if (seen) return 0;"));
     assert!(generated.contains(
@@ -78236,6 +78239,9 @@ fn main() -> i64 {
     assert!(generated.contains("key[22] != '=' || key[23] != '='"));
     assert!(generated.contains("WebSocket handshake has invalid Sec-WebSocket-Key"));
     assert!(generated.contains("WebSocket handshake has duplicate Sec-WebSocket-Version"));
+    assert!(generated.contains("folded WebSocket headers are not supported"));
+    assert!(generated.contains("invalid WebSocket header name"));
+    assert!(generated.contains("invalid WebSocket header value"));
 }
 
 #[test]
