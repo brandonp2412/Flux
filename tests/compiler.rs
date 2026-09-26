@@ -78344,6 +78344,8 @@ fn main() -> i64 {
     assert!(generated.contains("WebSocket binary byte list has an invalid element stride"));
     assert!(generated.contains("PTRDIFF_MAX / (uint64_t)stride"));
     assert!(generated.contains("WebSocket binary byte values must be between 0 and 255"));
+    assert!(generated.contains("flux__websocket_fail_write(session, \"failed to send WebSocket binary frame\")"));
+    assert!(generated.contains("(void)flux__websocket_release(session); return error;"));
 }
 
 #[test]
