@@ -78390,9 +78390,12 @@ fn main() -> i64 {{
     if handshakeError != nil:
         return 3
     let (_bytes, readError) = websocket.readText(session, 64, onText)
-    if readError != nil:
-        return 0
-    return 4
+    if readError == nil:
+        return 4
+    let writeError: error = websocket.writeText(session, "should fail")
+    if writeError == nil:
+        return 5
+    return 0
 }}
 "#
     );
