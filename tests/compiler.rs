@@ -77586,6 +77586,47 @@ fn main() -> i64 {
 }
 
 #[test]
+fn generic_socket_close_forgets_websocket_session_role() {
+    let source = r#"
+fn main() -> i64 {
+    let (socket, failure) = net.connect("127.0.0.1", 1)
+    if failure != nil:
+        return 1
+    let (session, upgradeFailure) = websocket.connect(socket, "127.0.0.1:1")
+    if upgradeFailure != nil:
+        return 2
+    let closeFailure: error = net.close(session)
+    if closeFailure != nil:
+        return 3
+    return 0
+}
+"#;
+    check_source(source).expect("WebSocket generic-close fixture should typecheck");
+    let generated = compile_to_c(source).expect("WebSocket generic-close fixture should lower");
+    assert!(
+        generated.contains("static inline void flux__websocket_forget_session(int64_t session);")
+    );
+    assert!(generated.contains(
+        "flux__websocket_forget_session(socket_handle); int result = close((int)socket_handle)"
+    ));
+
+    let c_path =
+        std::env::temp_dir().join(format!("flux-websocket-net-close-{}.c", std::process::id()));
+    fs::write(&c_path, &generated).expect("WebSocket generic-close C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c17", "-fsyntax-only"])
+        .arg(&c_path)
+        .output()
+        .expect("clang should validate WebSocket generic-close C");
+    assert!(
+        compile.status.success(),
+        "WebSocket generic-close C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let _ = fs::remove_file(c_path);
+}
+
+#[test]
 fn binary_socket_reads_preserve_nul_bytes_in_borrowed_byte_views() {
     let source = r#"
 fn consume(_socket: i64, bytes: i64[]) -> void {

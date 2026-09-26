@@ -9143,7 +9143,11 @@ static inline const char *flux__net_http_send_bytes_response(int64_t socket_hand
         out.push_str("static inline struct flux__net_bool_error flux__net_wait_writable(int64_t socket_handle, int64_t timeout_millis) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_bool_result(false, \"invalid socket handle\"); if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_bool_result(false, \"waitWritable timeoutMillis must be -1 or between 0 and 2147483647\"); struct pollfd descriptor = { .fd = (int)socket_handle, .events = POLLOUT, .revents = 0 }; int result = flux__net_poll_cancellable(&descriptor, 1, timeout_millis); if (result == -2) return flux__net_bool_result(false, \"socket readiness wait cancelled by worker scope\"); if (result < 0) return flux__net_bool_result(false, \"failed to wait for socket writability\"); if (result == 0) return flux__net_bool_result(false, NULL); if ((descriptor.revents & POLLNVAL) != 0) return flux__net_bool_result(false, \"invalid socket handle\"); if ((descriptor.revents & (POLLERR | POLLHUP)) != 0) return flux__net_bool_result(false, \"socket readiness failed\"); return flux__net_bool_result((descriptor.revents & POLLOUT) != 0, NULL); }\n");
     }
     if runtime_usage.contains("flux__net_close(") {
-        out.push_str("static inline const char *flux__net_close(int64_t socket_handle) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; int result = close((int)socket_handle); flux__net_unregister_socket((int)socket_handle); return result == 0 ? NULL : \"failed to close socket\"; }\n");
+        if runtime_usage.contains("flux__websocket_") {
+            out.push_str("static inline void flux__websocket_forget_session(int64_t session);\nstatic inline const char *flux__net_close(int64_t socket_handle) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; flux__websocket_forget_session(socket_handle); int result = close((int)socket_handle); flux__net_unregister_socket((int)socket_handle); return result == 0 ? NULL : \"failed to close socket\"; }\n");
+        } else {
+            out.push_str("static inline const char *flux__net_close(int64_t socket_handle) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; int result = close((int)socket_handle); flux__net_unregister_socket((int)socket_handle); return result == 0 ? NULL : \"failed to close socket\"; }\n");
+        }
     }
 
     if uses_locale && !uses_android {
