@@ -48668,6 +48668,109 @@ fn emit_expr(
             index,
             optional,
         } => {
+            if !*optional
+                && sequence_transform(base).is_some()
+                && let Some(ConstantValue::I64(static_index)) =
+                    typecheck::constant_primitive_value(index, signatures)
+                && static_index >= 0
+            {
+                let mut stages = Vec::new();
+                let source_expr = collect_sequence_transform_chain(base, &mut stages);
+                let source = emit_expr(source_expr, env, signatures)?;
+                let Type::List(source_element) = signatures.canonical_type(&source.ty) else {
+                    return Err(diag(
+                        expr.span,
+                        "transformed list index requires a list source",
+                    ));
+                };
+                let source_element = signatures.canonical_type(&source_element);
+                let transformed_ty = sequence_transform_result_type(
+                    &stages,
+                    &source_element,
+                    env,
+                    signatures,
+                    None,
+                )?;
+                let Type::List(result_element) = transformed_ty else {
+                    return Err(diag(
+                        expr.span,
+                        "transformed list index requires a list result",
+                    ));
+                };
+                let result_element = signatures.canonical_type(&result_element);
+                if !signatures.is_copy_type(&result_element) {
+                    return Err(diag(
+                        expr.span,
+                        "transformed list index requires a Copy result",
+                    ));
+                }
+                let source_name = format!(
+                    "flux__index_transform_source_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let source_index_name = format!(
+                    "flux__index_transform_source_index_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let output_index_name = format!(
+                    "flux__index_transform_output_index_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let item_name = format!(
+                    "flux__index_transform_item_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let result_name = format!(
+                    "flux__index_transform_result_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let found_name = format!(
+                    "flux__index_transform_found_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let source_element_c = c_type(&source_element, signatures);
+                let result_element_c = c_type(&result_element, signatures);
+                let mut code = String::new();
+                code.push_str("__extension__ ({ ");
+                code.push_str(&format!(
+                    "struct flux__list {source_name} = {}; {result_element_c} {result_name}; bool {found_name} = false; size_t {output_index_name} = 0; ",
+                    source.code
+                ));
+                code.push_str(&format!(
+                    "for (size_t {source_index_name} = 0; {source_index_name} < {source_name}.len; ++{source_index_name}) {{ "
+                ));
+                code.push_str(&format!(
+                    "{source_element_c} {item_name} = *(({source_element_c} *)flux_list_at_unchecked({source_name}, {source_index_name}, sizeof({source_element_c}))); "
+                ));
+                let mut temp_counter = 0;
+                let (value_name, value_ty) = emit_sequence_transform_stages(
+                    &mut code,
+                    "",
+                    &stages,
+                    item_name,
+                    source_element,
+                    env,
+                    signatures,
+                    None,
+                    &mut temp_counter,
+                )?;
+                if signatures.canonical_type(&value_ty) != result_element {
+                    return Err(diag(
+                        expr.span,
+                        "transformed list index value type mismatch reached code generation",
+                    ));
+                }
+                code.push_str(&format!(
+                    "if ({output_index_name} == (size_t)INT64_C({static_index})) {{ {result_name} = {value_name}; {found_name} = true; }} ++{output_index_name}; }} "
+                ));
+                code.push_str(&format!(
+                    r#"if (!{found_name}) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {result_name}; }})"#
+                ));
+                return Ok(EmittedExpr {
+                    code,
+                    ty: result_element,
+                });
+            }
             let base_value = emit_expr(base, env, signatures)?;
             let index_value = emit_expr(index, env, signatures)?;
             let result_ty = typecheck::index_result_type(
