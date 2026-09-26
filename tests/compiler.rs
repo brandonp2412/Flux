@@ -78235,6 +78235,7 @@ fn main() -> i64 {
     assert!(generated.contains("length != 24"));
     assert!(generated.contains("key[22] != '=' || key[23] != '='"));
     assert!(generated.contains("WebSocket handshake has invalid Sec-WebSocket-Key"));
+    assert!(generated.contains("WebSocket handshake has duplicate Sec-WebSocket-Version"));
 }
 
 #[test]
