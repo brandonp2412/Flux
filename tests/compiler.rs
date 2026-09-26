@@ -78010,6 +78010,14 @@ fn main() -> i64 {
     assert!(generated.contains("WebSocket client handshake contains NUL"));
     assert!(generated.contains("flux__websocket_is_client(session)"));
     assert!(generated.contains("flux__websocket_client_sessions[256]"));
+    assert!(
+        generated.contains("atomic_flag flux__websocket_client_sessions_lock = ATOMIC_FLAG_INIT")
+    );
+    assert!(
+        generated
+            .contains("atomic_flag_test_and_set_explicit(&flux__websocket_client_sessions_lock")
+    );
+    assert!(generated.contains("atomic_flag_clear_explicit(&flux__websocket_client_sessions_lock"));
     assert!(generated.contains("flux__websocket_mark_client(socket_handle)"));
     assert!(generated.contains("flux__websocket_forget_client(socket_handle)"));
     assert!(!generated.contains("session < 1024 && flux__websocket_client_sessions[session]"));
