@@ -2645,7 +2645,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__tls_")
         || runtime_usage.contains("flux__websocket_")
     {
-        out.push_str("#include <limits.h>\n");
+        out.push_str("#include <limits.h>\n#include <stdatomic.h>\n");
         if !runtime_usage.contains("flux__url_") {
             out.push_str("#include <strings.h>\n");
         }
@@ -6839,28 +6839,42 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         out.push_str(r#"static int flux__net_owned_sockets[256];
 static size_t flux__net_owned_socket_count = 0;
 static bool flux__net_owned_sockets_registered = false;
+static atomic_flag flux__net_owned_sockets_lock = ATOMIC_FLAG_INIT;
+static inline void flux__net_lock_owned_sockets(void) { while (atomic_flag_test_and_set_explicit(&flux__net_owned_sockets_lock, memory_order_acquire)) {} }
+static inline void flux__net_unlock_owned_sockets(void) { atomic_flag_clear_explicit(&flux__net_owned_sockets_lock, memory_order_release); }
 static void flux__net_cleanup_sockets(void) {
+    flux__net_lock_owned_sockets();
     while (flux__net_owned_socket_count > 0) {
         int socket_handle = flux__net_owned_sockets[--flux__net_owned_socket_count];
         if (socket_handle >= 0) close(socket_handle);
     }
+    flux__net_unlock_owned_sockets();
 }
 static inline bool flux__net_register_socket(int socket_handle) {
-    if (socket_handle < 0 || flux__net_owned_socket_count >= sizeof(flux__net_owned_sockets) / sizeof(flux__net_owned_sockets[0])) return false;
+    if (socket_handle < 0) return false;
+    flux__net_lock_owned_sockets();
+    if (flux__net_owned_socket_count >= sizeof(flux__net_owned_sockets) / sizeof(flux__net_owned_sockets[0])) {
+        flux__net_unlock_owned_sockets();
+        return false;
+    }
     if (!flux__net_owned_sockets_registered) {
         (void)atexit(flux__net_cleanup_sockets);
         flux__net_owned_sockets_registered = true;
     }
     flux__net_owned_sockets[flux__net_owned_socket_count++] = socket_handle;
+    flux__net_unlock_owned_sockets();
     return true;
 }
 static inline void flux__net_unregister_socket(int socket_handle) {
+    flux__net_lock_owned_sockets();
     for (size_t index = 0; index < flux__net_owned_socket_count; ++index) {
         if (flux__net_owned_sockets[index] == socket_handle) {
             flux__net_owned_sockets[index] = flux__net_owned_sockets[--flux__net_owned_socket_count];
+            flux__net_unlock_owned_sockets();
             return;
         }
     }
+    flux__net_unlock_owned_sockets();
 }
 "#);
     }

@@ -10858,6 +10858,8 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
     const NET_SOCKETS: &str = "static int flux__net_owned_sockets[256];";
     const NET_SOCKET_COUNT: &str = "static size_t flux__net_owned_socket_count = 0;";
     const NET_REGISTERED: &str = "static bool flux__net_owned_sockets_registered = false;";
+    const NET_SOCKET_LOCK: &str =
+        "static atomic_flag flux__net_owned_sockets_lock = ATOMIC_FLAG_INIT;";
     const TLS_SLOTS: &str = "static struct flux__tls_slot flux__tls_slots[64];";
     const TLS_RESUMPTION_SLOTS: &str =
         "static struct flux__tls_resumption_slot flux__tls_resumption_slots[64];";
@@ -10931,6 +10933,7 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
     if prefix.contains(NET_SOCKETS)
         && prefix.contains(NET_SOCKET_COUNT)
         && prefix.contains(NET_REGISTERED)
+        && prefix.contains(NET_SOCKET_LOCK)
     {
         partition_prefix = partition_prefix
             .replacen(NET_SOCKETS, "extern int flux__net_owned_sockets[256];", 1)
@@ -10943,9 +10946,14 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
                 NET_REGISTERED,
                 "extern bool flux__net_owned_sockets_registered;",
                 1,
+            )
+            .replacen(
+                NET_SOCKET_LOCK,
+                "extern atomic_flag flux__net_owned_sockets_lock;",
+                1,
             );
         definitions.push_str(
-            "\nint flux__net_owned_sockets[256];\nsize_t flux__net_owned_socket_count = 0;\nbool flux__net_owned_sockets_registered = false;\n",
+            "\nint flux__net_owned_sockets[256];\nsize_t flux__net_owned_socket_count = 0;\nbool flux__net_owned_sockets_registered = false;\natomic_flag flux__net_owned_sockets_lock = ATOMIC_FLAG_INIT;\n",
         );
         isolated = true;
     }
@@ -13935,7 +13943,7 @@ app OverlayDemo(title: "Overlay")
             "cleanup registration must also remain process-wide"
         );
 
-        let network = "#include <stdbool.h>\n#include <stddef.h>\nstatic int flux__net_owned_sockets[256];\nstatic size_t flux__net_owned_socket_count = 0;\nstatic bool flux__net_owned_sockets_registered = false;\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        let network = "#include <stdbool.h>\n#include <stddef.h>\n#include <stdatomic.h>\nstatic int flux__net_owned_sockets[256];\nstatic size_t flux__net_owned_socket_count = 0;\nstatic bool flux__net_owned_sockets_registered = false;\nstatic atomic_flag flux__net_owned_sockets_lock = ATOMIC_FLAG_INIT;\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
         let network_units = partition_native_c_by_source(network)
             .expect("network socket ownership state should move into one shared runtime unit");
         assert_eq!(network_units.len(), 3);
@@ -13948,6 +13956,16 @@ app OverlayDemo(title: "Overlay")
                 .count(),
             1,
             "the network socket registry must have exactly one process-wide definition"
+        );
+        assert_eq!(
+            network_units
+                .iter()
+                .filter(|unit| unit.lines().any(|line| {
+                    line == "atomic_flag flux__net_owned_sockets_lock = ATOMIC_FLAG_INIT;"
+                }))
+                .count(),
+            1,
+            "the network socket registry lock must have exactly one process-wide definition"
         );
         assert_eq!(
             network_units

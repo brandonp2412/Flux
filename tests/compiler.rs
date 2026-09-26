@@ -77516,6 +77516,9 @@ fn main() -> i64 {
     assert!(generated.contains("flux__net_cleanup_sockets"));
     assert!(generated.contains("atexit(flux__net_cleanup_sockets)"));
     assert!(generated.contains("flux__net_register_socket(fd)"));
+    assert!(generated.contains("atomic_flag flux__net_owned_sockets_lock = ATOMIC_FLAG_INIT"));
+    assert!(generated.contains("atomic_flag_test_and_set_explicit(&flux__net_owned_sockets_lock"));
+    assert!(generated.contains("atomic_flag_clear_explicit(&flux__net_owned_sockets_lock"));
     assert!(generated.contains(
         "int result = close((int)socket_handle); flux__net_unregister_socket((int)socket_handle); return result == 0 ? NULL : \"failed to close socket\""
     ));
