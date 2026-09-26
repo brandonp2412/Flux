@@ -78345,6 +78345,11 @@ fn main() -> i64 {
     assert!(generated.contains("PTRDIFF_MAX / (uint64_t)stride"));
     assert!(generated.contains("WebSocket binary byte values must be between 0 and 255"));
     assert!(generated.contains("flux__websocket_fail_write(session, \"failed to send WebSocket binary frame\")"));
+    let binary_mask = generated.find("failed to create WebSocket binary frame mask").unwrap();
+    let binary_header = generated[binary_mask..]
+        .find("flux__websocket_write_all((int)session, header, header_length)")
+        .unwrap();
+    assert!(binary_header > 0);
     assert!(generated.contains("(void)flux__websocket_release(session); return error;"));
 }
 
