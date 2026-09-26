@@ -77914,6 +77914,9 @@ fn main() -> i64 {
     assert!(generated.contains("WebSocket handshake is missing required upgrade headers"));
     assert!(generated.contains("WebSocket handshake is missing Sec-WebSocket-Key"));
     assert!(generated.contains("WebSocket handshake has duplicate Sec-WebSocket-Key"));
+    assert!(generated.contains("WebSocket handshake is missing Host"));
+    assert!(generated.contains("WebSocket handshake has duplicate Host"));
+    assert!(generated.contains("WebSocket handshake has empty Host"));
     assert!(generated.contains("upgrade = upgrade ||"));
     assert!(generated.contains("connection = connection ||"));
     assert!(generated.contains("WebSocket handshake contains NUL"));
