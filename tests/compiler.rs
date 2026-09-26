@@ -78051,6 +78051,8 @@ fn main() -> i64 {
     assert!(!generated.contains("char *status_end = strstr(response, \"\\r\\n\")"));
     assert!(generated.contains("/dev/urandom"));
     assert!(generated.contains("flux__websocket_response_header(response, response_length, \"Sec-WebSocket-Accept\", expected, false)"));
+    assert!(generated.contains("flux__websocket_response_has_header(response, response_length, \"Sec-WebSocket-Extensions\")"));
+    assert!(generated.contains("flux__websocket_response_has_header(response, response_length, \"Sec-WebSocket-Protocol\")"));
     assert!(generated.contains("flux__websocket_response_header(response, response_length, \"Upgrade\", \"websocket\", true)"));
     assert!(generated.contains("if (seen) return 0;"));
     assert!(generated.contains(
