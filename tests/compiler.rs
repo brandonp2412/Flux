@@ -77516,7 +77516,9 @@ fn main() -> i64 {
     assert!(generated.contains("flux__net_cleanup_sockets"));
     assert!(generated.contains("atexit(flux__net_cleanup_sockets)"));
     assert!(generated.contains("flux__net_register_socket(fd)"));
-    assert!(generated.contains("flux__net_unregister_socket((int)socket_handle)"));
+    assert!(generated.contains(
+        "int result = close((int)socket_handle); flux__net_unregister_socket((int)socket_handle); return result == 0 ? NULL : \"failed to close socket\""
+    ));
     let c_path = std::env::temp_dir().join(format!("flux-socket-cleanup-{}.c", std::process::id()));
     fs::write(&c_path, &generated).expect("socket cleanup C should be writable");
     let compile = Command::new("clang")
