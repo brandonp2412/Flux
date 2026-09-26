@@ -78305,7 +78305,7 @@ fn main() -> i64 {{
         .unwrap();
     client
         .write_all(
-            b"GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: h2c\r\nUpgrade: websocket\r\nConnection: keep-alive\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            b"GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: h2c, websocket\r\nConnection: keep-alive\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
         )
         .unwrap();
     let mut handshake = Vec::new();
