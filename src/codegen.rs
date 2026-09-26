@@ -48072,15 +48072,35 @@ fn emit_sequence_reduction_expr(
         } => (list, Some(initial), reducer, false),
         SequenceReduction::Reduce { list, reducer } => (list, None, reducer, true),
     };
-    let source = emit_expr(list_expr, env, signatures)?;
-    let Type::List(element) = signatures.canonical_type(&source.ty) else {
+    let mut transform_stages = Vec::new();
+    let source_expr = collect_sequence_transform_chain(list_expr, &mut transform_stages);
+    let source = emit_expr(source_expr, env, signatures)?;
+    let Type::List(source_element) = signatures.canonical_type(&source.ty) else {
         return Err(diag(expr.span, "sequence reduction requires a list source"));
     };
-    let element = signatures.canonical_type(&element);
+    let source_element = signatures.canonical_type(&source_element);
+    let reduction_element = if transform_stages.is_empty() {
+        source_element.clone()
+    } else {
+        let transformed = sequence_transform_result_type(
+            &transform_stages,
+            &source_element,
+            env,
+            signatures,
+            None,
+        )?;
+        let Type::List(element) = transformed else {
+            return Err(diag(
+                expr.span,
+                "sequence reduction transform must produce a list",
+            ));
+        };
+        signatures.canonical_type(&element)
+    };
     let result_ty = if let Some(initial) = initial {
         signatures.canonical_type(&emit_expr(initial, env, signatures)?.ty)
     } else {
-        element.clone()
+        reduction_element.clone()
     };
     let source_name = format!(
         "flux__reduce_expr_source_{}_{}",
@@ -48102,7 +48122,7 @@ fn emit_sequence_reduction_expr(
         "flux__reduce_expr_has_value_{}_{}",
         expr.span.line, expr.span.column
     );
-    let element_c = c_type(&element, signatures);
+    let source_element_c = c_type(&source_element, signatures);
     let result_c = c_type(&result_ty, signatures);
     let mut code = String::new();
     code.push_str("__extension__ ({ ");
@@ -48126,11 +48146,33 @@ fn emit_sequence_reduction_expr(
         "for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ "
     ));
     code.push_str(&format!(
-        "{element_c} {item_name} = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c}))); "
+        "{source_element_c} {item_name} = *(({source_element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({source_element_c}))); "
     ));
+    let mut temp_counter = 0;
+    let (reduction_value_name, reduction_value_ty) = if transform_stages.is_empty() {
+        (item_name.clone(), source_element.clone())
+    } else {
+        emit_sequence_transform_stages(
+            &mut code,
+            "",
+            &transform_stages,
+            item_name.clone(),
+            source_element.clone(),
+            env,
+            signatures,
+            None,
+            &mut temp_counter,
+        )?
+    };
+    if reduction_value_ty != reduction_element {
+        return Err(diag(
+            expr.span,
+            "sequence reduction transformed value type mismatch reached code generation",
+        ));
+    }
     if reduce {
         code.push_str(&format!(
-            "if (!{has_value_name}) {{ {result_name} = {item_name}; {has_value_name} = true; }} else {{ "
+            "if (!{has_value_name}) {{ {result_name} = {reduction_value_name}; {has_value_name} = true; }} else {{ "
         ));
     }
     if let ExprKind::AnonymousFunction { params, body, .. } = &reducer_expr.kind {
@@ -48151,7 +48193,7 @@ fn emit_sequence_reduction_expr(
         );
         let reduced = emit_expr(body, &callback_env, signatures)?.code;
         code.push_str(&format!(
-            "{{ {} {} = {result_name}; {} {} = {item_name}; {result_name} = {reduced}; }} ",
+            "{{ {} {} = {result_name}; {} {} = {reduction_value_name}; {result_name} = {reduced}; }} ",
             c_type(&params[0].ty, signatures),
             local_c_name(&params[0].name),
             c_type(&params[1].ty, signatures),
@@ -48160,7 +48202,7 @@ fn emit_sequence_reduction_expr(
     } else {
         let reducer = emit_expr(reducer_expr, env, signatures)?;
         code.push_str(&format!(
-            "{result_name} = {}({result_name}, {item_name}); ",
+            "{result_name} = {}({result_name}, {reduction_value_name}); ",
             reducer.code
         ));
     }

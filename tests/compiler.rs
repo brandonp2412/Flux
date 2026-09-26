@@ -23610,6 +23610,57 @@ fn main() -> i64 {
 }
 
 #[test]
+fn nested_inline_reduction_fuses_transformed_sources_with_outer_captures() {
+    let source = r#"
+fn main() -> i64 {
+    let offsets: i64[] = [10, 20]
+    let values: i64[] = [1, 2]
+    let mapped: i64[] = map(values, fn(value: i64) { fold(map(offsets, fn(offset: i64) { offset + value }), value, fn(total: i64, adjusted: i64) { total + adjusted }) })
+    print(mapped.first)
+    print(mapped.last)
+    return 0
+}
+"#;
+
+    check_source(source)
+        .expect("nested transformed reductions may capture outer callback bindings");
+    let generated = compile_to_c(source)
+        .expect("nested transformed reductions should fuse without materializing a closure");
+    assert!(!generated.contains("flux__lambda_"));
+    assert!(generated.contains("flux__transform_value_"));
+    assert!(generated.contains("flux__reduce_expr_result_"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-nested-transform-reduction-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary nested transform directory should be writable");
+    let c_path = root.join("capture.c");
+    let exe_path = root.join("capture");
+    fs::write(&c_path, generated).expect("generated nested transform C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile nested transformed reductions");
+    assert!(
+        compile.status.success(),
+        "nested transformed reduction C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("nested transformed reduction program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "33\n36\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn inline_reductions_capture_copy_values_without_closure_allocation() {
     let source = r#"
 fn main() -> i64 {
