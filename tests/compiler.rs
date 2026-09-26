@@ -23784,10 +23784,13 @@ fn main() -> i64 {
     let values: i64[] = [1, 3]
     let selected: i64[] = map(values, fn(value: i64) { filter(map(limits, fn(limit: i64) { limit + value }), fn(adjusted: i64) { adjusted > value + 1 })[1] })
     let selectedLast: i64[] = map(values, fn(value: i64) { filter(map(limits, fn(limit: i64) { limit + value }), fn(adjusted: i64) { adjusted > value + 1 })[-1] })
+    let selectedPenultimate: i64[] = map(values, fn(value: i64) { filter(map(limits, fn(limit: i64) { limit + value }), fn(adjusted: i64) { adjusted > value + 1 })[-2] })
     print(selected.first)
     print(selected.last)
     print(selectedLast.first)
     print(selectedLast.last)
+    print(selectedPenultimate.first)
+    print(selectedPenultimate.last)
     return 0
 }
 "#;
@@ -23798,6 +23801,7 @@ fn main() -> i64 {
         .expect("nested transformed static indexing should fuse without temporary lists");
     assert!(!generated.contains("flux__lambda_"));
     assert!(generated.contains("flux__index_transform_result_"));
+    assert!(generated.contains("flux__index_transform_suffix_2[2]"));
 
     let root = std::env::temp_dir().join(format!(
         "flux-nested-transform-index-{}-{}",
@@ -23831,6 +23835,8 @@ fn main() -> i64 {
 6
 5
 7
+4
+6
 "
     );
     let _ = fs::remove_dir_all(&root);

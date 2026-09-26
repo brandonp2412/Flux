@@ -48672,7 +48672,7 @@ fn emit_expr(
                 && sequence_transform(base).is_some()
                 && let Some(ConstantValue::I64(static_index)) =
                     typecheck::constant_primitive_value(index, signatures)
-                && static_index >= -1
+                && static_index >= -64
             {
                 let mut stages = Vec::new();
                 let source_expr = collect_sequence_transform_chain(base, &mut stages);
@@ -48730,10 +48730,18 @@ fn emit_expr(
                 );
                 let source_element_c = c_type(&source_element, signatures);
                 let result_element_c = c_type(&result_element, signatures);
+                let suffix_decl = if static_index < 0 {
+                    let suffix_depth = -static_index;
+                    format!(
+                        "{result_element_c} flux__index_transform_suffix_{suffix_depth}[{suffix_depth}]; "
+                    )
+                } else {
+                    String::new()
+                };
                 let mut code = String::new();
                 code.push_str("__extension__ ({ ");
                 code.push_str(&format!(
-                    "struct flux__list {source_name} = {}; {result_element_c} {result_name}; bool {found_name} = false; size_t {output_index_name} = 0; ",
+                    "struct flux__list {source_name} = {}; {result_element_c} {result_name}; bool {found_name} = false; size_t {output_index_name} = 0; {suffix_decl}",
                     source.code
                 ));
                 code.push_str(&format!(
@@ -48760,9 +48768,13 @@ fn emit_expr(
                         "transformed list index value type mismatch reached code generation",
                     ));
                 }
-                if static_index == -1 {
+                if static_index < 0 {
+                    let suffix_depth = -static_index;
                     code.push_str(&format!(
-                        "{result_name} = {value_name}; {found_name} = true; ++{output_index_name}; }} "
+                        "flux__index_transform_suffix_{suffix_depth}[{output_index_name} % (size_t)INT64_C({suffix_depth})] = {value_name}; ++{output_index_name}; }} "
+                    ));
+                    code.push_str(&format!(
+                        "if ({output_index_name} >= (size_t)INT64_C({suffix_depth})) {{ {result_name} = flux__index_transform_suffix_{suffix_depth}[({output_index_name} - (size_t)INT64_C({suffix_depth})) % (size_t)INT64_C({suffix_depth})]; {found_name} = true; }} "
                     ));
                 } else {
                     code.push_str(&format!(
