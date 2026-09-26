@@ -42531,7 +42531,7 @@ fn native_module_object_cache_isolates_websocket_client_mode() {
             String::from_utf8(encoded.stdout).expect("WebSocket accept digest should be ASCII");
         write!(
             stream,
-            "HTTP/1.1 101 Flux Ready\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+            "HTTP/1.1 101 Flux Ready\r\nUpgrade: h2c\r\nUpgrade: websocket\r\nConnection: keep-alive\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
         )
         .expect("WebSocket fixture should send the server handshake");
         stream
@@ -77913,6 +77913,9 @@ fn main() -> i64 {
     assert!(generated.contains("Sec-WebSocket-Accept"));
     assert!(generated.contains("WebSocket handshake is missing required upgrade headers"));
     assert!(generated.contains("WebSocket handshake is missing Sec-WebSocket-Key"));
+    assert!(generated.contains("WebSocket handshake has duplicate Sec-WebSocket-Key"));
+    assert!(generated.contains("upgrade = upgrade ||"));
+    assert!(generated.contains("connection = connection ||"));
     assert!(generated.contains("WebSocket handshake contains NUL"));
     assert!(generated.contains("WebSocket text message exceeds maxBytes"));
     assert!(generated.contains("WebSocket text message contains invalid UTF-8"));
@@ -78045,6 +78048,8 @@ fn main() -> i64 {
     assert!(!generated.contains("char *status_end = strstr(response, \"\\r\\n\")"));
     assert!(generated.contains("/dev/urandom"));
     assert!(generated.contains("flux__websocket_response_header(response, response_length, \"Sec-WebSocket-Accept\", expected, false)"));
+    assert!(generated.contains("flux__websocket_response_header(response, response_length, \"Upgrade\", \"websocket\", true)"));
+    assert!(generated.contains("if (seen) return 0;"));
     assert!(generated.contains(
         "while (cursor + 1 < limit && !(cursor[0] == '\\r' && cursor[1] == '\\n')) cursor += 1"
     ));
@@ -78256,7 +78261,7 @@ fn main() -> i64 {{
         .unwrap();
     client
         .write_all(
-            b"GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: SGVsbG9GbHV4V29ybGQ=\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            b"GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: h2c\r\nUpgrade: websocket\r\nConnection: keep-alive\r\nConnection: Upgrade\r\nSec-WebSocket-Key: SGVsbG9GbHV4V29ybGQ=\r\nSec-WebSocket-Version: 13\r\n\r\n",
         )
         .unwrap();
     let mut handshake = Vec::new();
