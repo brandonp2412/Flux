@@ -77553,6 +77553,10 @@ fn main() -> i64 {
     assert!(
         generated.contains("static inline const char *flux__websocket_release(int64_t session)")
     );
+    assert!(generated.contains("struct flux__websocket_session_role"));
+    assert!(generated.contains("flux__websocket_mark_session(socket_handle, false)"));
+    assert!(generated.contains("flux__websocket_mark_session(socket_handle, true)"));
+    assert!(generated.contains("WebSocket session has not completed an upgrade"));
     assert!(generated.contains(
         "int result = close((int)session); flux__net_unregister_socket((int)session); return result == 0"
     ));
@@ -78008,20 +78012,17 @@ fn main() -> i64 {
     assert!(!generated.contains("const char *line_end = strstr(cursor, \"\\r\\n\")"));
     assert!(generated.contains("HTTP/1.1 101 Switching Protocols"));
     assert!(generated.contains("WebSocket client handshake contains NUL"));
-    assert!(generated.contains("flux__websocket_is_client(session)"));
-    assert!(generated.contains("flux__websocket_client_sessions[256]"));
-    assert!(
-        generated.contains("atomic_flag flux__websocket_client_sessions_lock = ATOMIC_FLAG_INIT")
-    );
-    assert!(
-        generated
-            .contains("atomic_flag_test_and_set_explicit(&flux__websocket_client_sessions_lock")
-    );
-    assert!(generated.contains("atomic_flag_clear_explicit(&flux__websocket_client_sessions_lock"));
-    assert!(generated.contains("flux__websocket_mark_client(socket_handle)"));
-    assert!(generated.contains("flux__websocket_forget_client(socket_handle)"));
-    assert!(!generated.contains("session < 1024 && flux__websocket_client_sessions[session]"));
-    assert!(!generated.contains("flux__websocket_client_sessions[socket_handle] = true"));
+    assert!(generated.contains("flux__websocket_role(session)"));
+    assert!(generated.contains("struct flux__websocket_session_role"));
+    assert!(generated.contains("flux__websocket_sessions[256]"));
+    assert!(generated.contains("atomic_flag flux__websocket_sessions_lock = ATOMIC_FLAG_INIT"));
+    assert!(generated.contains("atomic_flag_test_and_set_explicit(&flux__websocket_sessions_lock"));
+    assert!(generated.contains("atomic_flag_clear_explicit(&flux__websocket_sessions_lock"));
+    assert!(generated.contains("flux__websocket_mark_session(socket_handle, true)"));
+    assert!(generated.contains("flux__websocket_mark_session(socket_handle, false)"));
+    assert!(generated.contains("flux__websocket_forget_session(session)"));
+    assert!(!generated.contains("session < 1024 && flux__websocket_sessions[session]"));
+    assert!(!generated.contains("flux__websocket_sessions[socket_handle] = true"));
     assert!(generated.contains("flux__websocket_write_control"));
     assert!(generated.contains("WebSocket control frame must be final and at most 125 bytes"));
     assert!(generated.contains("WebSocket opcode is reserved or unsupported"));
