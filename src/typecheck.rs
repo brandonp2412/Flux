@@ -5757,7 +5757,7 @@ fn type_of_anonymous_function(
         if let Some(captured) = captures.iter().find(|name| {
             env.get(**name).is_some_and(|ty| {
                 let ty = signatures.canonical_type(ty);
-                !signatures.is_copy_type(&ty) && !matches!(ty, Type::List(_))
+                !signatures.is_copy_type(&ty) && !is_borrowed_collection_type(&ty)
             })
         }) {
             let ty = env
@@ -5766,7 +5766,7 @@ fn type_of_anonymous_function(
             return Err(diag(
                 body.span,
                 &format!(
-                    "inline anonymous callback capture '{captured}' must be Copy or an immutable list/view borrow, got {}",
+                    "inline anonymous callback capture '{captured}' must be Copy or an immutable collection/view borrow, got {}",
                     signatures.canonical_type(ty).name()
                 ),
             )
