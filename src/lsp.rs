@@ -1333,6 +1333,7 @@ fn add_qualified_namespace_completions(
                 "fn tls.listen(socket: i64, certificate: str, key: str) -> (i64, error)",
             ),
             ("resumed", "fn tls.resumed(session: i64) -> (bool, error)"),
+            ("pending", "fn tls.pending(session: i64) -> (i64, error)"),
             (
                 "read",
                 "fn tls.read(session: i64, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)",
@@ -4693,6 +4694,7 @@ fn signature_help_for_document_cached(
                     "(i64, error)",
                 ),
                 "resumed" => ("tls.resumed", vec!["session: i64"], "(bool, error)"),
+                "pending" => ("tls.pending", vec!["session: i64"], "(i64, error)"),
                 "read" => (
                     "tls.read",
                     vec!["session: i64", "maxBytes: i64", "callback: fn(str) -> void"],
