@@ -26918,6 +26918,7 @@ fn show(value: str) -> void {
 fn main() -> i64 {
     let (socket, connect_error) = net.connect("example.com", 443)
     let (session, tls_error) = tls.wrap(socket, "example.com", "")
+    let (was_resumed, resumed_error) = tls.resumed(session)
     let (server_session, server_error) = tls.listen(socket, "server.crt", "server.key")
     let write_error: error = tls.write(session, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
     let (timed_written, timed_complete, timed_write_error) = tls.writeTimeout(session, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n", 0)
@@ -26927,6 +26928,8 @@ fn main() -> i64 {
     let server_close_error: error = tls.close(server_session)
     print(connect_error)
     print(tls_error)
+    print(was_resumed)
+    print(resumed_error)
     print(write_error)
     print(timed_written)
     print(timed_complete)
@@ -26950,6 +26953,8 @@ fn main() -> i64 {
     assert!(generated.contains("SSL_set_session(session, resumption->session)"));
     assert!(generated.contains("SSL_get1_session(session)"));
     assert!(generated.contains("flux__tls_resumption_slots"));
+    assert!(generated.contains("flux__tls_resumed("));
+    assert!(generated.contains("SSL_session_reused(slot->session) == 1"));
     assert!(generated.contains("SSL_get_verify_result"));
     assert!(generated.contains("TLS wrap string exceeds 65536 bytes"));
     assert!(generated.contains("TLS server path exceeds 65536 bytes"));
@@ -26983,6 +26988,12 @@ fn main() -> i64 {
     assert!(generated.contains("flux__tls_bounded_length(value, 65536"));
     assert!(generated.contains("TLS read contained NUL in text payload"));
     assert!(generated.contains("invalid or closed TLS session"));
+
+    let invalid_resumed = check_source(
+        "fn main() -> i64 {\n    let (_resumed, _failure) = tls.resumed(\"invalid\")\n    return 0\n}\n",
+    )
+    .expect_err("tls.resumed should require a TLS session handle");
+    assert!(invalid_resumed.message.contains("tls.resumed session"));
 
     let root = std::env::temp_dir().join(format!("flux-tls-contract-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

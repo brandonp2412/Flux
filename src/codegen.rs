@@ -6924,6 +6924,7 @@ static inline void flux__net_unregister_socket(int socket_handle) {
         || uses_cancellable_http;
     if runtime_usage.contains("flux__net_wait_readable(")
         || runtime_usage.contains("flux__net_wait_writable(")
+        || runtime_usage.contains("flux__tls_")
     {
         out.push_str("struct flux__net_bool_error { bool v0; const char *v1; };\n");
         out.push_str("static inline struct flux__net_bool_error flux__net_bool_result(bool value, const char *error) { struct flux__net_bool_error result = { .v0 = value, .v1 = error }; return result; }\n");
@@ -10255,6 +10256,7 @@ static struct flux__tls_resumption_slot flux__tls_resumption_slots[64];
 static bool flux__tls_cleanup_registered = false;
 static inline struct flux__net_i64_error flux__tls_result(int64_t value, const char *error) { struct flux__net_i64_error result = { .v0 = value, .v1 = error }; return result; }
 static inline struct flux__tls_slot *flux__tls_slot_for(int64_t handle) { if (handle < 1 || handle > 64 || !flux__tls_slots[handle - 1].used) return NULL; return &flux__tls_slots[handle - 1]; }
+static inline struct flux__net_bool_error flux__tls_resumed(int64_t handle) { struct flux__net_bool_error result = { .v0 = false, .v1 = NULL }; struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL) { result.v1 = "invalid or closed TLS session"; return result; } result.v0 = SSL_session_reused(slot->session) == 1; return result; }
 static inline struct flux__tls_resumption_slot *flux__tls_resumption_for(const char *server_name, const char *ca_file) { for (int index = 0; index < 64; index += 1) { struct flux__tls_resumption_slot *slot = &flux__tls_resumption_slots[index]; if (slot->used && strcmp(slot->server_name, server_name) == 0 && strcmp(slot->ca_file, ca_file) == 0) return slot; } return NULL; }
 static inline void flux__tls_remember_resumption(const char *server_name, size_t server_name_length, const char *ca_file, size_t ca_file_length, SSL_SESSION *session) { if (session == NULL) return; struct flux__tls_resumption_slot *slot = flux__tls_resumption_for(server_name, ca_file); if (slot == NULL) for (int index = 0; index < 64; index += 1) if (!flux__tls_resumption_slots[index].used) { slot = &flux__tls_resumption_slots[index]; break; } if (slot == NULL) { SSL_SESSION_free(session); return; } char *server_copy = malloc(server_name_length + 1); char *ca_copy = malloc(ca_file_length + 1); if (server_copy == NULL || ca_copy == NULL) { free(server_copy); free(ca_copy); SSL_SESSION_free(session); return; } memcpy(server_copy, server_name, server_name_length + 1); memcpy(ca_copy, ca_file, ca_file_length + 1); if (slot->used) { SSL_SESSION_free(slot->session); free(slot->server_name); free(slot->ca_file); } *slot = (struct flux__tls_resumption_slot){ .session = session, .server_name = server_copy, .ca_file = ca_copy, .used = true }; }
 static void flux__tls_cleanup(void) { for (int index = 0; index < 64; index += 1) { struct flux__tls_slot *slot = &flux__tls_slots[index]; if (slot->used) { SSL_free(slot->session); SSL_CTX_free(slot->context); flux__net_unregister_socket(slot->socket); close(slot->socket); slot->used = false; } struct flux__tls_resumption_slot *resumption = &flux__tls_resumption_slots[index]; if (resumption->used) { SSL_SESSION_free(resumption->session); free(resumption->server_name); free(resumption->ca_file); resumption->used = false; } } }
@@ -49604,6 +49606,14 @@ fn emit_qualified_call(
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "resumed" if args.len() == 1 => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__tls_resumed({})", session.code),
+                    vec![Type::Bool, Type::Error],
+                    Some("flux__net_bool_error".to_string()),
                 ));
             }
             "read" if args.len() == 3 => {
@@ -90280,6 +90290,16 @@ fn emit_cfg_multi_expr_direct(
                             },
                         )?;
                         Some((call, "flux__net_i64_error".to_string(), i64_error))
+                    }
+                    "resumed" if arguments.len() == 1 => {
+                        let call = emit_cfg_ordered_call_expression_direct(
+                            arguments,
+                            &[Type::I64],
+                            env,
+                            signatures,
+                            |rendered| format!("flux__tls_resumed({})", rendered[0]),
+                        )?;
+                        Some((call, "flux__net_bool_error".to_string(), bool_error))
                     }
                     "read" if arguments.len() == 3 => {
                         let call = emit_cfg_ordered_call_with_callback_direct(
