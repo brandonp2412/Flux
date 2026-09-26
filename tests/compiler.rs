@@ -78354,6 +78354,9 @@ fn main() -> i64 {
     assert!(generated.contains("flux__websocket_fail_write(session, \"failed to send WebSocket control mask\")"));
     assert!(generated.contains("flux__websocket_fail_write(session, \"failed to send WebSocket control payload\")"));
     assert!(generated.contains("(void)flux__websocket_release(session); return error;"));
+    assert!(generated.contains("flux__websocket_begin_write(session)"));
+    assert!(generated.contains("WebSocket session already has an active writer"));
+    assert!(generated.contains("flux__websocket_end_write(session)"));
 }
 
 #[test]
@@ -78682,6 +78685,119 @@ fn main() -> i64 {{
         response.extend_from_slice(&chunk[..received]);
     }
     server.join().unwrap();
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn websocket_concurrent_writers_do_not_interleave_frames() {
+    let probe = TcpListener::bind("127.0.0.1:0").expect("WebSocket writer probe should bind");
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let payload = "x".repeat(65_535);
+    let source = format!(
+        r#"fn flood(session: i64) -> void {{
+    var count: i64 = 0
+    while count < 1000:
+        let writeError: error = websocket.writeText(session, "{payload}")
+        if writeError != nil:
+            return
+        count = count + 1
+}}
+
+fn probeWriter(session: i64) -> void {{
+    let writeError: error = websocket.writeText(session, "probe")
+    if writeError != nil:
+        print(writeError)
+}}
+
+fn main() -> i64 {{
+    let (listener, listenError) = net.listen("127.0.0.1", {port}, 8)
+    if listenError != nil:
+        return 1
+    let (socket, acceptError) = net.accept(listener)
+    if acceptError != nil:
+        return 2
+    let (session, handshakeError) = websocket.accept(socket)
+    if handshakeError != nil:
+        return 3
+    let (floodHandle, floodError) = worker.startWith(flood, session)
+    if floodError != nil:
+        return 4
+    time.sleep(100)
+    let (probeHandle, probeError) = worker.startWith(probeWriter, session)
+    if probeError != nil:
+        return 5
+    let probeJoinError: error = worker.join(probeHandle)
+    if probeJoinError != nil:
+        return 6
+    let cancelError: error = worker.cancel(floodHandle)
+    if cancelError != nil:
+        return 7
+    let floodJoinError: error = worker.join(floodHandle)
+    if floodJoinError != nil:
+        return 8
+    return 0
+}}
+"#
+    );
+    let root = std::env::temp_dir().join(format!(
+        "flux-websocket-concurrent-write-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("WebSocket concurrent-write fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("WebSocket concurrent-write source should be writable");
+    let binary = root.join("websocket-concurrent-write");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("WebSocket concurrent-write binary should build");
+    assert!(
+        built.status.success(),
+        "WebSocket concurrent-write build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let server = thread::spawn(move || {
+        Command::new(&binary)
+            .output()
+            .expect("WebSocket concurrent-write server should run")
+    });
+    thread::sleep(Duration::from_millis(100));
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port))
+        .expect("WebSocket concurrent-write client should connect");
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    client
+        .write_all(
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .unwrap();
+    let mut handshake = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !handshake.ends_with(b"\r\n\r\n") {
+        client.read_exact(&mut byte).unwrap();
+        handshake.push(byte[0]);
+    }
+    assert!(String::from_utf8_lossy(&handshake).contains("101 Switching Protocols"));
+    let output = server
+        .join()
+        .expect("WebSocket concurrent-write server thread should finish");
+    assert!(
+        output.status.success(),
+        "concurrent WebSocket writer server failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("WebSocket session already has an active writer"),
+        "concurrent WebSocket writer should be rejected without interleaving: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    drop(client);
     let _ = fs::remove_dir_all(&root);
 }
 
