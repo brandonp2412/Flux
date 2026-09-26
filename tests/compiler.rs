@@ -78215,6 +78215,24 @@ fn main() -> i64 {
 }
 
 #[test]
+fn websocket_server_rejects_invalid_client_keys() {
+    let source = r#"
+fn main() -> i64 {
+    let (_session, handshakeError) = websocket.accept(3)
+    if handshakeError != nil:
+        return 1
+    return 0
+}
+"#;
+    check_source(source).expect("WebSocket accept key validation should typecheck");
+    let generated = compile_to_c(source).expect("WebSocket accept key validation should lower");
+    assert!(generated.contains("flux__websocket_valid_client_key"));
+    assert!(generated.contains("length != 24"));
+    assert!(generated.contains("key[22] != '=' || key[23] != '='"));
+    assert!(generated.contains("WebSocket handshake has invalid Sec-WebSocket-Key"));
+}
+
+#[test]
 fn websocket_server_reads_fragmented_text_and_answers_ping() {
     let probe = TcpListener::bind("127.0.0.1:0").expect("WebSocket probe should bind");
     let port = probe.local_addr().unwrap().port();
@@ -78282,7 +78300,7 @@ fn main() -> i64 {{
         .unwrap();
     client
         .write_all(
-            b"GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: h2c\r\nUpgrade: websocket\r\nConnection: keep-alive\r\nConnection: Upgrade\r\nSec-WebSocket-Key: SGVsbG9GbHV4V29ybGQ=\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            b"GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: h2c\r\nUpgrade: websocket\r\nConnection: keep-alive\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
         )
         .unwrap();
     let mut handshake = Vec::new();
@@ -78418,7 +78436,7 @@ fn main() -> i64 {{
         .unwrap();
     client
         .write_all(
-            b"GET /cancel HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: SGVsbG9GbHV4V29ybGQ=\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            b"GET /cancel HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
         )
         .unwrap();
     let mut handshake = Vec::new();
