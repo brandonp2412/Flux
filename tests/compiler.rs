@@ -77533,7 +77533,7 @@ fn main() -> i64 {
 }
 
 #[test]
-fn websocket_close_unregisters_the_underlying_socket_resource() {
+fn websocket_close_paths_release_the_underlying_socket_resource() {
     let source = r#"
 fn main() -> i64 {
     let (socket, failure) = net.connect("127.0.0.1", 1)
@@ -77546,11 +77546,20 @@ fn main() -> i64 {
     check_source(source).expect("WebSocket cleanup fixture should typecheck");
     let generated = compile_to_c(source).expect("WebSocket cleanup fixture should lower");
     assert!(
-        generated.contains(
-            "int result = close((int)session); flux__net_unregister_socket((int)session);"
-        )
+        generated.contains("static inline const char *flux__websocket_release(int64_t session)")
     );
-    assert!(generated.contains("int result = close((int)session); flux__net_unregister_socket((int)session); return result == 0"));
+    assert!(generated.contains(
+        "int result = close((int)session); flux__net_unregister_socket((int)session); return result == 0"
+    ));
+    assert!(generated.contains(
+        "const char *ack_result = ack_error == NULL ? NULL : flux__websocket_write_error(\"failed to acknowledge WebSocket close\"); const char *release_error = flux__websocket_release(session);"
+    ));
+    assert!(
+        generated
+            .matches("const char *release_error = flux__websocket_release(session);")
+            .count()
+            >= 4
+    );
     let c_path =
         std::env::temp_dir().join(format!("flux-websocket-cleanup-{}.c", std::process::id()));
     fs::write(&c_path, &generated).expect("WebSocket cleanup C should be writable");
