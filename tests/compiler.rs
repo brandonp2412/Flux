@@ -78350,6 +78350,9 @@ fn main() -> i64 {
         .find("flux__websocket_write_all((int)session, header, header_length)")
         .unwrap();
     assert!(binary_header > 0);
+    assert!(generated.contains("flux__websocket_fail_write(session, \"failed to send WebSocket control frame\")"));
+    assert!(generated.contains("flux__websocket_fail_write(session, \"failed to send WebSocket control mask\")"));
+    assert!(generated.contains("flux__websocket_fail_write(session, \"failed to send WebSocket control payload\")"));
     assert!(generated.contains("(void)flux__websocket_release(session); return error;"));
 }
 
