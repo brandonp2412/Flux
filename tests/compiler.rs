@@ -42531,7 +42531,7 @@ fn native_module_object_cache_isolates_websocket_client_mode() {
             String::from_utf8(encoded.stdout).expect("WebSocket accept digest should be ASCII");
         write!(
             stream,
-            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+            "HTTP/1.1 101 Flux Ready\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
         )
         .expect("WebSocket fixture should send the server handshake");
         stream
@@ -78040,9 +78040,7 @@ fn main() -> i64 {
     assert!(generated.contains("WebSocket requires a connected TCP socket"));
     assert!(generated.contains("flux__websocket_bounded_length(host, 255, &host_length)"));
     assert!(generated.contains("flux__websocket_find_bytes(const char *value, size_t length"));
-    assert!(
-        generated.contains("flux__websocket_find_bytes(response, response_length, \"\\r\\n\", 2)")
-    );
+    assert!(generated.contains("flux__websocket_find_bytes(response, length, \"\\r\\n\", 2)"));
     assert!(generated.contains("flux__websocket_find_bytes(cursor, remaining, \"\\r\\n\", 2)"));
     assert!(!generated.contains("char *status_end = strstr(response, \"\\r\\n\")"));
     assert!(generated.contains("/dev/urandom"));
@@ -78051,7 +78049,9 @@ fn main() -> i64 {
         "while (cursor + 1 < limit && !(cursor[0] == '\\r' && cursor[1] == '\\n')) cursor += 1"
     ));
     assert!(!generated.contains("const char *line_end = strstr(cursor, \"\\r\\n\")"));
-    assert!(generated.contains("HTTP/1.1 101 Switching Protocols"));
+    assert!(generated.contains("flux__websocket_switching_status(response, response_length)"));
+    assert!(generated.contains("const char prefix[] = \"HTTP/1.1 101\""));
+    assert!(!generated.contains("strlen(\"HTTP/1.1 101 Switching Protocols\")"));
     assert!(generated.contains("WebSocket client handshake contains NUL"));
     assert!(generated.contains("flux__websocket_role(session)"));
     assert!(generated.contains("struct flux__websocket_session_role"));
