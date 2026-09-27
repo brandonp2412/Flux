@@ -7446,6 +7446,27 @@ fn record_contextual_empty_collection_type(
     }
 }
 
+fn record_borrow_operand_types(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    evaluations: &mut Vec<(SourceSpan, Vec<Type>)>,
+) {
+    match &expr.kind {
+        ExprKind::Index { base, .. }
+        | ExprKind::Slice { base, .. }
+        | ExprKind::Field { base, .. } => {
+            record_borrow_operand_types(base, env, signatures, evaluations);
+        }
+        _ => {}
+    }
+    if typecheck::value_types_of_expr(expr, env, signatures).is_err()
+        && let Ok(ty) = typecheck::type_of_borrow_operand(expr, env, signatures)
+    {
+        evaluations.push((expr.span, vec![signatures.canonical_type(&ty)]));
+    }
+}
+
 fn record_expr_types(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -7814,11 +7835,8 @@ fn record_expr_types(
         }
         ExprKind::Unary { op, expr } => {
             record_expr_types(expr, env, signatures, evaluations);
-            if matches!(op, UnaryOp::Borrow)
-                && typecheck::value_types_of_expr(expr, env, signatures).is_err()
-                && let Ok(ty) = typecheck::type_of_borrow_operand(expr, env, signatures)
-            {
-                evaluations.push((expr.span, vec![signatures.canonical_type(&ty)]));
+            if matches!(op, UnaryOp::Borrow) {
+                record_borrow_operand_types(expr, env, signatures, evaluations);
             }
         }
         ExprKind::Binary { left, right, .. } => {

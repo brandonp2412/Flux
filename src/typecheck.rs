@@ -5984,7 +5984,7 @@ pub(crate) fn type_of_borrow_operand(
         optional,
     } = &expr.kind
     {
-        let base_ty = type_of_expr(base, env, signatures)?;
+        let base_ty = type_of_borrow_operand(base, env, signatures)?;
         let index_ty = type_of_expr(index, env, signatures)?;
         return borrow_index_result_type(
             base.span, index.span, expr.span, *optional, &base_ty, &index_ty, signatures,
@@ -5997,7 +5997,7 @@ pub(crate) fn type_of_borrow_operand(
         optional: true,
     } = &expr.kind
     {
-        let base_ty = type_of_expr(base, env, signatures)?;
+        let base_ty = type_of_borrow_operand(base, env, signatures)?;
         return borrow_field_result_type(base.span, *name_span, name, true, &base_ty, signatures);
     }
     if let ExprKind::Slice {
@@ -6008,7 +6008,7 @@ pub(crate) fn type_of_borrow_operand(
         optional: true,
     } = &expr.kind
     {
-        let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
+        let base_ty = signatures.canonical_type(&type_of_borrow_operand(base, env, signatures)?);
         let Type::Optional(inner) = base_ty else {
             return Err(diag(
                 base.span,
