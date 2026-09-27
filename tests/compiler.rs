@@ -4586,6 +4586,39 @@ app Screen
 }
 
 #[test]
+fn windows_backend_refreshes_dynamic_selectable_text_wrap_in_place() {
+    let source = r#"
+view Screen {
+    state wrapping: bool = false
+    grid columns: 1fr
+    grid rows: auto
+    Text selectable at 1,1
+        text: "Selectable"
+        selectable: true
+        wrap: wrapping
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("dynamic selectable text wrap should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("dynamic selectable text wrap should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("dynamic selectable text wrap should lower for Windows");
+    assert!(generated.contains("flux__win_set_selectable_text_wrap"));
+    assert!(generated.contains(
+        "flux__win_set_selectable_text_wrap(flux__ui_selectable, flux__win_next_wrap_selectable)"
+    ));
+    assert!(generated.contains("style |= ES_AUTOHSCROLL"));
+    assert!(generated.contains("style &= ~((LONG_PTR)ES_AUTOHSCROLL)"));
+    assert!(generated.contains("SWP_FRAMECHANGED"));
+}
+
+#[test]
 fn windows_backend_refreshes_dynamic_rich_text_wrap_in_place() {
     let source = r#"
 view Screen {
