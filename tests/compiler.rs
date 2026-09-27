@@ -36923,6 +36923,71 @@ fn type_memory_model_has_a_stable_discoverable_version() {
 }
 
 #[test]
+fn platform_support_contract_is_versioned_and_machine_readable() {
+    assert_eq!(fluxc::PLATFORM_SUPPORT_POLICY_VERSION, 1);
+    assert_eq!(fluxc::PLATFORM_SUPPORT_SCHEMA_VERSION, 1);
+    assert_eq!(fluxc::PLATFORM_SUPPORT.len(), 7);
+    assert_eq!(
+        fluxc::PLATFORM_SUPPORT
+            .iter()
+            .find(|support| support.target == "linux")
+            .expect("Linux support tier should be declared")
+            .tier,
+        fluxc::PlatformSupportTier::Validated
+    );
+    assert_eq!(
+        fluxc::PLATFORM_SUPPORT
+            .iter()
+            .find(|support| support.target == "windows")
+            .expect("Windows support tier should be declared")
+            .tier,
+        fluxc::PlatformSupportTier::Preview
+    );
+    assert_eq!(
+        fluxc::PLATFORM_SUPPORT
+            .iter()
+            .find(|support| support.target == "ios")
+            .expect("iOS support tier should be declared")
+            .tier,
+        fluxc::PlatformSupportTier::Unavailable
+    );
+
+    let version = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["platforms", "--version"])
+        .output()
+        .expect("flux platforms --version should launch");
+    assert!(version.status.success());
+    assert_eq!(String::from_utf8_lossy(&version.stdout).trim(), "1");
+    assert!(version.stderr.is_empty());
+
+    let json = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["platforms", "--json"])
+        .output()
+        .expect("flux platforms --json should launch");
+    assert!(json.status.success());
+    let json = String::from_utf8(json.stdout).expect("platform support JSON should be UTF-8");
+    assert!(json.contains(r#""schema_version":1"#));
+    assert!(json.contains(r#""policy_version":1"#));
+    for target in [
+        "linux",
+        "android",
+        "windows",
+        "web",
+        "headless/server",
+        "ios",
+        "macos",
+    ] {
+        assert!(
+            json.contains(&format!(r#""target":"{target}""#)),
+            "platform support JSON should include {target}"
+        );
+    }
+    assert!(json.contains(r#""target":"linux","tier":"validated""#));
+    assert!(json.contains(r#""target":"windows","tier":"preview""#));
+    assert!(json.contains(r#""target":"ios","tier":"unavailable""#));
+}
+
+#[test]
 fn formatter_contract_has_a_stable_discoverable_version() {
     assert_eq!(fluxc::formatter::FORMATTER_VERSION, 2);
 

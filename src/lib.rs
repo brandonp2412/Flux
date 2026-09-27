@@ -10,6 +10,7 @@ pub mod linux_bindings;
 pub mod lsp;
 pub mod package_ecosystem;
 pub mod parser;
+pub mod platform_support;
 pub mod project;
 pub mod semantic;
 pub mod terminal;
@@ -23,6 +24,10 @@ pub use diagnostic::{
     SourceId, SourceSpan, diagnostics_envelope_to_json, diagnostics_to_json,
 };
 pub use parser::GRAMMAR_VERSION;
+pub use platform_support::{
+    PLATFORM_SUPPORT, PLATFORM_SUPPORT_POLICY_VERSION, PLATFORM_SUPPORT_SCHEMA_VERSION,
+    PlatformSupport, PlatformSupportTier, platform_support_json,
+};
 pub use terminal::{DiagnosticSource, TerminalRenderOptions, render_diagnostics};
 pub use typecheck::UI_API_VERSION;
 

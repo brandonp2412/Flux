@@ -46,6 +46,6 @@ The extension uses `flux lsp` for diagnostics, completion, hover, navigation, re
 
 ## Status
 
-Flux already builds native GTK4 Linux apps and Android APK/AABs, with the compiler, LSP, debugger, profiler, tests, package tooling, and development runner under active development. It is not yet a stable 1.0 language.
+Flux has validated native Linux and Android application paths, preview Windows and web backends, validated Linux headless/server workflows, and unavailable iOS/macOS backends. Run `flux platforms --json` for the compiler-owned support matrix. It is not yet a stable 1.0 language.
 
-See [`ROADMAP.MD`](ROADMAP.MD), [`docs/language.md`](docs/language.md), and [`docs/manual-e2e.md`](docs/manual-e2e.md).
+See [`docs/platform-support.md`](docs/platform-support.md), [`ROADMAP.MD`](ROADMAP.MD), [`docs/language.md`](docs/language.md), and [`docs/manual-e2e.md`](docs/manual-e2e.md).
