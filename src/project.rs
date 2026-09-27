@@ -3020,8 +3020,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
                     || !element.properties.iter().any(|property| {
                         typecheck::source_name_to_internal(&property.name) == "rich_text"
                     })))
-                || (element.kind == "TextInput"
-                    && !development_ui_element_has_property(element, "on_change"))
+                || element.kind == "TextInput"
         }
         "label" => matches!(
             element.kind.as_str(),
@@ -3265,10 +3264,7 @@ fn development_ui_property_lifecycle_patch_value(
         return None;
     }
     let property_name = typecheck::source_name_to_internal(&property.name);
-    if property_name == "text"
-        && element.kind == "TextInput"
-        && !development_ui_element_has_property(element, "on_change")
-    {
+    if property_name == "text" && element.kind == "TextInput" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
         };
@@ -3859,10 +3855,7 @@ fn development_ui_property_lifecycle_default(
     element: &ViewElement,
     property: &str,
 ) -> Option<String> {
-    if property == "text"
-        && element.kind == "TextInput"
-        && !development_ui_element_has_property(element, "on_change")
-    {
+    if property == "text" && element.kind == "TextInput" {
         return Some(String::new());
     }
     if (property == "text"

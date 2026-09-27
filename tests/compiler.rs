@@ -56239,7 +56239,7 @@ app Screen
 }
 
 #[test]
-fn development_ui_string_patch_restarts_for_text_input_text_with_change_handler() {
+fn development_ui_string_patch_hot_applies_text_input_text_with_change_handler() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-input-change-handler-patch-{}",
         std::process::id()
@@ -56265,6 +56265,14 @@ app Screen
     let first = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("initial TextInput change-handler analysis should succeed");
+    let generated = first
+        .emit_c()
+        .expect("TextInput change-handler fixture should lower for Linux");
+    assert!(generated.contains("static bool flux__ui_reload_text_queryInput = false;"));
+    assert!(generated.contains("if (flux__ui_reload_text_queryInput) return;"));
+    assert!(generated.contains(
+        "flux__ui_reload_text_queryInput = true; gtk_editable_set_text(GTK_EDITABLE(flux__ui_queryInput), value); flux__ui_reload_text_queryInput = false;"
+    ));
 
     fs::write(&entry, updated).expect("updated TextInput change-handler source should be writable");
     let entry =
@@ -56274,9 +56282,17 @@ app Screen
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("updated TextInput change-handler analysis should succeed");
 
-    assert!(
-        second.development_ui_string_patch_from(&first).is_none(),
-        "TextInput.text with onChange must use controlled restart instead of synthesizing an application change event"
+    assert_eq!(second.development_abi(), first.development_abi());
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("TextInput.text with onChange should hot-apply without synthesizing an application change event");
+    assert_eq!(
+        patch,
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "queryInput".to_string(),
+            property: "text".to_string(),
+            value: "Two".to_string(),
+        }]
     );
 
     let _ = fs::remove_dir_all(root);

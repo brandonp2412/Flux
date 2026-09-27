@@ -21115,6 +21115,14 @@ fn emit_linux_gtk_application(
             ui_widget_c_name(&element.name),
             linux_ui_focusable_default_c_name(element)
         ));
+        if element.kind == "TextInput" && view_property(element, "on_change").is_some() {
+            out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+            out.push_str(&format!(
+                "static bool flux__ui_reload_text_{} = false;\n",
+                element.name
+            ));
+            out.push_str("#endif\n");
+        }
         let multiline_text_input = element.kind == "TextInput"
             && view_property(element, "multiline")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
@@ -21702,21 +21710,29 @@ fn emit_linux_gtk_application(
                 ));
             }
             "TextInput" => {
-                if view_property(element, "on_change").is_none() {
-                    let multiline = view_property(element, "multiline")
-                        .and_then(|property| static_expr_bool(&property.value, signatures))
-                        .unwrap_or(false);
-                    if multiline {
-                        out.push_str(&format!(
-                            " if (strcmp(name, {}) == 0 && strcmp(property, \"text\") == 0 && {widget} != NULL) {{ GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW({widget})); gtk_text_buffer_set_text(buffer, value, -1); }}",
-                            c_string(&element.name)
-                        ));
-                    } else {
-                        out.push_str(&format!(
-                            " if (strcmp(name, {}) == 0 && strcmp(property, \"text\") == 0 && {widget} != NULL) gtk_editable_set_text(GTK_EDITABLE({widget}), value);",
-                            c_string(&element.name)
-                        ));
-                    }
+                let multiline = view_property(element, "multiline")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    .unwrap_or(false);
+                let suppress_change = if view_property(element, "on_change").is_some() {
+                    format!(" flux__ui_reload_text_{} = true;", element.name)
+                } else {
+                    String::new()
+                };
+                let restore_change = if view_property(element, "on_change").is_some() {
+                    format!(" flux__ui_reload_text_{} = false;", element.name)
+                } else {
+                    String::new()
+                };
+                if multiline {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"text\") == 0 && {widget} != NULL) {{{suppress_change} GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW({widget})); gtk_text_buffer_set_text(buffer, value, -1);{restore_change} }}",
+                        c_string(&element.name)
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"text\") == 0 && {widget} != NULL) {{{suppress_change} gtk_editable_set_text(GTK_EDITABLE({widget}), value);{restore_change} }}",
+                        c_string(&element.name)
+                    ));
                 }
                 let multiline = view_property(element, "multiline")
                     .and_then(|property| static_expr_bool(&property.value, signatures))
@@ -22548,6 +22564,14 @@ fn emit_linux_gtk_application(
                 let Some(action) = view_property(element, property_name) else {
                     continue;
                 };
+                let reload_guard = if property_name == "on_change" {
+                    format!(
+                        "#ifdef FLUX_DEVELOPMENT_RELOAD\n if (flux__ui_reload_text_{}) return;\n#endif\n",
+                        element.name
+                    )
+                } else {
+                    String::new()
+                };
                 let submit_guard = if property_name == "on_submit" {
                     if multiline {
                         format!(
@@ -22565,17 +22589,17 @@ fn emit_linux_gtk_application(
                     let state_index = ui_state_index(view, &transition.state);
                     if multiline && property_name == "on_change" {
                         out.push_str(&format!(
-                            "static void flux__ui_{callback_name}_{}(GtkTextBuffer *buffer, gpointer data) {{ (void)data;{submit_guard} GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {setter}(text); g_free(text); flux__ui_refresh_changed({state_index}); }}\n",
+                            "static void flux__ui_{callback_name}_{}(GtkTextBuffer *buffer, gpointer data) {{ (void)data;{reload_guard}{submit_guard} GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {setter}(text); g_free(text); flux__ui_refresh_changed({state_index}); }}\n",
                             element.name,
                         ));
                     } else if multiline {
                         out.push_str(&format!(
-                            "static gboolean flux__ui_{callback_name}_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)keycode; (void)state; (void)data;{submit_guard} if (keyval != GDK_KEY_Return && keyval != GDK_KEY_KP_Enter) return FALSE; GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)); GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)); GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {setter}(text); g_free(text); flux__ui_refresh_changed({state_index}); return TRUE; }}\n",
+                            "static gboolean flux__ui_{callback_name}_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)keycode; (void)state; (void)data;{reload_guard}{submit_guard} if (keyval != GDK_KEY_Return && keyval != GDK_KEY_KP_Enter) return FALSE; GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)); GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)); GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {setter}(text); g_free(text); flux__ui_refresh_changed({state_index}); return TRUE; }}\n",
                             element.name,
                         ));
                     } else {
                         out.push_str(&format!(
-                            "static void flux__ui_{callback_name}_{}(GtkWidget *widget, gpointer data) {{ (void)data;{submit_guard} {setter}(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh_changed({state_index}); }}\n",
+                            "static void flux__ui_{callback_name}_{}(GtkWidget *widget, gpointer data) {{ (void)data;{reload_guard}{submit_guard} {setter}(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh_changed({state_index}); }}\n",
                             element.name,
                         ));
                     }
@@ -22591,19 +22615,19 @@ fn emit_linux_gtk_application(
                 };
                 if multiline && property_name == "on_change" {
                     out.push_str(&format!(
-                        "static void flux__ui_{callback_name}_{}(GtkTextBuffer *buffer, gpointer data) {{ (void)data;{submit_guard} GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {}(text); g_free(text); flux__ui_refresh(); }}\n",
+                        "static void flux__ui_{callback_name}_{}(GtkTextBuffer *buffer, gpointer data) {{ (void)data;{reload_guard}{submit_guard} GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {}(text); g_free(text); flux__ui_refresh(); }}\n",
                         element.name,
                         linux_ui_callback_call_c_name(function),
                     ));
                 } else if multiline {
                     out.push_str(&format!(
-                        "static gboolean flux__ui_{callback_name}_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)keycode; (void)state; (void)data;{submit_guard} if (keyval != GDK_KEY_Return && keyval != GDK_KEY_KP_Enter) return FALSE; GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)); GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)); GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {}(text); g_free(text); flux__ui_refresh(); return TRUE; }}\n",
+                        "static gboolean flux__ui_{callback_name}_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)keycode; (void)state; (void)data;{reload_guard}{submit_guard} if (keyval != GDK_KEY_Return && keyval != GDK_KEY_KP_Enter) return FALSE; GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)); GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)); GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {}(text); g_free(text); flux__ui_refresh(); return TRUE; }}\n",
                         element.name,
                         linux_ui_callback_call_c_name(function),
                     ));
                 } else {
                     out.push_str(&format!(
-                        "static void flux__ui_{callback_name}_{}(GtkWidget *widget, gpointer data) {{ (void)data;{submit_guard} {}(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh(); }}\n",
+                        "static void flux__ui_{callback_name}_{}(GtkWidget *widget, gpointer data) {{ (void)data;{reload_guard}{submit_guard} {}(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh(); }}\n",
                         element.name,
                         linux_ui_callback_call_c_name(function),
                     ));
