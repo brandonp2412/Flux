@@ -14354,7 +14354,7 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Error]);
             }
-            "copy" | "rename" | "link" => {
+            "copy" | "rename" | "link" | "symlink" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,

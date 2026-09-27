@@ -2603,6 +2603,10 @@ fn add_qualified_namespace_completions(
                 "link",
                 "fn file.link(source: str, destination: str) -> error",
             ),
+            (
+                "symlink",
+                "fn file.symlink(target: str, destination: str) -> error",
+            ),
             ("remove", "fn file.remove(path: str) -> error"),
         ] {
             push_completion_item(items, seen, label, 3, detail);
@@ -3767,6 +3771,7 @@ fn signature_help_for_document_cached(
             "rename" | "copyFile" | "copy" | "link" => {
                 (vec!["source: str", "destination: str"], "error")
             }
+            "symlink" => (vec!["target: str", "destination: str"], "error"),
             "create" | "createAll" | "remove" | "removeAll" | "sync" | "syncData" => {
                 (vec!["path: str"], "error")
             }
@@ -5654,6 +5659,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         &format!("file.{member}"),
                         &["source: str", "destination: str"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "symlink" => {
+                    return Some(signature_help_for_builtin(
+                        "file.symlink",
+                        &["target: str", "destination: str"],
                         "error",
                         active_parameter,
                     ));
@@ -9758,6 +9771,7 @@ mod tests {
         assert!(file_items.contains("fn file.copy(source: str, destination: str) -> error"));
         assert!(file_items.contains("fn file.rename(source: str, destination: str) -> error"));
         assert!(file_items.contains("fn file.link(source: str, destination: str) -> error"));
+        assert!(file_items.contains("fn file.symlink(target: str, destination: str) -> error"));
         assert!(file_items.contains("fn file.remove(path: str) -> error"));
 
         let path_line = source
@@ -12419,6 +12433,35 @@ fn main() -> i64 {
         .expect("file.isSymlink call should have signature help")
         .to_json();
         assert!(help.contains("fn file.isSymlink(path: str) -> bool"));
+    }
+
+    #[test]
+    fn file_symlink_completion_and_signature_help_are_builtin() {
+        let uri = "file:///tmp/file-symlink-create-signature.flux";
+        let source = r#"fn main() -> i64 {
+    print(file.symlink("target", "destination"))
+    return 0
+}
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("file.symlink("))
+            .expect("file.symlink call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "file.symlink(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("file.symlink call should have signature help")
+        .to_json();
+        assert!(help.contains("fn file.symlink(target: str, destination: str) -> error"));
     }
 
     #[test]

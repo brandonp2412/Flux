@@ -17341,6 +17341,87 @@ fn file_link_typechecks_lowers_and_creates_hard_link() {
 
 #[cfg(unix)]
 #[test]
+fn file_symlink_creates_live_and_broken_symbolic_links() {
+    let root =
+        std::env::temp_dir().join(format!("flux-file-symlink-create-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("file.symlink fixture should be writable");
+    let regular = root.join("regular.txt");
+    let link = root.join("regular-link");
+    let missing = root.join("missing.txt");
+    let broken = root.join("broken-link");
+    fs::write(&regular, "linked").expect("regular file should be writable");
+    let source = format!(
+        r#"
+fn main() -> i64 {{
+    print(file.symlink("{}", "{}"))
+    print(file.isSymlink("{}"))
+    print(file.symlink("{}", "{}"))
+    print(file.isSymlink("{}"))
+    return 0
+}}
+"#,
+        regular.to_string_lossy(),
+        link.to_string_lossy(),
+        link.to_string_lossy(),
+        missing.to_string_lossy(),
+        broken.to_string_lossy(),
+        broken.to_string_lossy(),
+    );
+    check_source(&source).expect("file.symlink should typecheck");
+    let generated = compile_to_c(&source).expect("file.symlink should lower");
+    assert!(generated.contains("flux__fs_file_symlink"));
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("file.symlink source should be writable");
+    let binary = root.join("file-symlink");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("file.symlink binary should build");
+    assert!(
+        built.status.success(),
+        "file.symlink build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("file.symlink binary should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "nil
+true
+nil
+true
+"
+    );
+    assert_eq!(
+        fs::read_to_string(&link).expect("live symlink should resolve"),
+        "linked"
+    );
+    assert!(
+        fs::symlink_metadata(&broken)
+            .expect("broken symlink metadata should exist")
+            .file_type()
+            .is_symlink()
+    );
+
+    let shaken = compile_to_c(
+        "fn main() -> i64 {
+    return 0
+}
+",
+    )
+    .expect("symlink-free source should compile");
+    assert!(!shaken.contains("flux__fs_file_symlink"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
 fn file_is_symlink_inspects_links_without_following_targets() {
     use std::os::unix::fs::symlink;
 

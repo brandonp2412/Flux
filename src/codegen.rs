@@ -11259,6 +11259,10 @@ static inline const char *flux__path_relative(const char *base, const char *targ
     if runtime_usage.contains("flux__fs_file_link(") {
         out.push_str("static inline const char *flux__fs_file_link(const char *source, const char *destination) { struct stat info; if (stat(source, &info) != 0 || !S_ISREG(info.st_mode)) return \"path is not a file\"; return link(source, destination) == 0 ? NULL : \"failed to create file link\"; }\n");
     }
+    if runtime_usage.contains("flux__fs_file_symlink(") {
+        out.push_str("extern int symlink(const char *, const char *);\n");
+        out.push_str("static inline const char *flux__fs_file_symlink(const char *target, const char *destination) { size_t target_length = 0; size_t destination_length = 0; if (!flux__fs_bounded_length(target, &target_length) || !flux__fs_bounded_length(destination, &destination_length)) return \"symbolic link path exceeds 65536 bytes\"; return symlink(target, destination) == 0 ? NULL : \"failed to create symbolic link\"; }\n");
+    }
     if runtime_usage.contains("flux__fs_file_sync(")
         || runtime_usage.contains("flux__fs_file_sync_data(")
         || runtime_usage.contains("flux__fs_directory_sync(")
@@ -54312,7 +54316,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "copy" | "rename" | "link" => {
+            "copy" | "rename" | "link" | "symlink" => {
                 if args.len() != 2 {
                     return Err(diag(span, "invalid file call reached code generation"));
                 }
@@ -54322,6 +54326,7 @@ fn emit_qualified_call(
                     "copy" => "flux__fs_copy_file",
                     "rename" => "flux__fs_rename",
                     "link" => "flux__fs_file_link",
+                    "symlink" => "flux__fs_file_symlink",
                     _ => unreachable!(),
                 };
                 return Ok((
