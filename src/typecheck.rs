@@ -14393,7 +14393,7 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "isAbsolute" | "isRelative" => {
+            "isAbsolute" | "isRelative" | "hasExtension" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,

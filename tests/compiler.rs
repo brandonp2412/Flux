@@ -1114,8 +1114,14 @@ fn show(value: str) -> void {
 fn main() -> i64 {
     let absolute: bool = path.isAbsolute("/tmp/flux")
     let relative: bool = path.isRelative("tmp/flux")
+    let has_extension: bool = path.hasExtension("/tmp/flux.txt")
+    let dotfile_has_extension: bool = path.hasExtension("/tmp/.env")
+    let trailing_dot_has_extension: bool = path.hasExtension("/tmp/flux.")
     print(absolute)
     print(relative)
+    print(has_extension)
+    print(dotfile_has_extension)
+    print(trailing_dot_has_extension)
     print(path.join("/tmp", "flux", show))
     print(path.relative("/tmp/flux/src", "/tmp/flux/tests/unit", show))
     print(path.relative("/tmp/flux", "/tmp/flux", show))
@@ -1143,6 +1149,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("path capability source should compile");
     assert!(generated.contains("flux__path_is_absolute(\"/tmp/flux\")"));
     assert!(generated.contains("flux__path_is_relative(\"tmp/flux\")"));
+    assert!(generated.contains("flux__path_has_extension(\"/tmp/flux.txt\")"));
     assert!(generated.contains("flux__path_join(\"/tmp\", \"flux\", flux__fn_show)"));
     assert!(generated.contains(
         "flux__path_relative(\"/tmp/flux/src\", \"/tmp/flux/tests/unit\", flux__fn_show)"
@@ -1192,7 +1199,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "true\ntrue\n/tmp/flux\nnil\n../tests/unit\nnil\n.\nnil\n../beta\nnil\npath.relative requires matching absolute or relative paths\n/tmp/flux/tests/unit\nnil\n/var/tmp\nnil\nC:/beta\nnil\n/tmp\nnil\nflux\nnil\n/\nnil\n\\\nnil\n.txt\nnil\n\nnil\n.env\nnil\nflux\nnil\n/tmp/flux.md\nnil\n/tmp/.env.bak\nnil\n/tmp/archive.tar\nnil\n/tmp/cache/item\nnil\n../../b\nnil\n"
+        "true\ntrue\ntrue\nfalse\nfalse\n/tmp/flux\nnil\n../tests/unit\nnil\n.\nnil\n../beta\nnil\npath.relative requires matching absolute or relative paths\n/tmp/flux/tests/unit\nnil\n/var/tmp\nnil\nC:/beta\nnil\n/tmp\nnil\nflux\nnil\n/\nnil\n\\\nnil\n.txt\nnil\n\nnil\n.env\nnil\nflux\nnil\n/tmp/flux.md\nnil\n/tmp/.env.bak\nnil\n/tmp/archive.tar\nnil\n/tmp/cache/item\nnil\n../../b\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 
@@ -1201,6 +1208,7 @@ fn main() -> i64 {
     assert!(!shaken.contains("flux__path_join"));
     assert!(!shaken.contains("flux__path_is_absolute"));
     assert!(!shaken.contains("flux__path_is_relative"));
+    assert!(!shaken.contains("flux__path_has_extension"));
     assert!(!shaken.contains("flux__path_extension_or_stem"));
     assert!(!shaken.contains("flux__path_with_extension"));
     assert!(!shaken.contains("flux__path_normalize"));
