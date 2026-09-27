@@ -47924,21 +47924,93 @@ app Form
     let validation_first = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("validation-description precedence baseline should analyze");
+    let validation_generated = validation_first
+        .emit_c()
+        .expect("validation-description precedence fixture should lower for Linux");
+    assert!(
+        validation_generated
+            .contains("static bool flux__ui_accessibility_description_explicit_email = false;")
+    );
+    assert!(validation_generated.contains(
+        "if (!flux__ui_accessibility_description_explicit_email) gtk_accessible_update_property"
+    ));
+    assert!(validation_generated.contains(
+        "flux__ui_accessibility_description_explicit_email = false; gtk_accessible_update_property(GTK_ACCESSIBLE(flux__ui_email), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, flux__ui_validation_message_email, -1);"
+    ));
     let validation_with_description = validation_initial.replace(
         "        validationMessage: \"Required\"\n",
         "        validationMessage: \"Required\"\n        accessibilityDescription: \"Email field\"\n",
     );
-    fs::write(&entry, validation_with_description)
+    fs::write(&entry, &validation_with_description)
         .expect("validation-description precedence update should be writable");
     cache.invalidate_path(&entry);
     let validation_second = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("validation-description precedence update should analyze");
-    assert!(
+    assert_eq!(
+        validation_second.development_abi(),
+        validation_first.development_abi()
+    );
+    assert_eq!(
         validation_second
             .development_ui_string_patch_from(&validation_first)
-            .is_none(),
-        "description lifecycle must retain controlled restart when TextInput validation feedback owns the native description"
+            .expect(
+                "explicit TextInput description should hot-override literal validation feedback"
+            ),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "email".to_string(),
+            property: "accessibility_description".to_string(),
+            value: "Email field".to_string(),
+        }]
+    );
+
+    let validation_with_updated_message =
+        validation_with_description.replace("Required", "Still required");
+    fs::write(&entry, &validation_with_updated_message)
+        .expect("updated validation message with explicit description should be writable");
+    cache.invalidate_path(&entry);
+    let validation_third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated validation message with explicit description should analyze");
+    assert_eq!(
+        validation_third.development_abi(),
+        validation_second.development_abi()
+    );
+    assert_eq!(
+        validation_third
+            .development_ui_string_patch_from(&validation_second)
+            .expect(
+                "literal validation feedback should hot-update beneath an explicit description"
+            ),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "email".to_string(),
+            property: "validation_message".to_string(),
+            value: "Still required".to_string(),
+        }]
+    );
+
+    let validation_without_description = validation_initial.replace("Required", "Still required");
+    fs::write(&entry, validation_without_description)
+        .expect("restored validation-description precedence source should be writable");
+    cache.invalidate_path(&entry);
+    let validation_fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("restored validation-description precedence source should analyze");
+    assert_eq!(
+        validation_fourth.development_abi(),
+        validation_third.development_abi()
+    );
+    assert_eq!(
+        validation_fourth
+            .development_ui_string_patch_from(&validation_third)
+            .expect(
+                "removing explicit TextInput description should reveal literal validation feedback"
+            ),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "email".to_string(),
+            property: "accessibility_description".to_string(),
+            value: "__flux_accessibility_property_default__".to_string(),
+        }]
     );
 
     let _ = fs::remove_dir_all(root);

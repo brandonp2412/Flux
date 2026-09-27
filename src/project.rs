@@ -3067,13 +3067,17 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
                 && (!development_ui_element_has_property(element, "tooltip")
                     || development_ui_element_has_literal_string_property(element, "tooltip"))
                 && ![
-                    "accessibility_description",
                     "accessibility_action_label",
                     "accessibility_long_press_label",
                     "accessibility_actions",
                 ]
                 .iter()
                 .any(|property| development_ui_element_has_property(element, property))
+                && (!development_ui_element_has_property(element, "accessibility_description")
+                    || development_ui_element_has_literal_string_property(
+                        element,
+                        "accessibility_description",
+                    ))
         }
         "accessibility_label"
         | "accessibility_description"
@@ -3595,13 +3599,17 @@ fn development_ui_property_lifecycle_patch_value(
         && (!development_ui_element_has_property(element, "tooltip")
             || development_ui_element_has_literal_string_property(element, "tooltip"))
         && ![
-            "accessibility_description",
             "accessibility_action_label",
             "accessibility_long_press_label",
             "accessibility_actions",
         ]
         .iter()
         .any(|property| development_ui_element_has_property(element, property))
+        && (!development_ui_element_has_property(element, "accessibility_description")
+            || development_ui_element_has_literal_string_property(
+                element,
+                "accessibility_description",
+            ))
     {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -3679,7 +3687,8 @@ fn development_ui_property_lifecycle_patch_value(
     }
     if property_name == "accessibility_description"
         && (element.kind != "TextInput"
-            || !development_ui_element_has_property(element, "validation_message"))
+            || !development_ui_element_has_property(element, "validation_message")
+            || development_ui_element_has_literal_string_property(element, "validation_message"))
         && ![
             "accessibility_action_label",
             "accessibility_long_press_label",

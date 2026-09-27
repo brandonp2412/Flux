@@ -21405,9 +21405,15 @@ fn emit_linux_gtk_application(
                 .and_then(|property| static_expr_str(&property.value, signatures));
             out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
             out.push_str(&format!(
-                "static bool flux__ui_tooltip_explicit_{} = {};\nstatic const char *flux__ui_tooltip_{} = {};\nstatic char *flux__ui_tooltip_owned_{} = NULL;\nstatic const char *flux__ui_validation_message_{} = {};\nstatic char *flux__ui_validation_message_owned_{} = NULL;\n",
+                "static bool flux__ui_tooltip_explicit_{} = {};\nstatic bool flux__ui_accessibility_description_explicit_{} = {};\nstatic const char *flux__ui_tooltip_{} = {};\nstatic char *flux__ui_tooltip_owned_{} = NULL;\nstatic const char *flux__ui_validation_message_{} = {};\nstatic char *flux__ui_validation_message_owned_{} = NULL;\n",
                 element.name,
                 if view_property(element, "tooltip").is_some() {
+                    "true"
+                } else {
+                    "false"
+                },
+                element.name,
+                if view_property(element, "accessibility_description").is_some() {
                     "true"
                 } else {
                     "false"
@@ -21815,8 +21821,9 @@ fn emit_linux_gtk_application(
                     c_string(&element.name)
                 ));
                 out.push_str(&format!(
-                    " if (strcmp(name, {}) == 0 && strcmp(property, \"validation_message\") == 0 && {widget} != NULL) {{ char *message_copy = g_strdup(value); if (message_copy != NULL) {{ g_free(flux__ui_validation_message_owned_{}); flux__ui_validation_message_owned_{} = message_copy; flux__ui_validation_message_{} = message_copy; const char *effective_tooltip = flux__ui_tooltip_explicit_{} ? flux__ui_tooltip_{} : flux__ui_validation_message_{}; gtk_widget_set_tooltip_text({widget}, (effective_tooltip != NULL && effective_tooltip[0] != '\\0') ? effective_tooltip : NULL); gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }} }}",
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"validation_message\") == 0 && {widget} != NULL) {{ char *message_copy = g_strdup(value); if (message_copy != NULL) {{ g_free(flux__ui_validation_message_owned_{}); flux__ui_validation_message_owned_{} = message_copy; flux__ui_validation_message_{} = message_copy; const char *effective_tooltip = flux__ui_tooltip_explicit_{} ? flux__ui_tooltip_{} : flux__ui_validation_message_{}; gtk_widget_set_tooltip_text({widget}, (effective_tooltip != NULL && effective_tooltip[0] != '\\0') ? effective_tooltip : NULL); if (!flux__ui_accessibility_description_explicit_{}) gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }} }}",
                     c_string(&element.name),
+                    element.name,
                     element.name,
                     element.name,
                     element.name,
@@ -21934,10 +21941,24 @@ fn emit_linux_gtk_application(
             " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_label\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_accessibility_property_default__\") == 0) gtk_accessible_reset_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_LABEL); else gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_LABEL, value, -1); }}",
             c_string(&element.name)
         ));
-        out.push_str(&format!(
-            " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_description\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_accessibility_property_default__\") == 0) gtk_accessible_reset_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION); else gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }}",
-            c_string(&element.name)
-        ));
+        if element.kind == "TextInput"
+            && view_property(element, "validation_message")
+                .and_then(|property| static_expr_str(&property.value, signatures))
+                .is_some()
+        {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_description\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_accessibility_property_default__\") == 0) {{ flux__ui_accessibility_description_explicit_{} = false; gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, flux__ui_validation_message_{}, -1); }} else {{ flux__ui_accessibility_description_explicit_{} = true; gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }} }}",
+                c_string(&element.name),
+                element.name,
+                element.name,
+                element.name,
+            ));
+        } else {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_description\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_accessibility_property_default__\") == 0) gtk_accessible_reset_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION); else gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }}",
+                c_string(&element.name)
+            ));
+        }
         out.push_str(&format!(
             " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_action_label\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_accessibility_property_default__\") == 0) gtk_accessible_reset_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION); else gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }}",
             c_string(&element.name)
