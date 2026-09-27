@@ -3091,8 +3091,12 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
                 )
         }
         "accessibility_long_press_label" => {
-            !development_ui_element_has_property(element, "accessibility_description")
-                && !development_ui_element_has_property(element, "accessibility_action_label")
+            !development_ui_element_has_property(element, "accessibility_action_label")
+                && (!development_ui_element_has_property(element, "accessibility_description")
+                    || development_ui_element_has_literal_string_property(
+                        element,
+                        "accessibility_description",
+                    ))
         }
         "status" => true,
         "align_x" | "align_y" => true,
@@ -3693,14 +3697,20 @@ fn development_ui_property_lifecycle_patch_value(
         && (element.kind != "TextInput"
             || !development_ui_element_has_property(element, "validation_message")
             || development_ui_element_has_literal_string_property(element, "validation_message"))
-        && !["accessibility_long_press_label", "accessibility_actions"]
-            .iter()
-            .any(|candidate| development_ui_element_has_property(element, candidate))
+        && !development_ui_element_has_property(element, "accessibility_actions")
+        && !(development_ui_element_has_property(element, "accessibility_action_label")
+            && development_ui_element_has_property(element, "accessibility_long_press_label"))
         && (!development_ui_element_has_property(element, "accessibility_action_label")
             || (element.kind != "TextInput"
                 && development_ui_element_has_literal_string_property(
                     element,
                     "accessibility_action_label",
+                )))
+        && (!development_ui_element_has_property(element, "accessibility_long_press_label")
+            || (element.kind != "TextInput"
+                && development_ui_element_has_literal_string_property(
+                    element,
+                    "accessibility_long_press_label",
                 )))
     {
         let ExprKind::Str(value) = &property.value.kind else {
@@ -3736,13 +3746,14 @@ fn development_ui_property_lifecycle_patch_value(
     }
     if property_name == "accessibility_long_press_label"
         && element.kind != "TextInput"
-        && ![
-            "accessibility_description",
-            "accessibility_action_label",
-            "accessibility_actions",
-        ]
-        .iter()
-        .any(|candidate| development_ui_element_has_property(element, candidate))
+        && !["accessibility_action_label", "accessibility_actions"]
+            .iter()
+            .any(|candidate| development_ui_element_has_property(element, candidate))
+        && (!development_ui_element_has_property(element, "accessibility_description")
+            || development_ui_element_has_literal_string_property(
+                element,
+                "accessibility_description",
+            ))
     {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;

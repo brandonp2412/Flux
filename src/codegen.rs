@@ -21445,6 +21445,24 @@ fn emit_linux_gtk_application(
                     element.name,
                 ));
                 out.push_str("#endif\n");
+            } else if let Some(long_press_label) =
+                view_property(element, "accessibility_long_press_label")
+                    .and_then(|property| static_expr_str(&property.value, signatures))
+            {
+                out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+                out.push_str(&format!(
+                    "static bool flux__ui_accessibility_description_explicit_{} = {};\nstatic const char *flux__ui_accessibility_long_press_label_{} = {};\nstatic char *flux__ui_accessibility_long_press_label_owned_{} = NULL;\n",
+                    element.name,
+                    if view_property(element, "accessibility_description").is_some() {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                    element.name,
+                    c_string(&long_press_label),
+                    element.name,
+                ));
+                out.push_str("#endif\n");
             }
         }
         if element.kind == "Text" {
@@ -21987,6 +22005,20 @@ fn emit_linux_gtk_application(
                 element.name,
                 element.name,
             ));
+        } else if element.kind != "TextInput"
+            && view_property(element, "accessibility_action_label").is_none()
+            && view_property(element, "accessibility_long_press_label")
+                .and_then(|property| static_expr_str(&property.value, signatures))
+                .is_some()
+            && view_property(element, "accessibility_actions").is_none()
+        {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_description\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_accessibility_property_default__\") == 0) {{ flux__ui_accessibility_description_explicit_{} = false; gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, flux__ui_accessibility_long_press_label_{}, -1); }} else {{ flux__ui_accessibility_description_explicit_{} = true; gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }} }}",
+                c_string(&element.name),
+                element.name,
+                element.name,
+                element.name,
+            ));
         } else {
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_description\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_accessibility_property_default__\") == 0) gtk_accessible_reset_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION); else gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }}",
@@ -22018,10 +22050,31 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        out.push_str(&format!(
-            " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_long_press_label\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_accessibility_property_default__\") == 0) gtk_accessible_reset_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION); else gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }}",
-            c_string(&element.name)
-        ));
+        if element.kind != "TextInput"
+            && view_property(element, "accessibility_action_label").is_none()
+            && view_property(element, "accessibility_long_press_label")
+                .and_then(|property| static_expr_str(&property.value, signatures))
+                .is_some()
+            && view_property(element, "accessibility_actions").is_none()
+        {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_long_press_label\") == 0 && {host} != NULL) {{ bool restore_default = strcmp(value, \"__flux_accessibility_property_default__\") == 0; if (restore_default) {{ g_free(flux__ui_accessibility_long_press_label_owned_{}); flux__ui_accessibility_long_press_label_owned_{} = NULL; flux__ui_accessibility_long_press_label_{} = \"\"; if (!flux__ui_accessibility_description_explicit_{}) gtk_accessible_reset_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION); }} else {{ char *long_press_label_copy = g_strdup(value); if (long_press_label_copy != NULL) {{ g_free(flux__ui_accessibility_long_press_label_owned_{}); flux__ui_accessibility_long_press_label_owned_{} = long_press_label_copy; flux__ui_accessibility_long_press_label_{} = long_press_label_copy; if (!flux__ui_accessibility_description_explicit_{}) gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, long_press_label_copy, -1); }} }} }}",
+                c_string(&element.name),
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+            ));
+        } else {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_long_press_label\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_accessibility_property_default__\") == 0) gtk_accessible_reset_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION); else gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }}",
+                c_string(&element.name)
+            ));
+        }
         if view_property(element, "accessibility_description").is_none()
             && view_property(element, "accessibility_action_label").is_none()
             && view_property(element, "accessibility_long_press_label").is_none()
@@ -24590,17 +24643,28 @@ fn emit_linux_gtk_application(
             ));
             out.push_str("#endif\n");
         }
-        if element.kind != "TextInput"
-            && view_property(element, "accessibility_action_label")
+        if element.kind != "TextInput" {
+            if view_property(element, "accessibility_action_label")
                 .and_then(|property| static_expr_str(&property.value, signatures))
                 .is_some()
-        {
-            out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
-            out.push_str(&format!(
-                "    g_free(flux__ui_accessibility_action_label_owned_{});\n",
-                element.name
-            ));
-            out.push_str("#endif\n");
+            {
+                out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+                out.push_str(&format!(
+                    "    g_free(flux__ui_accessibility_action_label_owned_{});\n",
+                    element.name
+                ));
+                out.push_str("#endif\n");
+            } else if view_property(element, "accessibility_long_press_label")
+                .and_then(|property| static_expr_str(&property.value, signatures))
+                .is_some()
+            {
+                out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+                out.push_str(&format!(
+                    "    g_free(flux__ui_accessibility_long_press_label_owned_{});\n",
+                    element.name
+                ));
+                out.push_str("#endif\n");
+            }
         }
         if view_property(element, "context_menu_label").is_some() {
             out.push_str(&format!(

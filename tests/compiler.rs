@@ -48323,6 +48323,116 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_long_press_description_precedence() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-accessibility-long-press-description-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary long-press description precedence project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"fn held() -> void {
+    print("hold")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text target at 1,1
+        text: "Hold"
+        onLongPress: held
+        accessibilityLongPressLabel: "Hold fallback"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("long-press fallback baseline should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("long-press fallback baseline should analyze");
+    let generated = first
+        .emit_c()
+        .expect("long-press fallback baseline should lower for Linux");
+    assert!(
+        generated
+            .contains("static bool flux__ui_accessibility_description_explicit_target = false;")
+    );
+    assert!(generated.contains(
+        r#"static const char *flux__ui_accessibility_long_press_label_target = "Hold fallback";"#
+    ));
+    assert!(generated.contains(
+        "flux__ui_accessibility_description_explicit_target = false; gtk_accessible_update_property(GTK_ACCESSIBLE(flux__ui_target), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, flux__ui_accessibility_long_press_label_target, -1);"
+    ));
+
+    let with_description = initial.replace(
+        r#"        accessibilityLongPressLabel: "Hold fallback"
+"#,
+        r#"        accessibilityLongPressLabel: "Hold fallback"
+        accessibilityDescription: "Explicit description"
+"#,
+    );
+    fs::write(&entry, &with_description)
+        .expect("long-press explicit description source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("long-press explicit description source should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("description should hot-override a literal long-press fallback"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "target".to_string(),
+            property: "accessibility_description".to_string(),
+            value: "Explicit description".to_string(),
+        }]
+    );
+
+    let updated_fallback = with_description.replace("Hold fallback", "Updated fallback");
+    fs::write(&entry, &updated_fallback)
+        .expect("shadowed long-press fallback edit should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("shadowed long-press fallback edit should analyze");
+    assert_eq!(third.development_abi(), second.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("shadowed long-press fallback should update in place"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "target".to_string(),
+            property: "accessibility_long_press_label".to_string(),
+            value: "Updated fallback".to_string(),
+        }]
+    );
+
+    let without_description = initial.replace("Hold fallback", "Updated fallback");
+    fs::write(&entry, without_description)
+        .expect("restored long-press fallback source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("restored long-press fallback source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("description removal should reveal the updated long-press fallback"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "target".to_string(),
+            property: "accessibility_description".to_string(),
+            value: "__flux_accessibility_property_default__".to_string(),
+        }]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_accessibility_action_label_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-accessibility-action-lifecycle-{}",
