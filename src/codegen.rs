@@ -21463,6 +21463,24 @@ fn emit_linux_gtk_application(
                     element.name,
                 ));
                 out.push_str("#endif\n");
+            } else if let Some(property) = view_property(element, "accessibility_actions") {
+                let actions =
+                    static_string_list(&property.value, signatures, "accessibilityActions")?;
+                let action_description = format!("Actions: {}", actions.join("; "));
+                out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+                out.push_str(&format!(
+                    "static bool flux__ui_accessibility_description_explicit_{} = {};\nstatic const char *flux__ui_accessibility_actions_description_{} = {};\nstatic char *flux__ui_accessibility_actions_description_owned_{} = NULL;\n",
+                    element.name,
+                    if view_property(element, "accessibility_description").is_some() {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                    element.name,
+                    c_string(&action_description),
+                    element.name,
+                ));
+                out.push_str("#endif\n");
             }
         }
         if element.kind == "Text" {
@@ -22019,6 +22037,18 @@ fn emit_linux_gtk_application(
                 element.name,
                 element.name,
             ));
+        } else if element.kind != "TextInput"
+            && view_property(element, "accessibility_action_label").is_none()
+            && view_property(element, "accessibility_long_press_label").is_none()
+            && view_property(element, "accessibility_actions").is_some()
+        {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_description\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_accessibility_property_default__\") == 0) {{ flux__ui_accessibility_description_explicit_{} = false; gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, flux__ui_accessibility_actions_description_{}, -1); }} else {{ flux__ui_accessibility_description_explicit_{} = true; gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }} }}",
+                c_string(&element.name),
+                element.name,
+                element.name,
+                element.name,
+            ));
         } else {
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_description\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_accessibility_property_default__\") == 0) gtk_accessible_reset_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION); else gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }}",
@@ -22075,14 +22105,17 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        if view_property(element, "accessibility_description").is_none()
-            && view_property(element, "accessibility_action_label").is_none()
+        if view_property(element, "accessibility_action_label").is_none()
             && view_property(element, "accessibility_long_press_label").is_none()
             && view_property(element, "accessibility_actions").is_some()
         {
             out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_actions\") == 0 && {host} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1);",
-                c_string(&element.name)
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_actions\") == 0 && {host} != NULL) {{ char *actions_copy = g_strdup(value); if (actions_copy != NULL) {{ g_free(flux__ui_accessibility_actions_description_owned_{}); flux__ui_accessibility_actions_description_owned_{} = actions_copy; flux__ui_accessibility_actions_description_{} = actions_copy; if (!flux__ui_accessibility_description_explicit_{}) gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, actions_copy, -1); }} }}",
+                c_string(&element.name),
+                element.name,
+                element.name,
+                element.name,
+                element.name,
             ));
         }
         out.push_str(&format!(
@@ -24661,6 +24694,13 @@ fn emit_linux_gtk_application(
                 out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
                 out.push_str(&format!(
                     "    g_free(flux__ui_accessibility_long_press_label_owned_{});\n",
+                    element.name
+                ));
+                out.push_str("#endif\n");
+            } else if view_property(element, "accessibility_actions").is_some() {
+                out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+                out.push_str(&format!(
+                    "    g_free(flux__ui_accessibility_actions_description_owned_{});\n",
                     element.name
                 ));
                 out.push_str("#endif\n");

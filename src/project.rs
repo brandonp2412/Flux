@@ -3007,6 +3007,23 @@ fn development_ui_element_has_literal_string_property(
     })
 }
 
+fn development_ui_element_has_literal_string_list_property(
+    element: &ViewElement,
+    property: &str,
+) -> bool {
+    element.properties.iter().any(|candidate| {
+        typecheck::source_name_to_internal(&candidate.name) == property
+            && matches!(
+                &candidate.value.kind,
+                ExprKind::List(values)
+                    if !values.is_empty()
+                        && values.iter().all(|item| {
+                            matches!(&item.kind, ExprKind::Str(value) if !value.is_empty() && !value.as_bytes().contains(&0))
+                        })
+            )
+    })
+}
+
 fn development_ui_element_has_shortcut_action(element: &ViewElement) -> bool {
     (element.kind == "Button" && development_ui_element_has_property(element, "on_press"))
         || development_ui_element_has_property(element, "on_tap")
@@ -3112,12 +3129,16 @@ fn development_ui_string_list_property_is_patchable(element: &ViewElement, prope
         "accessibility_actions" => {
             development_ui_element_has_property(element, "on_accessibility_action")
                 && ![
-                    "accessibility_description",
                     "accessibility_action_label",
                     "accessibility_long_press_label",
                 ]
                 .iter()
                 .any(|property| development_ui_element_has_property(element, property))
+                && (!development_ui_element_has_property(element, "accessibility_description")
+                    || development_ui_element_has_literal_string_property(
+                        element,
+                        "accessibility_description",
+                    ))
         }
         _ => false,
     }
@@ -3697,7 +3718,13 @@ fn development_ui_property_lifecycle_patch_value(
         && (element.kind != "TextInput"
             || !development_ui_element_has_property(element, "validation_message")
             || development_ui_element_has_literal_string_property(element, "validation_message"))
-        && !development_ui_element_has_property(element, "accessibility_actions")
+        && (!development_ui_element_has_property(element, "accessibility_actions")
+            || (element.kind != "TextInput"
+                && development_ui_element_has_property(element, "on_accessibility_action")
+                && development_ui_element_has_literal_string_list_property(
+                    element,
+                    "accessibility_actions",
+                )))
         && !(development_ui_element_has_property(element, "accessibility_action_label")
             && development_ui_element_has_property(element, "accessibility_long_press_label"))
         && (!development_ui_element_has_property(element, "accessibility_action_label")

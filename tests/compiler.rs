@@ -48658,6 +48658,17 @@ app Actions
     let shadowed_first = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("shadowed custom accessibility action source should analyze");
+    assert_eq!(shadowed_first.development_abi(), second.development_abi());
+    assert_eq!(
+        shadowed_first
+            .development_ui_string_patch_from(&second)
+            .expect("explicit description should hot-override custom accessibility actions"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "title".to_string(),
+            property: "accessibility_description".to_string(),
+            value: "Explicit description".to_string(),
+        }]
+    );
     let shadowed_updated = shadowed.replace("Open now", "Open later");
     fs::write(&entry, shadowed_updated)
         .expect("shadowed custom accessibility action edit should be writable");
@@ -48665,11 +48676,39 @@ app Actions
     let shadowed_second = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("shadowed custom accessibility action edit should analyze");
-    assert!(
+    assert_eq!(
         shadowed_second
             .development_ui_string_patch_from(&shadowed_first)
-            .is_none(),
-        "custom accessibility actions shadowed by an explicit description must retain controlled restart"
+            .expect(
+                "custom accessibility actions should update their live fallback while shadowed"
+            ),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "title".to_string(),
+            property: "accessibility_actions".to_string(),
+            value: "Actions: Open later; Archive; Share".to_string(),
+        }]
+    );
+
+    let unshadowed_updated = updated.replace("Open now", "Open later");
+    fs::write(&entry, unshadowed_updated)
+        .expect("restored custom accessibility action fallback should be writable");
+    cache.invalidate_path(&entry);
+    let unshadowed_final = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("restored custom accessibility action fallback should analyze");
+    assert_eq!(
+        unshadowed_final.development_abi(),
+        shadowed_second.development_abi()
+    );
+    assert_eq!(
+        unshadowed_final
+            .development_ui_string_patch_from(&shadowed_second)
+            .expect("description removal should reveal the current custom action fallback"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "title".to_string(),
+            property: "accessibility_description".to_string(),
+            value: "__flux_accessibility_property_default__".to_string(),
+        }]
     );
 
     let _ = fs::remove_dir_all(root);
