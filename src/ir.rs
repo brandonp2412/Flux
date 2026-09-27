@@ -4199,7 +4199,7 @@ impl ControlFlowGraph {
             ControlFlowValueKind::Index { base, .. } if is_non_copy_collection_type(&value.ty) => {
                 self.value_depends_on_borrow_source(*base, source, visiting)
             }
-            ControlFlowValueKind::Field { base, .. } if matches!(value.ty, Type::List(_)) => {
+            ControlFlowValueKind::Field { base, .. } if is_non_copy_collection_type(&value.ty) => {
                 self.value_depends_on_borrow_source(*base, source, visiting)
             }
             ControlFlowValueKind::Call { callee, arguments }
@@ -4295,7 +4295,7 @@ impl ControlFlowGraph {
             ControlFlowValueKind::Index { base, .. } if is_non_copy_collection_type(&value.ty) => {
                 self.value_depends_on_borrow_source(*base, source, visiting)
             }
-            ControlFlowValueKind::Field { base, .. } if matches!(value.ty, Type::List(_)) => {
+            ControlFlowValueKind::Field { base, .. } if is_non_copy_collection_type(&value.ty) => {
                 self.value_depends_on_borrow_source(*base, source, visiting)
             }
             ControlFlowValueKind::Call { callee, arguments }
@@ -4414,7 +4414,7 @@ impl ControlFlowGraph {
                     ));
                 }
             }
-            ControlFlowValueKind::Field { base, .. } if matches!(value.ty, Type::List(_)) => {
+            ControlFlowValueKind::Field { base, .. } if is_non_copy_collection_type(&value.ty) => {
                 visit(*base);
             }
             ControlFlowValueKind::Slice { base, .. } | ControlFlowValueKind::Index { base, .. }

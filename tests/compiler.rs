@@ -22227,6 +22227,45 @@ fn main() -> i64 {
 }
 
 #[test]
+fn explicit_borrow_supports_optional_nested_list_properties_without_owned_escape() {
+    for property in ["first", "last", "single"] {
+        let live = format!(
+            "fn main() -> i64 {{\n    let rows: i64[][]? = [[10, 20], [30, 40]]\n    let view: i64[]? = borrow rows?.{property}\n    let destination: i64[][]? = rows\n    if let present = borrow view:\n        print(present[0])\n    if let moved = borrow destination:\n        print(moved[0][0])\n    return 0\n}}\n"
+        );
+        let errors = check_source_all(&live)
+            .expect_err("a live optional list-property borrow must keep its root owner live");
+        assert!(
+            errors.iter().any(|error| error.message.contains(
+                "cannot move non-copy binding 'rows' while borrowed view 'view' is still live"
+            )),
+            "optional property borrow errors for {property}: {errors:?}"
+        );
+
+        let dead = format!(
+            "fn main() -> i64 {{\n    let rows: i64[][]? = [[10, 20], [30, 40]]\n    let view: i64[]? = borrow rows?.{property}\n    if let present = borrow view:\n        print(present[0])\n    let destination: i64[][]? = rows\n    if let moved = borrow destination:\n        print(moved[0][0])\n    return 0\n}}\n"
+        );
+        check_source(&dead).expect(
+            "an optional list-property borrow should release its root owner after last use",
+        );
+        compile_to_c(&dead)
+            .expect("optional list-property borrows should lower as zero-copy descriptors");
+    }
+
+    let escaping = r#"
+fn main() -> i64 {
+    let rows: i64[][]? = [[10, 20], [30, 40]]
+    let view: i64[]? = rows?.first
+    return 0
+}
+"#;
+    let error = check_source(escaping)
+        .expect_err("optional nested-list properties must require an explicit borrow");
+    assert!(error.message.contains(
+        "optional-aware field access currently requires a Copy result; borrowed collection properties require an explicit 'borrow'"
+    ));
+}
+
+#[test]
 fn optional_nested_index_can_unwrap_directly_through_explicit_borrow() {
     let live = r#"
 fn main() -> i64 {
