@@ -11346,9 +11346,46 @@ static inline const char *flux__path_relative(const char *base, const char *targ
     if runtime_usage.contains("flux__fs_copy_file(") {
         out.push_str("static inline const char *flux__fs_copy_file(const char *source, const char *destination) { FILE *input = fopen(source, \"rb\"); if (input == NULL) return \"failed to open source file\"; FILE *output = fopen(destination, \"wb\"); if (output == NULL) { fclose(input); return \"failed to open destination file\"; } unsigned char buffer[16384]; const char *failure = NULL; for (;;) { size_t read_count = fread(buffer, 1, sizeof(buffer), input); if (read_count > 0 && fwrite(buffer, 1, read_count, output) != read_count) { failure = \"failed to write destination file\"; break; } if (read_count < sizeof(buffer)) { if (ferror(input)) failure = \"failed to read source file\"; break; } } if (fclose(input) != 0 && failure == NULL) failure = \"failed to close source file\"; if (fclose(output) != 0 && failure == NULL) failure = \"failed to close destination file\"; return failure; }\n");
     }
-    if runtime_usage.contains("flux__fs_directory_is_empty(") {
+    let uses_fs_bool_error = runtime_usage.contains("flux__fs_directory_is_empty(")
+        || runtime_usage.contains("flux__fs_file_readable(")
+        || runtime_usage.contains("flux__fs_file_writable(")
+        || runtime_usage.contains("flux__fs_file_executable(")
+        || runtime_usage.contains("flux__fs_directory_readable(")
+        || runtime_usage.contains("flux__fs_directory_writable(")
+        || runtime_usage.contains("flux__fs_directory_executable(");
+    if uses_fs_bool_error {
         out.push_str("struct flux__fs_bool_error { bool v0; const char *v1; };\n");
+        out.push_str("static inline struct flux__fs_bool_error flux__fs_bool_result(bool value, const char *error) { struct flux__fs_bool_error result = { .v0 = value, .v1 = error }; return result; }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_is_empty(") {
         out.push_str("static inline struct flux__fs_bool_error flux__fs_directory_is_empty(const char *path) { struct flux__fs_bool_error result = { .v0 = false, .v1 = NULL }; size_t length = 0; if (!flux__fs_bounded_length(path, &length)) { result.v1 = \"directory path is invalid or too long\"; return result; } struct stat info; if (stat(path, &info) != 0 || !S_ISDIR(info.st_mode)) { result.v1 = \"path is not a directory\"; return result; } DIR *directory = opendir(path); if (directory == NULL) { result.v1 = \"failed to open directory\"; return result; } bool empty = true; const char *error = NULL; for (;;) { errno = 0; struct dirent *entry = readdir(directory); if (entry == NULL) { if (errno != 0) error = \"failed to inspect directory\"; break; } if (strcmp(entry->d_name, \".\") == 0 || strcmp(entry->d_name, \"..\") == 0) continue; empty = false; break; } if (closedir(directory) != 0 && error == NULL) error = \"failed to close directory\"; result.v0 = error == NULL && empty; result.v1 = error; return result; }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_readable(")
+        || runtime_usage.contains("flux__fs_file_writable(")
+        || runtime_usage.contains("flux__fs_file_executable(")
+        || runtime_usage.contains("flux__fs_directory_readable(")
+        || runtime_usage.contains("flux__fs_directory_writable(")
+        || runtime_usage.contains("flux__fs_directory_executable(")
+    {
+        out.push_str("static inline struct flux__fs_bool_error flux__fs_access(const char *path, bool expect_directory, int mode) { size_t length = 0; if (!flux__fs_bounded_length(path, &length)) return flux__fs_bool_result(false, expect_directory ? \"directory path is invalid or too long\" : \"file path is invalid or too long\"); struct stat info; if (stat(path, &info) != 0) return flux__fs_bool_result(false, expect_directory ? \"failed to inspect directory\" : \"failed to inspect file\"); if (expect_directory ? !S_ISDIR(info.st_mode) : !S_ISREG(info.st_mode)) return flux__fs_bool_result(false, expect_directory ? \"path is not a directory\" : \"path is not a file\"); return flux__fs_bool_result(access(path, mode) == 0, NULL); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_readable(") {
+        out.push_str("static inline struct flux__fs_bool_error flux__fs_file_readable(const char *path) { return flux__fs_access(path, false, R_OK); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_writable(") {
+        out.push_str("static inline struct flux__fs_bool_error flux__fs_file_writable(const char *path) { return flux__fs_access(path, false, W_OK); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_executable(") {
+        out.push_str("static inline struct flux__fs_bool_error flux__fs_file_executable(const char *path) { return flux__fs_access(path, false, X_OK); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_readable(") {
+        out.push_str("static inline struct flux__fs_bool_error flux__fs_directory_readable(const char *path) { return flux__fs_access(path, true, R_OK); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_writable(") {
+        out.push_str("static inline struct flux__fs_bool_error flux__fs_directory_writable(const char *path) { return flux__fs_access(path, true, W_OK); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_executable(") {
+        out.push_str("static inline struct flux__fs_bool_error flux__fs_directory_executable(const char *path) { return flux__fs_access(path, true, X_OK); }\n");
     }
     if runtime_usage.contains("flux__fs_file_size(")
         || runtime_usage.contains("flux__fs_file_modified_unix_millis(")
@@ -54212,9 +54249,10 @@ fn emit_qualified_call(
             return Err(diag(span, "invalid file call reached code generation"));
         }
         match name {
-            "exists" | "isSymlink" | "size" | "modifiedUnixMillis" | "accessed" | "changed"
-            | "permissions" | "owner" | "group" | "inode" | "device" | "hardLinks"
-            | "blockSize" | "allocatedSize" | "remove" | "sync" | "syncData" => {
+            "exists" | "isSymlink" | "readable" | "writable" | "executable" | "size"
+            | "modifiedUnixMillis" | "accessed" | "changed" | "permissions" | "owner" | "group"
+            | "inode" | "device" | "hardLinks" | "blockSize" | "allocatedSize" | "remove"
+            | "sync" | "syncData" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid file call reached code generation"));
                 }
@@ -54222,6 +54260,21 @@ fn emit_qualified_call(
                 let (helper, returns, multi_value_tag) = match name {
                     "exists" => ("flux__fs_is_file", vec![Type::Bool], None),
                     "isSymlink" => ("flux__fs_is_symlink", vec![Type::Bool], None),
+                    "readable" => (
+                        "flux__fs_file_readable",
+                        vec![Type::Bool, Type::Error],
+                        Some("flux__fs_bool_error".to_string()),
+                    ),
+                    "writable" => (
+                        "flux__fs_file_writable",
+                        vec![Type::Bool, Type::Error],
+                        Some("flux__fs_bool_error".to_string()),
+                    ),
+                    "executable" => (
+                        "flux__fs_file_executable",
+                        vec![Type::Bool, Type::Error],
+                        Some("flux__fs_bool_error".to_string()),
+                    ),
                     "size" => (
                         "flux__fs_file_size",
                         vec![Type::I64, Type::Error],
@@ -54692,6 +54745,21 @@ fn emit_qualified_call(
             "exists" => ("flux__fs_is_directory", vec![Type::Bool], None),
             "isEmpty" => (
                 "flux__fs_directory_is_empty",
+                vec![Type::Bool, Type::Error],
+                Some("flux__fs_bool_error".to_string()),
+            ),
+            "readable" => (
+                "flux__fs_directory_readable",
+                vec![Type::Bool, Type::Error],
+                Some("flux__fs_bool_error".to_string()),
+            ),
+            "writable" => (
+                "flux__fs_directory_writable",
+                vec![Type::Bool, Type::Error],
+                Some("flux__fs_bool_error".to_string()),
+            ),
+            "executable" => (
+                "flux__fs_directory_executable",
                 vec![Type::Bool, Type::Error],
                 Some("flux__fs_bool_error".to_string()),
             ),
@@ -91940,15 +92008,29 @@ fn emit_cfg_multi_expr_direct(
             let i64_bool_error = vec![Type::I64, Type::Bool, Type::Error];
             let bool_error = vec![Type::Bool, Type::Error];
             match namespace.as_str() {
-                "directory" if name == "isEmpty" && arguments.len() == 1 => {
+                "file" | "directory"
+                    if arguments.len() == 1
+                        && (name == "isEmpty"
+                            || matches!(name, "readable" | "writable" | "executable")) =>
+                {
                     let path = emit_cfg_ordinary_call_argument_direct(
                         &arguments[0],
                         &Type::Str,
                         env,
                         signatures,
                     )?;
+                    let helper = match (namespace.as_str(), name) {
+                        ("directory", "isEmpty") => "flux__fs_directory_is_empty",
+                        ("file", "readable") => "flux__fs_file_readable",
+                        ("file", "writable") => "flux__fs_file_writable",
+                        ("file", "executable") => "flux__fs_file_executable",
+                        ("directory", "readable") => "flux__fs_directory_readable",
+                        ("directory", "writable") => "flux__fs_directory_writable",
+                        ("directory", "executable") => "flux__fs_directory_executable",
+                        _ => return None,
+                    };
                     Some((
-                        format!("flux__fs_directory_is_empty({path})"),
+                        format!("{helper}({path})"),
                         "flux__fs_bool_error".to_string(),
                         bool_error,
                     ))

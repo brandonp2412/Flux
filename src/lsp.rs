@@ -2521,6 +2521,12 @@ fn add_qualified_namespace_completions(
         for (label, detail) in [
             ("exists", "fn file.exists(path: str) -> bool"),
             ("isSymlink", "fn file.isSymlink(path: str) -> bool"),
+            ("readable", "fn file.readable(path: str) -> (bool, error)"),
+            ("writable", "fn file.writable(path: str) -> (bool, error)"),
+            (
+                "executable",
+                "fn file.executable(path: str) -> (bool, error)",
+            ),
             (
                 "sameFile",
                 "fn file.sameFile(left: str, right: str) -> bool",
@@ -2627,6 +2633,18 @@ fn add_qualified_namespace_completions(
             (
                 "isEmpty",
                 "fn directory.isEmpty(path: str) -> (bool, error)",
+            ),
+            (
+                "readable",
+                "fn directory.readable(path: str) -> (bool, error)",
+            ),
+            (
+                "writable",
+                "fn directory.writable(path: str) -> (bool, error)",
+            ),
+            (
+                "executable",
+                "fn directory.executable(path: str) -> (bool, error)",
             ),
             ("count", "fn directory.count(path: str) -> (i64, error)"),
             (
@@ -3813,6 +3831,9 @@ fn signature_help_for_document_cached(
             ),
             "writeBytesAt" => (vec!["path: str", "offset: i64", "bytes: i64[]"], "error"),
             "list" => (vec!["path: str", "callback: fn(str) -> void"], "error"),
+            "readable" | "writable" | "executable" | "isEmpty" => {
+                (vec!["path: str"], "(bool, error)")
+            }
             "size" | "modified" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
             | "owner" | "group" | "inode" | "device" | "hardLinks" | "blockSize"
             | "allocatedSize" => (vec!["path: str"], "(i64, error)"),
@@ -5574,6 +5595,14 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
+                "readable" | "writable" | "executable" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("file.{member}"),
+                        &["path: str"],
+                        "(bool, error)",
+                        active_parameter,
+                    ));
+                }
                 "sameFile" => {
                     return Some(signature_help_for_builtin(
                         "file.sameFile",
@@ -5735,9 +5764,9 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "isEmpty" => {
+                "isEmpty" | "readable" | "writable" | "executable" => {
                     return Some(signature_help_for_builtin(
-                        "directory.isEmpty",
+                        &format!("directory.{member}"),
                         &["path: str"],
                         "(bool, error)",
                         active_parameter,
@@ -9806,6 +9835,9 @@ mod tests {
         ));
         assert!(file_items.contains("fn file.exists(path: str) -> bool"));
         assert!(file_items.contains("fn file.isSymlink(path: str) -> bool"));
+        assert!(file_items.contains("fn file.readable(path: str) -> (bool, error)"));
+        assert!(file_items.contains("fn file.writable(path: str) -> (bool, error)"));
+        assert!(file_items.contains("fn file.executable(path: str) -> (bool, error)"));
         assert!(file_items.contains("fn file.sameFile(left: str, right: str) -> bool"));
         assert!(file_items.contains("fn file.size(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.modified(path: str) -> (i64, error)"));
@@ -9900,6 +9932,9 @@ mod tests {
         .to_json();
         assert!(directory_items.contains("fn directory.exists(path: str) -> bool"));
         assert!(directory_items.contains("fn directory.isEmpty(path: str) -> (bool, error)"));
+        assert!(directory_items.contains("fn directory.readable(path: str) -> (bool, error)"));
+        assert!(directory_items.contains("fn directory.writable(path: str) -> (bool, error)"));
+        assert!(directory_items.contains("fn directory.executable(path: str) -> (bool, error)"));
         assert!(directory_items.contains("fn directory.count(path: str) -> (i64, error)"));
         assert!(
             directory_items.contains("fn directory.sameDirectory(left: str, right: str) -> bool")
@@ -12932,6 +12967,12 @@ fn main() -> i64 {
     fn signature_help_supports_filesystem_metadata() {
         let uri = "file:///tmp/filesystem-metadata-signatures.flux";
         let source = r#"fn main() -> i64 {
+    let (_fileReadable, _fileReadableFailure) = file.readable("a")
+    let (_fileWritable, _fileWritableFailure) = file.writable("a")
+    let (_fileExecutable, _fileExecutableFailure) = file.executable("a")
+    let (_directoryReadable, _directoryReadableFailure) = directory.readable("a")
+    let (_directoryWritable, _directoryWritableFailure) = directory.writable("a")
+    let (_directoryExecutable, _directoryExecutableFailure) = directory.executable("a")
     let (_fileModified, _fileFailure) = file.modifiedUnixMillis("a")
     let (_directoryModified, _directoryFailure) = directory.modifiedUnixMillis("a")
     let (_fileAccessed, _fileAccessFailure) = file.accessed("a")
@@ -12959,6 +13000,30 @@ fn main() -> i64 {
 "#;
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
+            (
+                "file.readable(",
+                "fn file.readable(path: str) -> (bool, error)",
+            ),
+            (
+                "file.writable(",
+                "fn file.writable(path: str) -> (bool, error)",
+            ),
+            (
+                "file.executable(",
+                "fn file.executable(path: str) -> (bool, error)",
+            ),
+            (
+                "directory.readable(",
+                "fn directory.readable(path: str) -> (bool, error)",
+            ),
+            (
+                "directory.writable(",
+                "fn directory.writable(path: str) -> (bool, error)",
+            ),
+            (
+                "directory.executable(",
+                "fn directory.executable(path: str) -> (bool, error)",
+            ),
             (
                 "file.modifiedUnixMillis(",
                 "fn file.modified(path: str) -> (i64, error)",

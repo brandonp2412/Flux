@@ -18723,6 +18723,176 @@ fn filesystem_path_inputs_are_bounded_before_native_calls() {
 }
 
 #[test]
+#[cfg(unix)]
+fn filesystem_effective_access_queries_are_typed_native_and_tree_shaken() {
+    let root = std::env::temp_dir().join(format!("flux-filesystem-access-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("filesystem access fixture should be writable");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+        .expect("filesystem access directory permissions should be configurable");
+    let file = root.join("content.txt");
+    fs::write(&file, "access").expect("filesystem access file should be writable");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o600))
+        .expect("filesystem access file permissions should be configurable");
+    let path = |value: &std::path::Path| {
+        value
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    };
+    let source = format!(
+        r#"
+fn main() -> i64 {{
+    let (fileReadable, fileReadableError) = file.readable("{}")
+    print(fileReadable)
+    print(fileReadableError)
+    let (fileWritable, fileWritableError) = file.writable("{}")
+    print(fileWritable)
+    print(fileWritableError)
+    let (fileExecutable, fileExecutableError) = file.executable("{}")
+    print(fileExecutable)
+    print(fileExecutableError)
+    let (directoryReadable, directoryReadableError) = directory.readable("{}")
+    print(directoryReadable)
+    print(directoryReadableError)
+    let (directoryWritable, directoryWritableError) = directory.writable("{}")
+    print(directoryWritable)
+    print(directoryWritableError)
+    let (directoryExecutable, directoryExecutableError) = directory.executable("{}")
+    print(directoryExecutable)
+    print(directoryExecutableError)
+    let (_wrongFile, wrongFileError) = file.readable("{}")
+    print(wrongFileError)
+    let (_wrongDirectory, wrongDirectoryError) = directory.readable("{}")
+    print(wrongDirectoryError)
+    return 0
+}}
+"#,
+        path(&file),
+        path(&file),
+        path(&file),
+        path(&root),
+        path(&root),
+        path(&root),
+        path(&root),
+        path(&file),
+    );
+
+    check_source(&source).expect("filesystem access queries should typecheck");
+    let generated = compile_to_c(&source).expect("filesystem access queries should lower");
+    for helper in [
+        "flux__fs_file_readable",
+        "flux__fs_file_writable",
+        "flux__fs_file_executable",
+        "flux__fs_directory_readable",
+        "flux__fs_directory_writable",
+        "flux__fs_directory_executable",
+    ] {
+        assert!(
+            generated.contains(helper),
+            "missing generated helper {helper}"
+        );
+    }
+
+    let source_path = root.join("access.flux");
+    fs::write(&source_path, &source).expect("filesystem access Flux source should be writable");
+    let binary = root.join("access");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("filesystem access binary should build");
+    assert!(
+        built.status.success(),
+        "filesystem access build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("filesystem access binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "true
+nil
+true
+nil
+false
+nil
+true
+nil
+true
+nil
+true
+nil
+path is not a file
+path is not a directory
+"
+    );
+
+    let unused = r#"
+fn hidden() -> void {
+    let (_readable, _readableError) = file.readable("/tmp/unused-flux-file")
+    let (_writable, _writableError) = file.writable("/tmp/unused-flux-file")
+    let (_executable, _executableError) = file.executable("/tmp/unused-flux-file")
+    let (_directoryReadable, _directoryReadableError) = directory.readable("/tmp/unused-flux-directory")
+    let (_directoryWritable, _directoryWritableError) = directory.writable("/tmp/unused-flux-directory")
+    let (_directoryExecutable, _directoryExecutableError) = directory.executable("/tmp/unused-flux-directory")
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead filesystem access calls should lower");
+    for helper in [
+        "flux__fs_file_readable",
+        "flux__fs_file_writable",
+        "flux__fs_file_executable",
+        "flux__fs_directory_readable",
+        "flux__fs_directory_writable",
+        "flux__fs_directory_executable",
+    ] {
+        assert!(
+            !unused_generated.contains(helper),
+            "dead filesystem access helper should tree-shake: {helper}"
+        );
+    }
+
+    let invalid = r#"
+fn main() -> i64 {
+    let (_fileReadable, _fileReadableError) = file.readable(1)
+    let (_fileWritable, _fileWritableError) = file.writable(false)
+    let (_fileExecutable, _fileExecutableError) = file.executable(1)
+    let (_directoryReadable, _directoryReadableError) = directory.readable(false)
+    let (_directoryWritable, _directoryWritableError) = directory.writable(1)
+    let (_directoryExecutable, _directoryExecutableError) = directory.executable(false)
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(invalid).expect_err("invalid filesystem access calls should fail");
+    for label in [
+        "file.readable path",
+        "file.writable path",
+        "file.executable path",
+        "directory.readable path",
+        "directory.writable path",
+        "directory.executable path",
+    ] {
+        assert!(
+            errors.iter().any(
+                |error| error.message.contains(label) && error.message.contains("expected str")
+            ),
+            "missing filesystem access diagnostic for {label}: {errors:?}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn canonical_filesystem_scalar_metadata_is_typed_native_and_tree_shaken() {
     let root = std::env::temp_dir().join(format!(
         "flux-filesystem-scalar-metadata-{}",

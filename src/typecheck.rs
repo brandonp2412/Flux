@@ -14255,9 +14255,10 @@ fn check_qualified_call_fallback(
             ));
         }
         match name.as_str() {
-            "exists" | "isSymlink" | "size" | "modifiedUnixMillis" | "accessed" | "changed"
-            | "permissions" | "owner" | "group" | "inode" | "device" | "hardLinks"
-            | "blockSize" | "allocatedSize" | "remove" | "sync" | "syncData" => {
+            "exists" | "isSymlink" | "readable" | "writable" | "executable" | "size"
+            | "modifiedUnixMillis" | "accessed" | "changed" | "permissions" | "owner" | "group"
+            | "inode" | "device" | "hardLinks" | "blockSize" | "allocatedSize" | "remove"
+            | "sync" | "syncData" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -14273,6 +14274,7 @@ fn check_qualified_call_fallback(
                 )?;
                 return Ok(match name.as_str() {
                     "exists" | "isSymlink" => vec![Type::Bool],
+                    "readable" | "writable" | "executable" => vec![Type::Bool, Type::Error],
                     "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
                     | "owner" | "group" | "inode" | "device" | "hardLinks" | "blockSize"
                     | "allocatedSize" => {
@@ -14733,10 +14735,10 @@ fn check_qualified_call_fallback(
                 )?;
                 return Ok(vec![Type::Error]);
             }
-            "exists" | "isEmpty" | "count" | "modifiedUnixMillis" | "accessed" | "changed"
-            | "permissions" | "owner" | "group" | "inode" | "device" | "hardLinks"
-            | "blockSize" | "allocatedSize" | "create" | "createAll" | "remove" | "removeAll"
-            | "sync" => {
+            "exists" | "isEmpty" | "count" | "readable" | "writable" | "executable"
+            | "modifiedUnixMillis" | "accessed" | "changed" | "permissions" | "owner" | "group"
+            | "inode" | "device" | "hardLinks" | "blockSize" | "allocatedSize" | "create"
+            | "createAll" | "remove" | "removeAll" | "sync" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -14752,7 +14754,9 @@ fn check_qualified_call_fallback(
                 )?;
                 return Ok(match name.as_str() {
                     "exists" => vec![Type::Bool],
-                    "isEmpty" => vec![Type::Bool, Type::Error],
+                    "isEmpty" | "readable" | "writable" | "executable" => {
+                        vec![Type::Bool, Type::Error]
+                    }
                     "count" => vec![Type::I64, Type::Error],
                     "modifiedUnixMillis" | "accessed" | "changed" | "permissions" | "owner"
                     | "group" | "inode" | "device" | "hardLinks" | "blockSize"
