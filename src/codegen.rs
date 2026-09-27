@@ -54221,7 +54221,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "copy" | "rename" => {
+            "copy" | "rename" | "link" => {
                 if args.len() != 2 {
                     return Err(diag(span, "invalid file call reached code generation"));
                 }
