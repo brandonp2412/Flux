@@ -13880,6 +13880,87 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn struct_member_navigation_follows_call_results_and_collection_elements() {
+        let uri = "file:///tmp/expression-member-navigation.flux";
+        let source = r#"struct Profile {
+    name: str
+}
+struct User {
+    profile: Profile
+}
+fn load_user() -> User {
+    return User { profile: Profile { name: "Ada" } }
+}
+fn from_call() -> str {
+    return load_user().profile.name
+}
+fn from_list(users: User[]) -> str {
+    return users.first.profile.name
+}
+fn main() -> i64 { 0 }
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+
+        for expression in ["load_user().profile.name", "users.first.profile.name"] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(expression))
+                .expect("member expression should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let expression_start = line.find(expression).expect("expression should be on line");
+            let character = expression_start + expression.rfind("name").unwrap() + 1;
+
+            let receiver =
+                member_receiver_at_cursor(source, line_index, character, PositionEncoding::Utf8)
+                    .expect("expression receiver should recover");
+            assert!(
+                receiver == "load_user().profile" || receiver == "users.first.profile",
+                "unexpected receiver: {receiver}"
+            );
+
+            let database =
+                crate::semantic::SemanticDatabase::analyze(source, source_id_for_uri(uri))
+                    .expect("expression navigation source should analyze");
+            assert!(
+                struct_field_for_position(
+                    source,
+                    line_index,
+                    character,
+                    PositionEncoding::Utf8,
+                    database.program(),
+                )
+                .is_some(),
+                "receiver-aware field lookup should resolve {receiver}"
+            );
+
+            let hover = hover_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                character,
+                PositionEncoding::Utf8,
+            )
+            .expect("expression field should hover")
+            .to_json();
+            assert!(hover.contains("field name: str"));
+
+            let definition = definition_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                character,
+                PositionEncoding::Utf8,
+            )
+            .expect("expression field should navigate")
+            .to_json();
+            assert!(definition.contains(r#""line":1"#));
+            assert!(definition.contains(r#""character":4"#));
+        }
+    }
+
+    #[test]
     fn signature_help_supports_first_class_function_values() {
         let uri = "file:///tmp/function-value-signature.flux";
         let source = "type Mapper = fn(i64, str) -> bool\nfn apply(transform: Mapper) -> bool {\n    return transform(42, \"Flux\")\n}\nfn always_true(value: i64, label: str) -> bool {\n    print(value)\n    print(label)\n    return true\n}\nfn main() -> i64 {\n    let result: bool = apply(always_true)\n    print(result)\n    return 0\n}\n";
