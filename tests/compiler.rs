@@ -3326,8 +3326,6 @@ fn windows_rejects_unimplemented_portable_styles_instead_of_silently_dropping_th
         ("padding: 4", "padding"),
         ("paddingTop: 4", "paddingTop"),
         ("paddingBottom: 4", "paddingBottom"),
-        ("paddingStart: 4", "paddingStart"),
-        ("paddingEnd: 4", "paddingEnd"),
     ] {
         let source = format!(
             "view Screen {{\n    grid columns: 1fr\n    grid rows: auto\n    TextInput field at 1,1\n        placeholder: \"Styled\"\n        {property}\n}}\napp Screen\n"
@@ -3463,6 +3461,9 @@ app Screen(layoutDirection: "rtl")
     assert!(windows.contains(
         "flux__win_preferred_size(flux__ui_enabled, false, (flux__win_scale(flux__win_checked_margin((flux__ui_state_inset), \"padding\")) + flux__win_scale(INT64_C(9)))"
     ));
+    assert!(windows.contains(
+        "flux__win_layout(flux__win_refresh_client.right - flux__win_refresh_client.left, flux__win_refresh_client.bottom - flux__win_refresh_client.top)"
+    ));
 
     let invalid = source.replace("padding: inset", "padding: -1");
     let invalid_program = fluxc::parser::parse(&invalid)
@@ -3481,6 +3482,73 @@ app Screen(layoutDirection: "rtl")
         error
             .message
             .contains("padding must be non-negative and fit within a 32-bit signed integer")
+    );
+}
+
+#[test]
+fn windows_text_input_horizontal_padding_uses_native_edit_margins() {
+    let source = r#"
+view Screen {
+    state inset: i64 = 6
+    grid columns: 1fr
+    grid rows: auto
+    TextInput field at 1,1
+        placeholder: "Styled"
+        paddingStart: inset
+        paddingEnd: 10
+        alignX: "start"
+}
+app Screen(layoutDirection: "rtl")
+"#;
+    let program = fluxc::parser::parse(source)
+        .expect("Windows TextInput horizontal padding source should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("Windows TextInput horizontal padding source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows TextInput horizontal padding should lower through native EDIT margins");
+
+    assert!(windows.contains("EM_SETMARGINS"));
+    assert!(windows.contains("EC_LEFTMARGIN | EC_RIGHTMARGIN"));
+    assert!(
+        windows.contains("flux__win_text_input_margin_left_field = flux__win_scale(INT64_C(10))")
+    );
+    assert!(windows.contains(
+        "flux__win_text_input_margin_right_field = flux__win_scale(flux__win_checked_margin((flux__ui_state_inset), \"paddingStart\"))"
+    ));
+    assert!(
+        windows
+            .contains("SendMessageW(flux__ui_field, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN")
+    );
+    assert!(windows.contains(
+        "flux__win_preferred_size(flux__ui_field, false, (flux__win_scale(flux__win_checked_margin((flux__ui_state_inset), \"paddingStart\")) + flux__win_scale(INT64_C(10)))"
+    ));
+    assert!(windows.contains(
+        "flux__win_layout(flux__win_refresh_client.right - flux__win_refresh_client.left, flux__win_refresh_client.bottom - flux__win_refresh_client.top)"
+    ));
+    assert!(windows.contains("TextInput horizontal padding exceeds the native EDIT margin range"));
+
+    let invalid = source.replace("paddingStart: inset", "paddingStart: -1");
+    let invalid_program = fluxc::parser::parse(&invalid)
+        .expect("invalid Windows TextInput horizontal padding source should parse");
+    let invalid_signatures = fluxc::typecheck::check(&invalid_program).expect(
+        "invalid Windows TextInput horizontal padding source should typecheck before target validation",
+    );
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &invalid_program,
+        &invalid_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("negative Windows TextInput horizontal padding must fail target lowering");
+    assert!(
+        error
+            .message
+            .contains("paddingStart must be non-negative and fit within a 32-bit signed integer")
     );
 }
 
