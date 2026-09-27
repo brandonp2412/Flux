@@ -65899,18 +65899,65 @@ app Screen(id: "com.example.state", onSaveState: saveState, onRestoreState: rest
 }
 
 #[test]
-fn linux_rejects_android_only_lifecycle_callbacks_instead_of_ignoring_them() {
-    let source = "fn callback() -> void {\n}\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n}\napp Screen(onLowMemory: callback)\n";
-    check_source(source).expect("target-specific lifecycle metadata should typecheck first");
-    let error =
-        compile_to_c(source).expect_err("Linux must reject lifecycle callbacks it cannot honor");
-    assert!(
-        error
-            .message
-            .contains("application onLowMemory lifecycle callback is not supported on Linux"),
-        "unexpected diagnostic: {}",
-        error.message
-    );
+fn linux_low_memory_lifecycle_uses_native_memory_monitor() {
+    let source = r#"
+fn lowMemory() -> void {
+    print("low memory")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+
+app Screen(onLowMemory: lowMemory)
+"#;
+    check_source(source).expect("Linux low-memory callback should typecheck");
+    let generated = compile_to_c(source).expect("Linux low-memory callback should lower");
+    assert!(generated.contains("static GMemoryMonitor *flux__ui_memory_monitor = NULL;"));
+    assert!(generated.contains("g_memory_monitor_dup_default()"));
+    assert!(generated.contains(
+        "g_signal_connect(flux__ui_memory_monitor, \"low-memory-warning\", G_CALLBACK(flux__ui_low_memory), NULL)"
+    ));
+    assert!(generated.contains("flux__ui_call_lowMemory();"));
+    assert!(generated.contains(
+        "static void (*flux__ui_development_callback_lowMemory)(void) = flux__fn_lowMemory;"
+    ));
+    assert!(generated.contains("flux__ui_development_callback_lowMemory = target; return true;"));
+    assert!(generated.contains("g_clear_object(&flux__ui_memory_monitor);"));
+
+    if Command::new("pkg-config")
+        .args(["--exists", "gtk4"])
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        let root =
+            std::env::temp_dir().join(format!("flux-linux-low-memory-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("low-memory compile directory should be writable");
+        let c_path = root.join("low-memory.c");
+        fs::write(&c_path, &generated).expect("generated low-memory C should be writable");
+        let cflags = String::from_utf8(
+            Command::new("pkg-config")
+                .args(["--cflags", "gtk4"])
+                .output()
+                .expect("pkg-config should return GTK cflags")
+                .stdout,
+        )
+        .expect("GTK cflags should be UTF-8");
+        let compile = Command::new("clang")
+            .args(["-std=c17", "-fsyntax-only", "-DFLUX_DEVELOPMENT_RELOAD"])
+            .args(cflags.split_whitespace())
+            .arg(&c_path)
+            .output()
+            .expect("Clang should validate low-memory development C");
+        assert!(
+            compile.status.success(),
+            "low-memory development C should compile: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 }
 
 #[test]

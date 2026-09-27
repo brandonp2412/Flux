@@ -20442,16 +20442,6 @@ fn emit_linux_gtk_application(
         .application
         .as_ref()
         .expect("application lowering requires app declaration");
-    if let Some(field) = application
-        .metadata
-        .iter()
-        .find(|field| field.name == "onLowMemory")
-    {
-        return Err(diag(
-            field.name_span,
-            "application onLowMemory lifecycle callback is not supported on Linux",
-        ));
-    }
     let view = program
         .views
         .iter()
@@ -20471,6 +20461,7 @@ fn emit_linux_gtk_application(
         "on_stop",
         "on_exit",
         "on_configuration_changed",
+        "on_low_memory",
     ] {
         if let Some(function) = application_metadata_function(application, metadata)
             && !development_callbacks.contains(&function.to_string())
@@ -20599,6 +20590,7 @@ fn emit_linux_gtk_application(
         .unwrap_or_else(|| "app.flux.bootstrap".to_string());
     let on_configuration_changed =
         application_metadata_function(application, "on_configuration_changed");
+    let on_low_memory = application_metadata_function(application, "on_low_memory");
     let on_save_state = application_metadata_function(application, "on_save_state");
     let on_restore_state = application_metadata_function(application, "on_restore_state");
 
@@ -22771,6 +22763,12 @@ fn emit_linux_gtk_application(
         }
     }
     out.push('\n');
+    if let Some(function) = on_low_memory {
+        out.push_str(&format!(
+            "static GMemoryMonitor *flux__ui_memory_monitor = NULL;\nstatic void flux__ui_low_memory(GMemoryMonitor *monitor, GMemoryMonitorWarningLevel level, gpointer data) {{ (void)monitor; (void)level; (void)data; {}(); }}\n\n",
+            linux_ui_callback_call_c_name(function)
+        ));
+    }
     let on_stop = application_metadata_function(application, "on_stop");
     let on_exit = application_metadata_function(application, "on_exit");
     if on_stop.is_some() || on_exit.is_some() || on_save_state.is_some() {
@@ -22812,6 +22810,9 @@ fn emit_linux_gtk_application(
     }
     out.push_str("static void flux__ui_activate(GtkApplication *application, gpointer data) {\n");
     out.push_str("    (void)data;\n");
+    if on_low_memory.is_some() {
+        out.push_str("    if (flux__ui_memory_monitor == NULL) { flux__ui_memory_monitor = g_memory_monitor_dup_default(); if (flux__ui_memory_monitor != NULL) g_signal_connect(flux__ui_memory_monitor, \"low-memory-warning\", G_CALLBACK(flux__ui_low_memory), NULL); }\n");
+    }
     if on_restore_state.is_some() {
         out.push_str("    flux__restore_app_state();\n");
     }
@@ -24245,6 +24246,9 @@ fn emit_linux_gtk_application(
             ));
             out.push_str("#endif\n");
         }
+    }
+    if on_low_memory.is_some() {
+        out.push_str("    g_clear_object(&flux__ui_memory_monitor);\n");
     }
     out.push_str("    g_object_unref(application);\n    return status;\n}\n");
     Ok(())
