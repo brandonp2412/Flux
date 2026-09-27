@@ -47897,17 +47897,85 @@ app Screen
         "        accessibilityActionLabel: \"Fallback action\"\n",
         "        accessibilityActionLabel: \"Fallback action\"\n        accessibilityDescription: \"Explicit description\"\n",
     );
-    fs::write(&entry, precedence_with_description)
+    let precedence_generated = precedence_first
+        .emit_c()
+        .expect("accessibility action-description precedence fixture should lower for Linux");
+    assert!(
+        precedence_generated
+            .contains("static bool flux__ui_accessibility_description_explicit_action = false;")
+    );
+    assert!(precedence_generated.contains(
+        r#"static const char *flux__ui_accessibility_action_label_action = "Fallback action";"#
+    ));
+    assert!(precedence_generated.contains(
+        "flux__ui_accessibility_description_explicit_action = false; gtk_accessible_update_property(GTK_ACCESSIBLE(flux__ui_action_action), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, flux__ui_accessibility_action_label_action, -1);"
+    ));
+
+    fs::write(&entry, &precedence_with_description)
         .expect("accessibility precedence update should be writable");
     cache.invalidate_path(&entry);
     let precedence_second = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("accessibility precedence update should analyze");
-    assert!(
+    assert_eq!(
+        precedence_second.development_abi(),
+        precedence_first.development_abi()
+    );
+    assert_eq!(
         precedence_second
             .development_ui_string_patch_from(&precedence_first)
-            .is_none(),
-        "description lifecycle must retain controlled restart when fallback accessibility descriptions are present"
+            .expect("explicit accessibility description should hot-override the action label"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "accessibility_description".to_string(),
+            value: "Explicit description".to_string(),
+        }]
+    );
+
+    let precedence_with_updated_action =
+        precedence_with_description.replace("Fallback action", "Updated fallback");
+    fs::write(&entry, &precedence_with_updated_action)
+        .expect("shadowed accessibility action label update should be writable");
+    cache.invalidate_path(&entry);
+    let precedence_third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("shadowed accessibility action label update should analyze");
+    assert_eq!(
+        precedence_third.development_abi(),
+        precedence_second.development_abi()
+    );
+    assert_eq!(
+        precedence_third
+            .development_ui_string_patch_from(&precedence_second)
+            .expect("shadowed accessibility action label should update its live fallback"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "accessibility_action_label".to_string(),
+            value: "Updated fallback".to_string(),
+        }]
+    );
+
+    let precedence_without_description =
+        precedence_initial.replace("Fallback action", "Updated fallback");
+    fs::write(&entry, precedence_without_description)
+        .expect("restored accessibility action fallback source should be writable");
+    cache.invalidate_path(&entry);
+    let precedence_fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("restored accessibility action fallback source should analyze");
+    assert_eq!(
+        precedence_fourth.development_abi(),
+        precedence_third.development_abi()
+    );
+    assert_eq!(
+        precedence_fourth
+            .development_ui_string_patch_from(&precedence_third)
+            .expect("removing accessibility description should reveal the updated action fallback"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "accessibility_description".to_string(),
+            value: "__flux_accessibility_property_default__".to_string(),
+        }]
     );
 
     let validation_initial = r#"view Form {
@@ -48239,9 +48307,16 @@ app Screen
     let third = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("shadowed action label edit should analyze");
-    assert!(
-        third.development_ui_string_patch_from(&second).is_none(),
-        "an action label shadowed by an explicit description must retain controlled restart"
+    assert_eq!(third.development_abi(), second.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("a literal action label shadowed by an explicit description should update its live fallback"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "describedTarget".to_string(),
+            property: "accessibility_action_label".to_string(),
+            value: "Shadowed after".to_string(),
+        }]
     );
 
     let _ = fs::remove_dir_all(root);
