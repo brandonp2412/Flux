@@ -22351,6 +22351,57 @@ fn optional_nested_property_can_unwrap_directly_through_explicit_borrow() {
 }
 
 #[test]
+fn chained_optional_borrow_projections_keep_root_owner_lifetime() {
+    let live = r#"
+fn main() -> i64 {
+    let rows: i64[][][]? = [[[10, 20], [30, 40]], [[50, 60]]]
+    let view: i64[][]? = borrow rows?.first?[1:]
+    let destination: i64[][][]? = rows
+    if let present = borrow view:
+        print(present[0][0])
+    if let moved = borrow destination:
+        print(moved[0][0][0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live)
+        .expect_err("a chained optional borrow projection must keep the root owner live");
+    assert!(
+        errors.iter().any(|error| error.message.contains(
+            "cannot move non-copy binding 'rows' while borrowed view 'view' is still live"
+        )),
+        "chained optional borrow errors: {errors:?}"
+    );
+
+    let dead = r#"
+fn main() -> i64 {
+    let rows: i64[][][]? = [[[10, 20], [30, 40]], [[50, 60]]]
+    let view: i64[][]? = borrow rows?.first?[1:]
+    if let present = borrow view:
+        print(present[0][0])
+    let destination: i64[][][]? = rows
+    if let moved = borrow destination:
+        print(moved[0][0][0])
+    return 0
+}
+"#;
+    check_source(dead).expect("chained optional borrow projection should end after its final use");
+    compile_to_c(dead).expect("chained optional borrow projection should lower natively");
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(dead, SourceId::new(1218))
+        .expect("chained optional borrow projection should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    assert!(
+        graph
+            .borrow_lifetimes()
+            .iter()
+            .any(|lifetime| lifetime.borrower == "view" && lifetime.source == "rows")
+    );
+}
+
+#[test]
 fn explicit_borrow_supports_optional_aware_slices_with_tracked_lifetimes() {
     let live = r#"
 fn main() -> i64 {
