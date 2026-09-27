@@ -60393,6 +60393,11 @@ app HelloApp
             .contains("#define flux__ui_call_clicked() flux__ui_development_callback_clicked()")
     );
     assert!(generated.contains("#define flux__ui_call_clicked() flux__fn_clicked()"));
+    assert!(generated.contains(
+        "static bool flux__ui_development_retarget_callback(const char *name, void (*target)(void))"
+    ));
+    assert!(generated.contains("strcmp(name, \"clicked\") == 0"));
+    assert!(generated.contains("flux__ui_development_callback_clicked = target; return true;"));
     assert!(generated.contains("flux__ui_call_clicked();"));
     assert!(generated.contains("int main(int argc, char **argv)"));
 }

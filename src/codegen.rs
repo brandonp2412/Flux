@@ -20463,13 +20463,25 @@ fn emit_linux_gtk_application(
             )
         })?;
     let _ = view_layout_transition_duration(view, signatures)?;
-    for function in linux_ui_zero_arg_callback_functions(view) {
-        let slot = linux_ui_development_callback_slot_c_name(&function);
-        let call = linux_ui_callback_call_c_name(&function);
-        let target = function_c_name(&function);
+    let development_callbacks = linux_ui_zero_arg_callback_functions(view);
+    for function in &development_callbacks {
+        let slot = linux_ui_development_callback_slot_c_name(function);
+        let call = linux_ui_callback_call_c_name(function);
+        let target = function_c_name(function);
         out.push_str(&format!(
             "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic void (*{slot})(void) = {target};\n#define {call}() {slot}()\n#else\n#define {call}() {target}()\n#endif\n"
         ));
+    }
+    if !development_callbacks.is_empty() {
+        out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic bool flux__ui_development_retarget_callback(const char *name, void (*target)(void)) { if (name == NULL || target == NULL) return false;");
+        for function in &development_callbacks {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0) {{ {} = target; return true; }}",
+                c_string(function),
+                linux_ui_development_callback_slot_c_name(function),
+            ));
+        }
+        out.push_str(" return false; }\n#endif\n");
     }
     let has_size_constraints = view.elements.iter().any(|element| {
         view_property(element, "max_width").is_some()
