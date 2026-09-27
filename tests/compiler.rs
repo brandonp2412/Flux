@@ -64497,7 +64497,13 @@ app ContextCard
     assert!(
         linux.contains("GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), \"flux-menu-index\"))")
     );
-    assert!(linux.contains("flux__fn_menuSelected((int64_t)item_index); flux__ui_refresh();"));
+    assert!(linux.contains("flux__ui_call_menuSelected((int64_t)item_index); flux__ui_refresh();"));
+    assert!(linux.contains(
+        "static void (*flux__ui_development_callback_menuSelected)(int64_t) = flux__fn_menuSelected;"
+    ));
+    assert!(linux.contains(
+        "flux__ui_development_callback_menuSelected = target; return true;"
+    ));
 
     let program =
         fluxc::parser::parse(multi_item).expect("multi-item context menu app should parse");
