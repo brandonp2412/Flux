@@ -1850,6 +1850,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "isRelative",
+            3,
+            "fn path.isRelative(value: str) -> bool",
+        );
+        push_completion_item(
+            items,
+            seen,
             "join",
             3,
             "fn path.join(base: str, child: str, callback: fn(str) -> void) -> error",
@@ -4425,8 +4432,8 @@ fn signature_help_for_document_cached(
         }
         if namespace == "path" {
             return match implementation_member {
-                "isAbsolute" => Some(signature_help_for_builtin(
-                    "path.isAbsolute",
+                "isAbsolute" | "isRelative" => Some(signature_help_for_builtin(
+                    &format!("path.{implementation_member}"),
                     &["value: str"],
                     "bool",
                     active_parameter,
@@ -9730,6 +9737,7 @@ mod tests {
         ))
         .to_json();
         assert!(path_items.contains("fn path.isAbsolute(value: str) -> bool"));
+        assert!(path_items.contains("fn path.isRelative(value: str) -> bool"));
         assert!(
             path_items.contains(
                 "fn path.join(base: str, child: str, callback: fn(str) -> void) -> error"

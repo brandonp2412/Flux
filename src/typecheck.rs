@@ -14393,15 +14393,20 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "isAbsolute" => {
+            "isAbsolute" | "isRelative" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
-                        &format!("path.isAbsolute expects 1 argument, got {}", args.len()),
+                        &format!("path.{name} expects 1 argument, got {}", args.len()),
                     ));
                 }
                 let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::Str, &actual, "path.isAbsolute value")?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &actual,
+                    &format!("path.{name} value"),
+                )?;
                 return Ok(vec![Type::Bool]);
             }
             "join" | "relative" | "resolve" | "dirname" | "basename" | "extension" | "stem"

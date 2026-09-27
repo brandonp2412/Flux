@@ -1113,7 +1113,9 @@ fn show(value: str) -> void {
 
 fn main() -> i64 {
     let absolute: bool = path.isAbsolute("/tmp/flux")
+    let relative: bool = path.isRelative("tmp/flux")
     print(absolute)
+    print(relative)
     print(path.join("/tmp", "flux", show))
     print(path.relative("/tmp/flux/src", "/tmp/flux/tests/unit", show))
     print(path.relative("/tmp/flux", "/tmp/flux", show))
@@ -1137,6 +1139,7 @@ fn main() -> i64 {
 "#;
     let generated = compile_to_c(source).expect("path capability source should compile");
     assert!(generated.contains("flux__path_is_absolute(\"/tmp/flux\")"));
+    assert!(generated.contains("flux__path_is_relative(\"tmp/flux\")"));
     assert!(generated.contains("flux__path_join(\"/tmp\", \"flux\", flux__fn_show)"));
     assert!(generated.contains(
         "flux__path_relative(\"/tmp/flux/src\", \"/tmp/flux/tests/unit\", flux__fn_show)"
@@ -1183,7 +1186,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "true\n/tmp/flux\nnil\n../tests/unit\nnil\n.\nnil\n../beta\nnil\npath.relative requires matching absolute or relative paths\n/tmp/flux/tests/unit\nnil\n/var/tmp\nnil\nC:/beta\nnil\n/tmp\nnil\nflux\nnil\n/\nnil\n\\\nnil\n.txt\nnil\n\nnil\n.env\nnil\nflux\nnil\n/tmp/cache/item\nnil\n../../b\nnil\n"
+        "true\ntrue\n/tmp/flux\nnil\n../tests/unit\nnil\n.\nnil\n../beta\nnil\npath.relative requires matching absolute or relative paths\n/tmp/flux/tests/unit\nnil\n/var/tmp\nnil\nC:/beta\nnil\n/tmp\nnil\nflux\nnil\n/\nnil\n\\\nnil\n.txt\nnil\n\nnil\n.env\nnil\nflux\nnil\n/tmp/cache/item\nnil\n../../b\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 
@@ -1191,6 +1194,7 @@ fn main() -> i64 {
         .expect("path-free source should compile");
     assert!(!shaken.contains("flux__path_join"));
     assert!(!shaken.contains("flux__path_is_absolute"));
+    assert!(!shaken.contains("flux__path_is_relative"));
     assert!(!shaken.contains("flux__path_extension_or_stem"));
     assert!(!shaken.contains("flux__path_normalize"));
     assert!(!shaken.contains("flux__path_relative"));
