@@ -64266,13 +64266,13 @@ app HoverCard
     assert!(generated.contains("gtk_gesture_zoom_new()"));
     assert!(generated.contains("\"scale-changed\", G_CALLBACK(flux__ui_scale_title)"));
     assert!(generated.contains(
-        "flux__fn_scaled((int64_t)(scale * 100.0 + 0.5)); \n#ifdef FLUX_DEVELOPMENT_RELOAD\nif (flux__gesture_scale_enabled_title)"
+        "flux__ui_call_scaled((int64_t)(scale * 100.0 + 0.5)); \n#ifdef FLUX_DEVELOPMENT_RELOAD\nif (flux__gesture_scale_enabled_title)"
     ));
     assert!(generated.contains(
-        "flux__fn_dragged((int64_t)offset_x, (int64_t)offset_y); \n#ifdef FLUX_DEVELOPMENT_RELOAD\nif (flux__gesture_translate_enabled_title)"
+        "flux__ui_call_dragged((int64_t)offset_x, (int64_t)offset_y); \n#ifdef FLUX_DEVELOPMENT_RELOAD\nif (flux__gesture_translate_enabled_title)"
     ));
     assert!(generated.contains(
-        "flux__fn_swiped((int64_t)velocity_x, (int64_t)velocity_y); flux__ui_refresh();"
+        "flux__ui_call_swiped((int64_t)velocity_x, (int64_t)velocity_y); flux__ui_refresh();"
     ));
     assert!(generated.contains("\"pressed\", G_CALLBACK(flux__ui_long_press_title)"));
     assert!(

@@ -20503,6 +20503,46 @@ fn emit_linux_gtk_application(
         }
         out.push_str(" return false; }\n#endif\n");
     }
+    let development_i64_callbacks = linux_ui_i64_callback_functions(view);
+    for function in &development_i64_callbacks {
+        let slot = linux_ui_development_callback_slot_c_name(function);
+        let call = linux_ui_callback_call_c_name(function);
+        let target = function_c_name(function);
+        out.push_str(&format!(
+            "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic void (*{slot})(int64_t) = {target};\n#define {call}(value) {slot}(value)\n#else\n#define {call}(value) {target}(value)\n#endif\n"
+        ));
+    }
+    if !development_i64_callbacks.is_empty() {
+        out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic bool flux__ui_development_retarget_i64_callback(const char *name, void (*target)(int64_t)) { if (name == NULL || target == NULL) return false;");
+        for function in &development_i64_callbacks {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0) {{ {} = target; return true; }}",
+                c_string(function),
+                linux_ui_development_callback_slot_c_name(function),
+            ));
+        }
+        out.push_str(" return false; }\n#endif\n");
+    }
+    let development_i64_pair_callbacks = linux_ui_i64_pair_callback_functions(view);
+    for function in &development_i64_pair_callbacks {
+        let slot = linux_ui_development_callback_slot_c_name(function);
+        let call = linux_ui_callback_call_c_name(function);
+        let target = function_c_name(function);
+        out.push_str(&format!(
+            "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic void (*{slot})(int64_t, int64_t) = {target};\n#define {call}(first, second) {slot}(first, second)\n#else\n#define {call}(first, second) {target}(first, second)\n#endif\n"
+        ));
+    }
+    if !development_i64_pair_callbacks.is_empty() {
+        out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic bool flux__ui_development_retarget_i64_pair_callback(const char *name, void (*target)(int64_t, int64_t)) { if (name == NULL || target == NULL) return false;");
+        for function in &development_i64_pair_callbacks {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0) {{ {} = target; return true; }}",
+                c_string(function),
+                linux_ui_development_callback_slot_c_name(function),
+            ));
+        }
+        out.push_str(" return false; }\n#endif\n");
+    }
     let has_size_constraints = view.elements.iter().any(|element| {
         view_property(element, "max_width").is_some()
             || view_property(element, "max_height").is_some()
@@ -22545,7 +22585,7 @@ fn emit_linux_gtk_application(
                 };
                 format!(
                     "{}((int64_t)offset_x, (int64_t)offset_y); ",
-                    function_c_name(function)
+                    linux_ui_callback_call_c_name(function)
                 )
             } else {
                 String::new()
@@ -22595,7 +22635,7 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "static void flux__ui_swipe_{}(GtkGestureSwipe *gesture, double velocity_x, double velocity_y, gpointer data) {{ (void)gesture; (void)data; {}((int64_t)velocity_x, (int64_t)velocity_y); flux__ui_refresh(); }}\n",
                 element.name,
-                function_c_name(function),
+                linux_ui_callback_call_c_name(function),
             ));
         }
         let scale_action = view_property(element, "on_scale");
@@ -22611,7 +22651,7 @@ fn emit_linux_gtk_application(
                 };
                 format!(
                     "{}((int64_t)(scale * 100.0 + 0.5)); ",
-                    function_c_name(function)
+                    linux_ui_callback_call_c_name(function)
                 )
             } else {
                 String::new()
@@ -26103,6 +26143,36 @@ fn linux_ui_string_callback_functions(view: &crate::ast::ViewDef) -> Vec<String>
         }
         collect(view_property(element, "on_key"));
         collect(view_property(element, "on_drop"));
+    }
+    let mut functions = functions.into_iter().collect::<Vec<_>>();
+    functions.sort();
+    functions
+}
+
+fn linux_ui_i64_callback_functions(view: &crate::ast::ViewDef) -> Vec<String> {
+    let mut functions = HashSet::new();
+    for element in &view.elements {
+        if let Some(action) = view_property(element, "on_scale")
+            && let ExprKind::Var(function) = &action.value.kind
+        {
+            functions.insert(function.clone());
+        }
+    }
+    let mut functions = functions.into_iter().collect::<Vec<_>>();
+    functions.sort();
+    functions
+}
+
+fn linux_ui_i64_pair_callback_functions(view: &crate::ast::ViewDef) -> Vec<String> {
+    let mut functions = HashSet::new();
+    for element in &view.elements {
+        for property in ["on_drag", "on_swipe"] {
+            if let Some(action) = view_property(element, property)
+                && let ExprKind::Var(function) = &action.value.kind
+            {
+                functions.insert(function.clone());
+            }
+        }
     }
     let mut functions = functions.into_iter().collect::<Vec<_>>();
     functions.sort();
