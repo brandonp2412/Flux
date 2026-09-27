@@ -107,6 +107,7 @@ Implemented on `main`:
 - [x] Human terminal diagnostics with source excerpts, exact carets, secondary labels/fixes, automatic ANSI color, `NO_COLOR`/forced-color support, and terminal-width-aware wrapping/cropping.
 - [x] Bootstrap C lowering through optimized Clang native compilation.
 - [x] Native end-to-end examples and compiler tests.
+- Qualified `time.*` type checking now routes through a shallow dispatcher before the large generic qualified-call checker, preserving builtin alias normalization while keeping nested calls within the normal Rust test-thread stack budget.
 
 ---
 

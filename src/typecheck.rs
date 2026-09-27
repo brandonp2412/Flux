@@ -8925,6 +8925,47 @@ fn check_qualified_call(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<Vec<Type>, Diagnostic> {
+    if let ExprKind::QualifiedCall {
+        namespace,
+        name,
+        name_span,
+        args,
+        named_args,
+        ..
+    } = &expr.kind
+    {
+        let implementation_name = crate::builtin_names::qualified_impl(namespace, name.as_str());
+        if implementation_name != name {
+            let mut normalized = expr.clone();
+            if let ExprKind::QualifiedCall { name, .. } = &mut normalized.kind {
+                *name = implementation_name.to_string();
+            }
+            let implementation = format!("{namespace}.{implementation_name}");
+            let canonical = format!("{namespace}.{name}");
+            return check_qualified_call(&normalized, env, signatures).map_err(|diagnostic| {
+                rename_builtin_diagnostic(diagnostic, &implementation, &canonical)
+            });
+        }
+        if namespace == "time" {
+            return check_time_qualified_call(
+                expr.span,
+                name,
+                *name_span,
+                args,
+                !named_args.is_empty(),
+                env,
+                signatures,
+            );
+        }
+    }
+    check_qualified_call_fallback(expr, env, signatures)
+}
+
+fn check_qualified_call_fallback(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Vec<Type>, Diagnostic> {
     let ExprKind::QualifiedCall {
         namespace,
         namespace_span,
