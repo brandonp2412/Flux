@@ -20464,7 +20464,14 @@ fn emit_linux_gtk_application(
         })?;
     let _ = view_layout_transition_duration(view, signatures)?;
     let mut development_callbacks = linux_ui_zero_arg_callback_functions(view);
-    for metadata in ["on_start", "on_resume", "on_pause", "on_stop", "on_exit"] {
+    for metadata in [
+        "on_start",
+        "on_resume",
+        "on_pause",
+        "on_stop",
+        "on_exit",
+        "on_configuration_changed",
+    ] {
         if let Some(function) = application_metadata_function(application, metadata)
             && !development_callbacks.contains(&function.to_string())
         {
@@ -22280,7 +22287,7 @@ fn emit_linux_gtk_application(
     out.push_str(&format!(
         "static void flux__ui_window_environment_changed(GObject *object, GParamSpec *pspec, gpointer data) {{\n    (void)pspec;\n    (void)data;\n    int width = -1;\n    int height = -1;\n    gtk_window_get_default_size(GTK_WINDOW(object), &width, &height);\n    int scale = gtk_widget_get_scale_factor(GTK_WIDGET(object));\n    int64_t next_width = width > 0 ? (int64_t)width : flux__ui_window_width;\n    int64_t next_height = height > 0 ? (int64_t)height : flux__ui_window_height;\n    int64_t next_scale = scale > 0 ? (int64_t)scale : INT64_C(1);\n    if (next_width == flux__ui_window_width && next_height == flux__ui_window_height && next_scale == flux__ui_display_scale) return;\n    flux__ui_window_width = next_width;\n    flux__ui_window_height = next_height;\n    flux__ui_display_scale = next_scale;\n{}    flux__ui_refresh_changed(-2);\n}}\n\n",
         on_configuration_changed
-            .map(|function| format!("    {}();\n", function_c_name(function)))
+            .map(|function| format!("    {}();\n", linux_ui_callback_call_c_name(function)))
             .unwrap_or_default(),
     ));
 

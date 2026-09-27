@@ -65926,7 +65926,13 @@ app Screen(onConfigurationChanged: configurationChanged)
     check_source(source).expect("Linux configuration callback should typecheck");
     let generated = compile_to_c(source).expect("Linux configuration callback should lower");
     assert!(generated.contains("static void flux__ui_window_environment_changed"));
-    assert!(generated.contains("flux__fn_configurationChanged();"));
+    assert!(generated.contains("flux__ui_call_configurationChanged();"));
+    assert!(generated.contains(
+        "static void (*flux__ui_development_callback_configurationChanged)(void) = flux__fn_configurationChanged;"
+    ));
+    assert!(generated.contains(
+        "flux__ui_development_callback_configurationChanged = target; return true;"
+    ));
     assert!(
         !generated.contains("onConfigurationChanged lifecycle callback is not supported on Linux")
     );
