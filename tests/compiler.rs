@@ -22161,6 +22161,72 @@ fn main() -> i64 {
 }
 
 #[test]
+fn explicit_borrow_supports_optional_nested_list_index_without_owned_escape() {
+    let live = r#"
+fn main() -> i64 {
+    let rows: i64[][]? = [[10, 20], [30, 40]]
+    let view: i64[]? = borrow rows?[0]
+    let destination: i64[][]? = rows
+    if let present = borrow view:
+        print(present[0])
+    if let moved = borrow destination:
+        print(moved[1][0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live)
+        .expect_err("a live optional nested-list borrow must keep its root owner live");
+    assert!(
+        errors.iter().any(|error| {
+            error.message.contains(
+                "cannot move non-copy binding 'rows' while borrowed view 'view' is still live",
+            )
+        }),
+        "optional nested-list borrow errors: {errors:?}"
+    );
+
+    let dead = r#"
+fn main() -> i64 {
+    let rows: i64[][]? = [[10, 20], [30, 40]]
+    let view: i64[]? = borrow rows?[0]
+    if let present = borrow view:
+        print(present[1])
+    let destination: i64[][]? = rows
+    if let moved = borrow destination:
+        print(moved[1][0])
+    return 0
+}
+"#;
+    check_source(dead)
+        .expect("an optional nested-list borrow should release its root owner after last use");
+    compile_to_c(dead).expect("optional nested-list borrows should lower as zero-copy descriptors");
+    let database = fluxc::semantic::SemanticDatabase::analyze(dead, SourceId::new(1215))
+        .expect("optional nested-list borrow lifetimes should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    assert!(
+        graph
+            .borrow_lifetimes()
+            .iter()
+            .any(|lifetime| lifetime.borrower == "view" && lifetime.source == "rows")
+    );
+
+    let escaping = r#"
+fn main() -> i64 {
+    let rows: i64[][]? = [[10, 20], [30, 40]]
+    let view: i64[]? = rows?[0]
+    return 0
+}
+"#;
+    let error = check_source(escaping)
+        .expect_err("optional nested-list indexing must still require an explicit borrow");
+    assert!(error.message.contains(
+        "optional-aware indexing currently requires a Copy list element; borrowed nested-list results need first-class borrow lifetimes"
+    ));
+}
+
+#[test]
 fn explicit_list_borrow_accepts_zero_copy_slice_and_property_views() {
     let source = r#"
 fn main() -> i64 {

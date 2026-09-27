@@ -4196,7 +4196,7 @@ impl ControlFlowGraph {
             ControlFlowValueKind::Slice { base, .. } => {
                 self.value_depends_on_borrow_source(*base, source, visiting)
             }
-            ControlFlowValueKind::Index { base, .. } if matches!(value.ty, Type::List(_)) => {
+            ControlFlowValueKind::Index { base, .. } if is_non_copy_collection_type(&value.ty) => {
                 self.value_depends_on_borrow_source(*base, source, visiting)
             }
             ControlFlowValueKind::Field { base, .. } if matches!(value.ty, Type::List(_)) => {
@@ -4292,7 +4292,7 @@ impl ControlFlowGraph {
             ControlFlowValueKind::Slice { base, .. } => {
                 self.value_depends_on_borrow_source(*base, source, visiting)
             }
-            ControlFlowValueKind::Index { base, .. } if matches!(value.ty, Type::List(_)) => {
+            ControlFlowValueKind::Index { base, .. } if is_non_copy_collection_type(&value.ty) => {
                 self.value_depends_on_borrow_source(*base, source, visiting)
             }
             ControlFlowValueKind::Field { base, .. } if matches!(value.ty, Type::List(_)) => {
@@ -4414,11 +4414,12 @@ impl ControlFlowGraph {
                     ));
                 }
             }
-            ControlFlowValueKind::Slice { base, .. }
-            | ControlFlowValueKind::Index { base, .. }
-            | ControlFlowValueKind::Field { base, .. }
+            ControlFlowValueKind::Slice { base, .. } | ControlFlowValueKind::Field { base, .. }
                 if matches!(value.ty, Type::List(_)) =>
             {
+                visit(*base);
+            }
+            ControlFlowValueKind::Index { base, .. } if is_non_copy_collection_type(&value.ty) => {
                 visit(*base);
             }
             ControlFlowValueKind::Call { callee, arguments }
@@ -7809,8 +7810,14 @@ fn record_expr_types(
             record_expr_types(then_expr, env, signatures, evaluations);
             record_expr_types(else_expr, env, signatures, evaluations);
         }
-        ExprKind::Unary { expr, .. } => {
+        ExprKind::Unary { op, expr } => {
             record_expr_types(expr, env, signatures, evaluations);
+            if matches!(op, UnaryOp::Borrow)
+                && typecheck::value_types_of_expr(expr, env, signatures).is_err()
+                && let Ok(ty) = typecheck::type_of_borrow_operand(expr, env, signatures)
+            {
+                evaluations.push((expr.span, vec![signatures.canonical_type(&ty)]));
+            }
         }
         ExprKind::Binary { left, right, .. } => {
             record_expr_types(left, env, signatures, evaluations);

@@ -5959,12 +5959,9 @@ fn type_of_partial_application(
 fn is_zero_copy_borrow_rooted_in_named_storage(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Var(_) => true,
-        ExprKind::Index {
-            base,
-            optional: false,
-            ..
+        ExprKind::Index { base, .. } | ExprKind::Slice { base, .. } => {
+            is_zero_copy_borrow_rooted_in_named_storage(base)
         }
-        | ExprKind::Slice { base, .. } => is_zero_copy_borrow_rooted_in_named_storage(base),
         ExprKind::Field {
             base,
             optional: false,
@@ -5977,6 +5974,26 @@ fn is_zero_copy_borrow_rooted_in_named_storage(expr: &Expr) -> bool {
 fn is_borrowable_collection_type(ty: &Type) -> bool {
     matches!(ty, Type::List(_) | Type::Set(_) | Type::Map(_, _))
         || matches!(ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_) | Type::Set(_) | Type::Map(_, _)))
+}
+
+pub(crate) fn type_of_borrow_operand(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Type, Diagnostic> {
+    if let ExprKind::Index {
+        base,
+        index,
+        optional,
+    } = &expr.kind
+    {
+        let base_ty = type_of_expr(base, env, signatures)?;
+        let index_ty = type_of_expr(index, env, signatures)?;
+        return borrow_index_result_type(
+            base.span, index.span, expr.span, *optional, &base_ty, &index_ty, signatures,
+        );
+    }
+    type_of_expr(expr, env, signatures)
 }
 
 fn json_map_literal_value_is_constant(value: &Expr, signatures: &Signatures) -> bool {
@@ -6498,6 +6515,33 @@ pub(crate) fn index_result_type(
         };
         Ok(*element)
     }
+}
+
+pub(crate) fn borrow_index_result_type(
+    base_span: SourceSpan,
+    index_span: SourceSpan,
+    expr_span: SourceSpan,
+    optional: bool,
+    base_ty: &Type,
+    index_ty: &Type,
+    signatures: &Signatures,
+) -> Result<Type, Diagnostic> {
+    if optional
+        && let Type::Optional(inner) = signatures.canonical_type(base_ty)
+        && let Type::List(element) = signatures.canonical_type(&inner)
+        && !signatures.is_copy_type(&element)
+        && is_borrowable_collection_type(&element)
+    {
+        require_type(index_span, &Type::I64, index_ty, "list index")?;
+        return Ok(if matches!(element.as_ref(), Type::Optional(_)) {
+            *element
+        } else {
+            Type::Optional(element)
+        });
+    }
+    index_result_type(
+        base_span, index_span, expr_span, optional, base_ty, index_ty, signatures,
+    )
 }
 
 pub(crate) fn slice_result_type_from_base(
@@ -8094,7 +8138,11 @@ pub fn type_of_expr(
             field_result_type(base.span, *name_span, name, *optional, &base_ty, signatures)
         }
         ExprKind::Unary { op, expr: inner } => {
-            let ty = type_of_expr(inner, env, signatures)?;
+            let ty = if matches!(op, UnaryOp::Borrow) {
+                type_of_borrow_operand(inner, env, signatures)?
+            } else {
+                type_of_expr(inner, env, signatures)?
+            };
             match op {
                 UnaryOp::Neg => {
                     require_type(expr.span, &Type::I64, &ty, "unary '-'")?;

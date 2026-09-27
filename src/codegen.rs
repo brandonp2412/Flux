@@ -49824,7 +49824,7 @@ fn emit_expr(
             }
             let base_value = emit_expr(base, env, signatures)?;
             let index_value = emit_expr(index, env, signatures)?;
-            let result_ty = typecheck::index_result_type(
+            let result_ty = typecheck::borrow_index_result_type(
                 base.span,
                 index.span,
                 expr.span,
