@@ -2628,6 +2628,7 @@ fn add_qualified_namespace_completions(
                 "isEmpty",
                 "fn directory.isEmpty(path: str) -> (bool, error)",
             ),
+            ("count", "fn directory.count(path: str) -> (i64, error)"),
             (
                 "sameDirectory",
                 "fn directory.sameDirectory(left: str, right: str) -> bool",
@@ -5739,6 +5740,14 @@ fn signature_help_for_document_cached(
                         "directory.isEmpty",
                         &["path: str"],
                         "(bool, error)",
+                        active_parameter,
+                    ));
+                }
+                "count" => {
+                    return Some(signature_help_for_builtin(
+                        "directory.count",
+                        &["path: str"],
+                        "(i64, error)",
                         active_parameter,
                     ));
                 }
@@ -9891,6 +9900,7 @@ mod tests {
         .to_json();
         assert!(directory_items.contains("fn directory.exists(path: str) -> bool"));
         assert!(directory_items.contains("fn directory.isEmpty(path: str) -> (bool, error)"));
+        assert!(directory_items.contains("fn directory.count(path: str) -> (i64, error)"));
         assert!(
             directory_items.contains("fn directory.sameDirectory(left: str, right: str) -> bool")
         );

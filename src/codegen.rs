@@ -2507,6 +2507,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
         || runtime_usage.contains("flux__fs_list_directory(")
         || runtime_usage.contains("flux__fs_directory_is_empty(")
+        || runtime_usage.contains("flux__fs_directory_count(")
         || runtime_usage.contains("flux__net_")
         || (runtime_usage.contains("flux__preferences_") && !uses_windows)
         || runtime_usage.contains("flux__tls_")
@@ -2567,6 +2568,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_remove_directories(")
         || runtime_usage.contains("flux__fs_list_directory(")
         || runtime_usage.contains("flux__fs_directory_is_empty(")
+        || runtime_usage.contains("flux__fs_directory_count(")
         || runtime_usage.contains("flux__net_")
         || runtime_usage.contains("flux__preferences_")
     {
@@ -2630,6 +2632,7 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__fs_remove_directories(")
         || runtime_usage.contains("flux__fs_list_directory(")
         || runtime_usage.contains("flux__fs_directory_is_empty(")
+        || runtime_usage.contains("flux__fs_directory_count(")
     {
         out.push_str("#include <dirent.h>\n");
     }
@@ -11370,9 +11373,13 @@ static inline const char *flux__path_relative(const char *base, const char *targ
         || runtime_usage.contains("flux__fs_directory_block_size(")
         || runtime_usage.contains("flux__fs_file_allocated_size(")
         || runtime_usage.contains("flux__fs_directory_allocated_size(")
+        || runtime_usage.contains("flux__fs_directory_count(")
     {
         out.push_str("struct flux__fs_i64_error { int64_t v0; const char *v1; };\n");
         out.push_str("static inline struct flux__fs_i64_error flux__fs_i64_result(int64_t value, const char *error) { struct flux__fs_i64_error result = { .v0 = value, .v1 = error }; return result; }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_count(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_directory_count(const char *path) { size_t length = 0; if (!flux__fs_bounded_length(path, &length)) return flux__fs_i64_result(-1, \"directory path is invalid or too long\"); struct stat info; if (stat(path, &info) != 0 || !S_ISDIR(info.st_mode)) return flux__fs_i64_result(-1, \"path is not a directory\"); DIR *directory = opendir(path); if (directory == NULL) return flux__fs_i64_result(-1, \"failed to open directory\"); int64_t count = 0; const char *error = NULL; for (;;) { errno = 0; struct dirent *entry = readdir(directory); if (entry == NULL) { if (errno != 0) error = \"failed to inspect directory\"; break; } if (strcmp(entry->d_name, \".\") == 0 || strcmp(entry->d_name, \"..\") == 0) continue; if (count == INT64_MAX) { error = \"directory entry count exceeds i64\"; break; } count += 1; } if (closedir(directory) != 0 && error == NULL) error = \"failed to close directory\"; return flux__fs_i64_result(error == NULL ? count : -1, error); }\n");
     }
     if runtime_usage.contains("flux__fs_file_size(") {
         out.push_str("static inline struct flux__fs_i64_error flux__fs_file_size(const char *path) { struct stat info; if (stat(path, &info) != 0 || !S_ISREG(info.st_mode)) return flux__fs_i64_result(-1, \"failed to inspect file size\"); if (info.st_size < 0 || (uintmax_t)info.st_size > (uintmax_t)INT64_MAX) return flux__fs_i64_result(-1, \"file size exceeds i64\"); return flux__fs_i64_result((int64_t)info.st_size, NULL); }\n");
@@ -54632,6 +54639,11 @@ fn emit_qualified_call(
                 vec![Type::Bool, Type::Error],
                 Some("flux__fs_bool_error".to_string()),
             ),
+            "count" => (
+                "flux__fs_directory_count",
+                vec![Type::I64, Type::Error],
+                Some("flux__fs_i64_error".to_string()),
+            ),
             "modifiedUnixMillis" => (
                 "flux__fs_directory_modified_unix_millis",
                 vec![Type::I64, Type::Error],
@@ -91904,6 +91916,7 @@ fn emit_cfg_multi_expr_direct(
                         ("file", "hardLinks") => "flux__fs_file_hard_links",
                         ("file", "blockSize") => "flux__fs_file_block_size",
                         ("file", "allocatedSize") => "flux__fs_file_allocated_size",
+                        ("directory", "count") => "flux__fs_directory_count",
                         ("directory", "modifiedUnixMillis") => {
                             "flux__fs_directory_modified_unix_millis"
                         }
