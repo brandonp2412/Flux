@@ -943,7 +943,7 @@ fn add_named_argument_completions(
     let Some(prefix) = source.get(..absolute.min(source.len())) else {
         return;
     };
-    let Some((call_name, active_parameter)) = active_call(prefix) else {
+    let Some((call_name, active_parameter, call_open)) = active_call(prefix) else {
         return;
     };
     let params = if let Some((namespace, member)) = call_name.rsplit_once('.') {
@@ -1005,20 +1005,18 @@ fn add_named_argument_completions(
                 .collect::<Vec<_>>()
         }
     };
-    if let Some(param) = params.get(active_parameter).filter(|param| param.2) {
-        let already_typed = prefix
-            .rsplit_once('(')
-            .map(|(_, args)| {
-                args.split(',').any(|arg| {
-                    arg.trim_start()
-                        .strip_prefix(&format!("{}:", param.0))
-                        .is_some()
-                })
-            })
-            .unwrap_or(false);
-        if already_typed {
-            return;
-        }
+    let positional_count = params.iter().take_while(|param| !param.2).count();
+    if active_parameter < positional_count {
+        return;
+    }
+    let Some(arguments) = prefix.get(call_open + 1..) else {
+        return;
+    };
+    let supplied = supplied_top_level_named_arguments(arguments);
+    for param in params
+        .iter()
+        .filter(|param| param.2 && !supplied.contains(param.0.as_str()))
+    {
         push_completion_item(
             items,
             seen,
@@ -3502,7 +3500,7 @@ fn signature_help_for_document_cached(
         .sum::<usize>()
         + byte_in_line;
     let prefix = source.get(..absolute.min(source.len()))?;
-    let (call_name, active_parameter) = active_call(prefix)?;
+    let (call_name, active_parameter, _) = active_call(prefix)?;
     let implementation_call_name = crate::builtin_names::global_impl(call_name);
     // Built-in signatures remain useful while unrelated document diagnostics
     // prevent construction of the semantic database.
@@ -6024,7 +6022,7 @@ fn signature_help_for_interface_capability(
     ])
 }
 
-fn active_call(prefix: &str) -> Option<(&str, usize)> {
+fn active_call(prefix: &str) -> Option<(&str, usize, usize)> {
     let bytes = prefix.as_bytes();
     let mut stack = Vec::<usize>::new();
     let mut index = 0usize;
@@ -6163,7 +6161,95 @@ fn active_call(prefix: &str) -> Option<(&str, usize)> {
         }
         index += 1;
     }
-    Some((name, commas))
+    Some((name, commas, open))
+}
+
+fn supplied_top_level_named_arguments(args: &str) -> HashSet<&str> {
+    fn record<'a>(segment: &'a str, names: &mut HashSet<&'a str>) {
+        let segment = segment.trim();
+        let Some((name, _)) = segment.split_once(':') else {
+            return;
+        };
+        let name = name.trim();
+        if is_valid_identifier(name) {
+            names.insert(name);
+        }
+    }
+
+    let bytes = args.as_bytes();
+    let mut names = HashSet::new();
+    let mut segment_start = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut index = 0usize;
+    let mut in_string = false;
+    let mut raw_string = false;
+    let mut multiline_string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if multiline_string {
+                if bytes[index..].starts_with(b"\"\"\"") {
+                    in_string = false;
+                    multiline_string = false;
+                    index += 3;
+                    continue;
+                }
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                }
+            } else if raw_string {
+                if byte == b'"' {
+                    in_string = false;
+                    raw_string = false;
+                }
+            } else if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if bytes[index..].starts_with(b"\"\"\"") {
+            in_string = true;
+            multiline_string = true;
+            index += 3;
+            continue;
+        }
+        if byte == b'r' && bytes.get(index + 1) == Some(&b'"') {
+            in_string = true;
+            raw_string = true;
+            index += 2;
+            continue;
+        }
+        match byte {
+            b'"' => {
+                in_string = true;
+                raw_string = false;
+            }
+            b'(' => paren_depth += 1,
+            b')' if paren_depth > 0 => paren_depth -= 1,
+            b'[' => bracket_depth += 1,
+            b']' if bracket_depth > 0 => bracket_depth -= 1,
+            b'{' => brace_depth += 1,
+            b'}' if brace_depth > 0 => brace_depth -= 1,
+            b',' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                record(&args[segment_start..index], &mut names);
+                segment_start = index + 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    record(&args[segment_start..], &mut names);
+    names
 }
 
 fn push_completion_item(
@@ -13359,6 +13445,94 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn imported_function_completion_suggests_named_only_parameters_from_overlay() {
+        let root = std::env::temp_dir().join(format!(
+            "flux-lsp-imported-named-argument-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary LSP project should be writable");
+        let dependency = root.join("dep.flux");
+        let main = root.join("main.flux");
+        std::fs::write(
+            &dependency,
+            "pub fn configure(value: i64, *, enabled: bool, label: str) -> void {\n    return\n}\n",
+        )
+        .expect("dependency should be writable");
+        let main_source = "import \"dep.flux\"\nfn main() -> i64 {\n    configure(1, enabled: true, label: \"ready\")\n    return 0\n}\n";
+        std::fs::write(&main, main_source).expect("entry should be writable");
+        let dependency = std::fs::canonicalize(dependency).unwrap();
+        let main = std::fs::canonicalize(main).unwrap();
+        let dependency_uri = format!("file://{}", dependency.display());
+        let main_uri = format!("file://{}", main.display());
+        let dependency_overlay =
+            "pub fn configure(value: i64, *, enabled: bool, label: str) -> void {\n    return\n}\n";
+        let documents = HashMap::from([
+            (main_uri.clone(), main_source.to_string()),
+            (dependency_uri, dependency_overlay.to_string()),
+        ]);
+        let line_index = main_source
+            .lines()
+            .position(|line| line.contains("configure(1"))
+            .expect("imported function call line should exist");
+        let line = main_source.lines().nth(line_index).unwrap();
+        let cursor = line.find("label:").expect("named argument should exist");
+        let items = completion_items_at_cursor(
+            &main_uri,
+            main_source,
+            &documents,
+            Some(line_index),
+            Some(cursor),
+            PositionEncoding::Utf8,
+        );
+        let labels = items
+            .iter()
+            .filter_map(|item| item.get("label").and_then(JsonValue::as_str))
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"label: "), "completion items: {labels:?}");
+        assert!(
+            !labels.contains(&"enabled: "),
+            "completion items: {labels:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn named_argument_completion_offers_unsupplied_parameters_out_of_order() {
+        let uri = "file:///tmp/named-argument-order.flux";
+        let source = "fn helper(*, enabled: bool) -> bool {\n    return enabled\n}\nfn configure(value: i64, *, enabled: bool, label: bool) -> void {\n    return\n}\nfn main() -> i64 {\n    configure(1, label: helper(enabled: true), enabled: false)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("configure(1"))
+            .expect("named-argument call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line
+            .rfind("enabled: false")
+            .expect("final named argument should exist");
+        let items = completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(line_index),
+            Some(cursor),
+            PositionEncoding::Utf8,
+        );
+        let labels = items
+            .iter()
+            .filter_map(|item| item.get("label").and_then(JsonValue::as_str))
+            .collect::<Vec<_>>();
+        assert!(
+            labels.contains(&"enabled: "),
+            "unsupplied out-of-order parameter should be suggested: {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"label: "),
+            "already supplied top-level parameter should not be suggested: {labels:?}"
+        );
+    }
+
+    #[test]
     fn struct_member_hover_and_definition_use_receiver_type() {
         let uri = "file:///tmp/struct-member-navigation.flux";
         let source = "struct Profile {\n    name: str\n}\nstruct Other {\n    name: i64\n}\nstruct User {\n    profile: Profile\n}\nfn describe(user: User) -> str {\n    return user.profile.name\n}\nfn main() -> i64 { 0 }\n";
@@ -14208,7 +14382,7 @@ fn main() -> i64 {
         assert!(!in_multiline);
         assert_eq!(
             active_call("print(\"\"\"hello (x, y)\nworld\"\"\", "),
-            Some(("print", 1))
+            Some(("print", 1, 5))
         );
     }
 
