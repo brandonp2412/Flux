@@ -1146,6 +1146,9 @@ fn main() -> i64 {
     print(path.normalize("C:\\", show))
     print(path.normalize("C:\\alpha\\..\\beta", show))
     print(path.normalize("C:\\..\\beta", show))
+    print(path.dirname("C:/foo", show))
+    print(path.dirname("C:/", show))
+    print(path.basename("C:/", show))
     return 0
 }
 "#;
@@ -1202,7 +1205,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "true\ntrue\ntrue\nfalse\nfalse\n/tmp/flux\nnil\n../tests/unit\nnil\n.\nnil\n../beta\nnil\npath.relative requires matching absolute or relative paths\n/tmp/flux/tests/unit\nnil\n/var/tmp\nnil\nC:/beta\nnil\n/tmp\nnil\nflux\nnil\n/\nnil\n\\\nnil\n.txt\nnil\n\nnil\n.env\nnil\nflux\nnil\n/tmp/flux.md\nnil\n/tmp/.env.bak\nnil\n/tmp/archive.tar\nnil\n/tmp/cache/item\nnil\n../../b\nnil\nC:/\nnil\nC:/beta\nnil\nC:/beta\nnil\n"
+        "true\ntrue\ntrue\nfalse\nfalse\n/tmp/flux\nnil\n../tests/unit\nnil\n.\nnil\n../beta\nnil\npath.relative requires matching absolute or relative paths\n/tmp/flux/tests/unit\nnil\n/var/tmp\nnil\nC:/beta\nnil\n/tmp\nnil\nflux\nnil\n/\nnil\n\\\nnil\n.txt\nnil\n\nnil\n.env\nnil\nflux\nnil\n/tmp/flux.md\nnil\n/tmp/.env.bak\nnil\n/tmp/archive.tar\nnil\n/tmp/cache/item\nnil\n../../b\nnil\nC:/\nnil\nC:/beta\nnil\nC:/beta\nnil\nC:/\nnil\nC:/\nnil\nC:/\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 
