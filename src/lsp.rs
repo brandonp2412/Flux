@@ -2520,6 +2520,7 @@ fn add_qualified_namespace_completions(
     if namespace == "file" {
         for (label, detail) in [
             ("exists", "fn file.exists(path: str) -> bool"),
+            ("isSymlink", "fn file.isSymlink(path: str) -> bool"),
             ("size", "fn file.size(path: str) -> (i64, error)"),
             ("modified", "fn file.modified(path: str) -> (i64, error)"),
             ("accessed", "fn file.accessed(path: str) -> (i64, error)"),
@@ -3755,7 +3756,7 @@ fn signature_help_for_document_cached(
         && matches!(namespace, "file" | "directory" | "fs")
     {
         let (params, returns) = match member {
-            "exists" => (vec!["path: str"], "bool"),
+            "exists" | "isSymlink" => (vec!["path: str"], "bool"),
             "isFile" | "isDirectory" => (vec!["path: str"], "bool"),
             "createDirectory" | "createDirectories" | "removeFile" | "removeDirectory"
             | "removeDirectories" => (vec!["path: str"], "error"),
@@ -5541,9 +5542,9 @@ fn signature_help_for_document_cached(
         }
         if namespace == "file" {
             match implementation_member {
-                "exists" => {
+                "exists" | "isSymlink" => {
                     return Some(signature_help_for_builtin(
-                        "file.exists",
+                        &format!("file.{member}"),
                         &["path: str"],
                         "bool",
                         active_parameter,
@@ -9729,6 +9730,7 @@ mod tests {
             "fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> error"
         ));
         assert!(file_items.contains("fn file.exists(path: str) -> bool"));
+        assert!(file_items.contains("fn file.isSymlink(path: str) -> bool"));
         assert!(file_items.contains("fn file.size(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.modified(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.owner(path: str) -> (i64, error)"));
@@ -12388,6 +12390,35 @@ fn main() -> i64 {
                 );
             }
         }
+    }
+
+    #[test]
+    fn file_is_symlink_completion_and_signature_help_are_builtin() {
+        let uri = "file:///tmp/file-symlink-signature.flux";
+        let source = r#"fn main() -> i64 {
+    print(file.isSymlink("a"))
+    return 0
+}
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("file.isSymlink("))
+            .expect("file.isSymlink call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "file.isSymlink(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("file.isSymlink call should have signature help")
+        .to_json();
+        assert!(help.contains("fn file.isSymlink(path: str) -> bool"));
     }
 
     #[test]

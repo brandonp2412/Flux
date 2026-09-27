@@ -11219,6 +11219,14 @@ static inline const char *flux__path_relative(const char *base, const char *targ
     if runtime_usage.contains("flux__fs_is_file(") {
         out.push_str("static inline bool flux__fs_is_file(const char *path) { size_t length = 0; if (!flux__fs_bounded_length(path, &length)) return false; struct stat info; return stat(path, &info) == 0 && S_ISREG(info.st_mode); }\n");
     }
+    if runtime_usage.contains("flux__fs_is_symlink(") {
+        out.push_str(
+            "extern int lstat(const char *, struct stat *);
+",
+        );
+        out.push_str("static inline bool flux__fs_is_symlink(const char *path) { size_t length = 0; if (!flux__fs_bounded_length(path, &length)) return false; struct stat info; return lstat(path, &info) == 0 && S_ISLNK(info.st_mode); }
+");
+    }
     if runtime_usage.contains("flux__fs_is_directory(") {
         out.push_str("static inline bool flux__fs_is_directory(const char *path) { size_t length = 0; if (!flux__fs_bounded_length(path, &length)) return false; struct stat info; return stat(path, &info) == 0 && S_ISDIR(info.st_mode); }\n");
     }
@@ -54117,15 +54125,16 @@ fn emit_qualified_call(
             return Err(diag(span, "invalid file call reached code generation"));
         }
         match name {
-            "exists" | "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
-            | "owner" | "group" | "inode" | "device" | "hardLinks" | "blockSize"
-            | "allocatedSize" | "remove" | "sync" | "syncData" => {
+            "exists" | "isSymlink" | "size" | "modifiedUnixMillis" | "accessed" | "changed"
+            | "permissions" | "owner" | "group" | "inode" | "device" | "hardLinks"
+            | "blockSize" | "allocatedSize" | "remove" | "sync" | "syncData" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid file call reached code generation"));
                 }
                 let path = emit_expr(&args[0], env, signatures)?;
                 let (helper, returns, multi_value_tag) = match name {
                     "exists" => ("flux__fs_is_file", vec![Type::Bool], None),
+                    "isSymlink" => ("flux__fs_is_symlink", vec![Type::Bool], None),
                     "size" => (
                         "flux__fs_file_size",
                         vec![Type::I64, Type::Error],
@@ -60172,6 +60181,7 @@ fn emit_cfg_scalar_expr_direct(
             let name = crate::builtin_names::qualified_impl(namespace, name);
             let (helper, expected, result) = match (namespace.as_str(), name) {
                 ("file", "exists") => ("flux__fs_is_file", vec![Type::Str], Type::Bool),
+                ("file", "isSymlink") => ("flux__fs_is_symlink", vec![Type::Str], Type::Bool),
                 ("file", "write") => (
                     "flux__fs_write_text",
                     vec![Type::Str, Type::Str],

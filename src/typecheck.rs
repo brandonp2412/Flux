@@ -14038,9 +14038,9 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "exists" | "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
-            | "owner" | "group" | "inode" | "device" | "hardLinks" | "blockSize"
-            | "allocatedSize" | "remove" | "sync" | "syncData" => {
+            "exists" | "isSymlink" | "size" | "modifiedUnixMillis" | "accessed" | "changed"
+            | "permissions" | "owner" | "group" | "inode" | "device" | "hardLinks"
+            | "blockSize" | "allocatedSize" | "remove" | "sync" | "syncData" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -14055,7 +14055,7 @@ fn check_qualified_call(
                     &format!("file.{name} path"),
                 )?;
                 return Ok(match name.as_str() {
-                    "exists" => vec![Type::Bool],
+                    "exists" | "isSymlink" => vec![Type::Bool],
                     "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
                     | "owner" | "group" | "inode" | "device" | "hardLinks" | "blockSize"
                     | "allocatedSize" => {

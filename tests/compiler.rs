@@ -17339,6 +17339,78 @@ fn file_link_typechecks_lowers_and_creates_hard_link() {
     let _ = fs::remove_dir_all(&root);
 }
 
+#[cfg(unix)]
+#[test]
+fn file_is_symlink_inspects_links_without_following_targets() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!("flux-file-symlink-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("file.isSymlink fixture should be writable");
+    let regular = root.join("regular.txt");
+    let link = root.join("regular-link");
+    let broken = root.join("broken-link");
+    let missing = root.join("missing");
+    fs::write(&regular, "linked").expect("regular file should be writable");
+    symlink(&regular, &link).expect("regular symlink should be creatable");
+    symlink(&missing, &broken).expect("broken symlink should be creatable");
+    let source = format!(
+        r#"
+fn main() -> i64 {{
+    print(file.isSymlink("{}"))
+    print(file.isSymlink("{}"))
+    print(file.isSymlink("{}"))
+    print(file.isSymlink("{}"))
+    return 0
+}}
+"#,
+        link.to_string_lossy(),
+        broken.to_string_lossy(),
+        regular.to_string_lossy(),
+        missing.to_string_lossy(),
+    );
+    check_source(&source).expect("file.isSymlink should typecheck");
+    let generated = compile_to_c(&source).expect("file.isSymlink should lower");
+    assert!(generated.contains("flux__fs_is_symlink"));
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("file.isSymlink source should be writable");
+    let binary = root.join("file-is-symlink");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("file.isSymlink binary should build");
+    assert!(
+        built.status.success(),
+        "file.isSymlink build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("file.isSymlink binary should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true
+true
+false
+false
+"
+    );
+
+    let shaken = compile_to_c(
+        "fn main() -> i64 {
+    return 0
+}
+",
+    )
+    .expect("symlink-free source should compile");
+    assert!(!shaken.contains("flux__fs_is_symlink"));
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn canonical_file_and_directory_capabilities_are_typed_native_and_tree_shaken() {
     let root = std::env::temp_dir().join(format!("flux-canonical-file-api-{}", std::process::id()));
