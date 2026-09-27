@@ -17575,6 +17575,215 @@ fn main() -> i64 {
 }
 
 #[test]
+fn file_read_bytes_at_reads_a_bounded_binary_range() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-file-read-bytes-at-api-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("file readBytesAt fixture should be writable");
+    let content = root.join("content.bin");
+    fs::write(&content, [0x00, 0x7f, 0x80, 0xff, 0x2a])
+        .expect("file readBytesAt fixture content should be writable");
+    let escaped = content
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let source = format!(
+        r#"
+fn show(bytes: i64[]) -> void {{
+    print(bytes.length)
+    print(bytes[0])
+    print(bytes[1])
+}}
+fn main() -> i64 {{
+    let readError: error = file.readBytesAt("{}", 2, 2, show)
+    print(readError)
+    return 0
+}}
+"#,
+        escaped
+    );
+    check_source(&source).expect("file.readBytesAt should typecheck");
+    let generated = compile_to_c(&source).expect("file.readBytesAt should lower natively");
+    assert!(generated.contains("flux__fs_read_bytes_at"));
+    assert!(generated.contains("fseek(file, native_offset, SEEK_SET)"));
+
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("file readBytesAt source should be writable");
+    let binary = root.join("file-read-bytes-at-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("file readBytesAt binary should build");
+    assert!(
+        built.status.success(),
+        "file readBytesAt build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("file readBytesAt binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "2\n128\n255\nnil\n");
+
+    let invalid_offset = r#"
+fn show(_bytes: i64[]) -> void {
+}
+fn main() -> i64 {
+    let _failure: error = file.readBytesAt("content.bin", -1, 16, show)
+    return 0
+}
+"#;
+    let error =
+        check_source(invalid_offset).expect_err("negative file.readBytesAt offset should fail");
+    assert!(
+        error
+            .message
+            .contains("file.readBytesAt offset must be non-negative")
+    );
+
+    let invalid_limit = r#"
+fn show(_bytes: i64[]) -> void {
+}
+fn main() -> i64 {
+    let _failure: error = file.readBytesAt("content.bin", 0, 0, show)
+    return 0
+}
+"#;
+    let error = check_source(invalid_limit).expect_err("zero file.readBytesAt limit should fail");
+    assert!(
+        error
+            .message
+            .contains("file.readBytesAt maxBytes must be in 1..=65536")
+    );
+
+    let dead = r#"
+fn show(_bytes: i64[]) -> void {
+}
+fn hidden() -> void {
+    print(file.readBytesAt("unused.bin", 1, 16, show))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let dead_generated = compile_to_c(dead).expect("dead file.readBytesAt should lower");
+    assert!(!dead_generated.contains("flux__fs_read_bytes_at"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn file_write_bytes_at_overwrites_a_bounded_binary_range() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-file-write-bytes-at-api-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("file writeBytesAt fixture should be writable");
+    let content = root.join("content.bin");
+    fs::write(&content, [1, 2, 3, 4, 5])
+        .expect("file writeBytesAt fixture content should be writable");
+    let escaped = content
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let source = format!(
+        r#"
+fn show(bytes: i64[]) -> void {{
+    print(bytes[0])
+    print(bytes[1])
+    print(bytes[2])
+    print(bytes[3])
+    print(bytes[4])
+}}
+fn main() -> i64 {{
+    let writeError: error = file.writeBytesAt("{}", 1, [127, 128, 255])
+    print(writeError)
+    let readError: error = file.readBytes("{}", 16, show)
+    print(readError)
+    return 0
+}}
+"#,
+        escaped, escaped
+    );
+    check_source(&source).expect("file.writeBytesAt should typecheck");
+    let generated = compile_to_c(&source).expect("file.writeBytesAt should lower natively");
+    assert!(generated.contains("flux__fs_write_bytes_at"));
+    assert!(generated.contains("fopen(path, \"r+b\")"));
+
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("file writeBytesAt source should be writable");
+    let binary = root.join("file-write-bytes-at-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("file writeBytesAt binary should build");
+    assert!(
+        built.status.success(),
+        "file writeBytesAt build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("file writeBytesAt binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\n1\n127\n128\n255\n5\nnil\n"
+    );
+    assert_eq!(
+        fs::read(&content).expect("random-access binary fixture should be readable"),
+        [1, 127, 128, 255, 5]
+    );
+
+    let invalid_offset = r#"
+fn main() -> i64 {
+    let _failure: error = file.writeBytesAt("content.bin", -1, [1])
+    return 0
+}
+"#;
+    let error =
+        check_source(invalid_offset).expect_err("negative file.writeBytesAt offset should fail");
+    assert!(
+        error
+            .message
+            .contains("file.writeBytesAt offset must be non-negative")
+    );
+
+    let invalid_byte = r#"
+fn main() -> i64 {
+    let _failure: error = file.writeBytesAt("content.bin", 0, [256])
+    return 0
+}
+"#;
+    let error = check_source(invalid_byte).expect_err("invalid file.writeBytesAt byte should fail");
+    assert!(
+        error
+            .message
+            .contains("file.writeBytesAt byte values must be between 0 and 255")
+    );
+
+    let dead = r#"
+fn hidden() -> void {
+    print(file.writeBytesAt("unused.bin", 1, [1, 2, 3]))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let dead_generated = compile_to_c(dead).expect("dead file.writeBytesAt should lower");
+    assert!(!dead_generated.contains("flux__fs_write_bytes_at"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn file_binary_writes_preserve_bytes_and_validate_values() {
     let root =
         std::env::temp_dir().join(format!("flux-file-write-bytes-api-{}", std::process::id()));

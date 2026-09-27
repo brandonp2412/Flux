@@ -2497,6 +2497,10 @@ fn add_qualified_namespace_completions(
                 "readBytes",
                 "fn file.readBytes(path: str, maxBytes: i64, callback: fn(i64[]) -> void) -> error",
             ),
+            (
+                "readBytesAt",
+                "fn file.readBytesAt(path: str, offset: i64, maxBytes: i64, callback: fn(i64[]) -> void) -> error",
+            ),
             ("write", "fn file.write(path: str, text: str) -> error"),
             ("append", "fn file.append(path: str, text: str) -> error"),
             (
@@ -2506,6 +2510,10 @@ fn add_qualified_namespace_completions(
             (
                 "appendBytes",
                 "fn file.appendBytes(path: str, bytes: i64[]) -> error",
+            ),
+            (
+                "writeBytesAt",
+                "fn file.writeBytesAt(path: str, offset: i64, bytes: i64[]) -> error",
             ),
             ("sync", "fn file.sync(path: str) -> error"),
             ("syncData", "fn file.syncData(path: str) -> error"),
@@ -3720,6 +3728,16 @@ fn signature_help_for_document_cached(
                 vec!["path: str", "maxBytes: i64", "callback: fn(i64[]) -> void"],
                 "error",
             ),
+            "readBytesAt" => (
+                vec![
+                    "path: str",
+                    "offset: i64",
+                    "maxBytes: i64",
+                    "callback: fn(i64[]) -> void",
+                ],
+                "error",
+            ),
+            "writeBytesAt" => (vec!["path: str", "offset: i64", "bytes: i64[]"], "error"),
             "list" => (vec!["path: str", "callback: fn(str) -> void"], "error"),
             "size" | "modified" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
             | "owner" | "group" | "inode" | "device" | "hardLinks" | "blockSize"
@@ -5488,6 +5506,14 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
+                "writeBytesAt" => {
+                    return Some(signature_help_for_builtin(
+                        "file.writeBytesAt",
+                        &["path: str", "offset: i64", "bytes: i64[]"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
                 "read" => {
                     return Some(signature_help_for_builtin(
                         "file.read",
@@ -5500,6 +5526,19 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "file.readBytes",
                         &["path: str", "maxBytes: i64", "callback: fn(i64[]) -> void"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "readBytesAt" => {
+                    return Some(signature_help_for_builtin(
+                        "file.readBytesAt",
+                        &[
+                            "path: str",
+                            "offset: i64",
+                            "maxBytes: i64",
+                            "callback: fn(i64[]) -> void",
+                        ],
                         "error",
                         active_parameter,
                     ));

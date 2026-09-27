@@ -14074,6 +14074,48 @@ fn check_qualified_call(
                 validate_literal_byte_list(&args[1], signatures, &format!("file.{name}"))?;
                 return Ok(vec![Type::Error]);
             }
+            "writeBytesAt" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        "file.writeBytesAt expects 3 arguments: path, offset, bytes",
+                    ));
+                }
+                let path_type = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &path_type,
+                    "file.writeBytesAt path",
+                )?;
+                let offset_type = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &offset_type,
+                    "file.writeBytesAt offset",
+                )?;
+                if let Some(ConstantValue::I64(offset)) =
+                    constant_primitive_value(&args[1], signatures)
+                    && offset < 0
+                {
+                    return Err(diag(
+                        args[1].span,
+                        "file.writeBytesAt offset must be non-negative",
+                    ));
+                }
+                let bytes = signatures.canonical_type(&type_of_qualified_call_argument(
+                    &args[2], namespace, name, 2, env, signatures,
+                )?);
+                require_type(
+                    args[2].span,
+                    &Type::List(Box::new(Type::I64)),
+                    &bytes,
+                    "file.writeBytesAt bytes",
+                )?;
+                validate_literal_byte_list(&args[2], signatures, "file.writeBytesAt")?;
+                return Ok(vec![Type::Error]);
+            }
             "write" | "append" => {
                 if args.len() != 2 {
                     return Err(diag(
@@ -14194,6 +14236,66 @@ fn check_qualified_call(
                     &expected,
                     &callback_type,
                     "file.readBytes callback",
+                )?;
+                return Ok(vec![Type::Error]);
+            }
+            "readBytesAt" => {
+                if args.len() != 4 {
+                    return Err(diag(
+                        span,
+                        "file.readBytesAt expects 4 arguments: path, offset, maxBytes, callback",
+                    ));
+                }
+                let path_type = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &path_type,
+                    "file.readBytesAt path",
+                )?;
+                let offset_type = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &offset_type,
+                    "file.readBytesAt offset",
+                )?;
+                if let Some(ConstantValue::I64(offset)) =
+                    constant_primitive_value(&args[1], signatures)
+                    && offset < 0
+                {
+                    return Err(diag(
+                        args[1].span,
+                        "file.readBytesAt offset must be non-negative",
+                    ));
+                }
+                let max_bytes_type = type_of_expr(&args[2], env, signatures)?;
+                require_type(
+                    args[2].span,
+                    &Type::I64,
+                    &max_bytes_type,
+                    "file.readBytesAt maxBytes",
+                )?;
+                if let Some(ConstantValue::I64(max_bytes)) =
+                    constant_primitive_value(&args[2], signatures)
+                    && !(1..=65536).contains(&max_bytes)
+                {
+                    return Err(diag(
+                        args[2].span,
+                        "file.readBytesAt maxBytes must be in 1..=65536",
+                    ));
+                }
+                let callback_type =
+                    signatures.canonical_type(&type_of_expr(&args[3], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::List(Box::new(Type::I64))],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[3].span,
+                    &expected,
+                    &callback_type,
+                    "file.readBytesAt callback",
                 )?;
                 return Ok(vec![Type::Error]);
             }
@@ -15584,6 +15686,7 @@ pub(crate) fn qualified_call_argument_expected_type(
         | ("http", "respondBytes" | "respondBytesHeaders", 3)
         | ("tls", "writeBytes" | "writeBytesTimeout", 1)
         | ("websocket", "writeBytes", 1)
+        | ("file", "writeBytesAt", 2)
         | (
             "net",
             "sendBytes"

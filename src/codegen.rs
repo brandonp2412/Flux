@@ -11280,8 +11280,59 @@ static inline const char *flux__fs_write_bytes(const char *path, struct flux__li
 static inline const char *flux__fs_append_bytes(const char *path, struct flux__list bytes) { return flux__fs_write_bytes_mode(path, bytes, "ab"); }
 "#);
     }
+    if runtime_usage.contains("flux__fs_write_bytes_at(") {
+        out.push_str(r#"static inline const char *flux__fs_write_bytes_at(const char *path, int64_t offset, struct flux__list bytes) {
+    size_t path_length = 0;
+    if (!flux__fs_bounded_length(path, &path_length)) return "file path exceeds 65536 bytes";
+    if (offset < 0) return "file.writeBytesAt offset must be non-negative";
+    if (bytes.len != 0 && bytes.data == NULL) return "file byte list has no storage";
+    ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride;
+    uint64_t magnitude = stride < 0 ? (uint64_t)(-(stride + 1)) + 1u : (uint64_t)stride;
+    if (magnitude < sizeof(int64_t) || (bytes.len > 1 && (uint64_t)(bytes.len - 1) > (uint64_t)PTRDIFF_MAX / magnitude)) return "file byte list has invalid element stride";
+    for (size_t index = 0; index < bytes.len; ++index) { int64_t value; memcpy(&value, (const char *)bytes.data + (ptrdiff_t)index * stride, sizeof(value)); if (value < 0 || value > 255) return "file byte values must be between 0 and 255"; }
+    FILE *file = fopen(path, "r+b");
+    if (file == NULL) return "failed to open file for random-access writing";
+    long native_offset = (long)offset;
+    if ((int64_t)native_offset != offset || fseek(file, native_offset, SEEK_SET) != 0) { fclose(file); return "failed to seek file"; }
+    unsigned char buffer[4096];
+    size_t position = 0;
+    const char *failure = NULL;
+    while (position < bytes.len) {
+        size_t count = bytes.len - position;
+        if (count > sizeof(buffer)) count = sizeof(buffer);
+        for (size_t index = 0; index < count; ++index) { int64_t value; memcpy(&value, (const char *)bytes.data + (ptrdiff_t)(position + index) * stride, sizeof(value)); buffer[index] = (unsigned char)value; }
+        if (fwrite(buffer, 1, count, file) != count) { failure = "failed to write file"; break; }
+        position += count;
+    }
+    if (fclose(file) != 0 && failure == NULL) failure = "failed to close file after writing";
+    return failure;
+}
+"#);
+    }
     if runtime_usage.contains("flux__fs_read_bytes(") {
         out.push_str(r#"static inline const char *flux__fs_read_bytes(const char *path, int64_t max_bytes, void (*callback)(struct flux__list)) { if (path == NULL || callback == NULL || max_bytes < 1 || max_bytes > INT64_C(65536)) return "invalid file readBytes arguments"; FILE *file = fopen(path, "rb"); if (file == NULL) return "failed to open file for reading"; size_t capacity = (size_t)max_bytes; unsigned char *raw = malloc(capacity); int64_t *buffer = malloc(capacity * sizeof(int64_t)); if (raw == NULL || buffer == NULL) { free(raw); free(buffer); fclose(file); return "failed to allocate file readBytes buffer"; } size_t count = fread(raw, 1, capacity, file); if (ferror(file)) { free(raw); free(buffer); fclose(file); return "failed to read file"; } if (count == capacity) { int extra = fgetc(file); if (extra != EOF) { free(raw); free(buffer); fclose(file); return "file exceeds read limit"; } if (ferror(file)) { free(raw); free(buffer); fclose(file); return "failed to read file"; } } if (fclose(file) != 0) { free(raw); free(buffer); return "failed to close file after reading"; } for (size_t index = 0; index < count; ++index) buffer[index] = (int64_t)raw[index]; free(raw); callback((struct flux__list){ .data = buffer, .len = count, .stride = sizeof(int64_t) }); free(buffer); return NULL; }
+"#);
+    }
+    if runtime_usage.contains("flux__fs_read_bytes_at(") {
+        out.push_str(r#"static inline const char *flux__fs_read_bytes_at(const char *path, int64_t offset, int64_t max_bytes, void (*callback)(struct flux__list)) {
+    if (path == NULL || callback == NULL || offset < 0 || max_bytes < 1 || max_bytes > INT64_C(65536)) return "invalid file readBytesAt arguments";
+    FILE *file = fopen(path, "rb");
+    if (file == NULL) return "failed to open file for reading";
+    long native_offset = (long)offset;
+    if ((int64_t)native_offset != offset || fseek(file, native_offset, SEEK_SET) != 0) { fclose(file); return "failed to seek file"; }
+    size_t capacity = (size_t)max_bytes;
+    unsigned char *raw = malloc(capacity);
+    int64_t *buffer = malloc(capacity * sizeof(int64_t));
+    if (raw == NULL || buffer == NULL) { free(raw); free(buffer); fclose(file); return "failed to allocate file readBytesAt buffer"; }
+    size_t count = fread(raw, 1, capacity, file);
+    if (ferror(file)) { free(raw); free(buffer); fclose(file); return "failed to read file"; }
+    if (fclose(file) != 0) { free(raw); free(buffer); return "failed to close file after reading"; }
+    for (size_t index = 0; index < count; ++index) buffer[index] = (int64_t)raw[index];
+    free(raw);
+    callback((struct flux__list){ .data = buffer, .len = count, .stride = sizeof(int64_t) });
+    free(buffer);
+    return NULL;
+}
 "#);
     }
     if runtime_usage.contains("flux__net_receive_bytes(") {
@@ -53610,6 +53661,25 @@ fn emit_qualified_call(
                     None,
                 ));
             }
+            "writeBytesAt" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        "invalid file.writeBytesAt call reached code generation",
+                    ));
+                }
+                let path = emit_expr(&args[0], env, signatures)?;
+                let offset = emit_expr(&args[1], env, signatures)?;
+                let bytes = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__fs_write_bytes_at({}, {}, {})",
+                        path.code, offset.code, bytes.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
             "write" | "append" => {
                 if args.len() != 2 {
                     return Err(diag(span, "invalid file call reached code generation"));
@@ -53641,6 +53711,26 @@ fn emit_qualified_call(
                     format!(
                         "flux__fs_read_bytes({}, {}, {})",
                         path.code, max_bytes.code, callback.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "readBytesAt" => {
+                if args.len() != 4 {
+                    return Err(diag(
+                        span,
+                        "invalid file.readBytesAt call reached code generation",
+                    ));
+                }
+                let path = emit_expr(&args[0], env, signatures)?;
+                let offset = emit_expr(&args[1], env, signatures)?;
+                let max_bytes = emit_expr(&args[2], env, signatures)?;
+                let callback = emit_expr(&args[3], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__fs_read_bytes_at({}, {}, {}, {})",
+                        path.code, offset.code, max_bytes.code, callback.code
                     ),
                     vec![Type::Error],
                     None,
