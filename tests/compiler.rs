@@ -4538,11 +4538,15 @@ fn windows_backend_refreshes_dynamic_text_alignment_in_place() {
 view Screen {
     state alignment: str = "right"
     grid columns: 1fr
-    grid rows: auto auto
+    grid rows: auto auto auto
     Text title at 1,1
         text: "Aligned"
         textAlign: alignment
-    Text rich at 2,1
+    Text selectable at 2,1
+        text: "Selectable"
+        selectable: true
+        textAlign: alignment
+    Text rich at 3,1
         richText: "<b>Rich</b>"
         selectable: true
         textAlign: alignment
@@ -4565,6 +4569,12 @@ app Screen
             .contains("flux__win_set_text_alignment(flux__ui_title, flux__ui_state_alignment)")
     );
     assert!(generated.contains("SetWindowLongPtrW(control, GWL_STYLE"));
+    assert!(generated.contains("flux__win_set_selectable_text_alignment"));
+    assert!(generated.contains(
+        "flux__win_set_selectable_text_alignment(flux__ui_selectable, flux__ui_state_alignment)"
+    ));
+    assert!(generated.contains("ES_CENTER | ES_RIGHT"));
+    assert!(generated.contains("SWP_FRAMECHANGED"));
     assert!(generated.contains("flux__win_apply_rich_text_alignment"));
     assert!(
         generated.contains(

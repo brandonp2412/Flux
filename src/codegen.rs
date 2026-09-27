@@ -16695,16 +16695,6 @@ fn emit_windows_native_application(
             }
             None => false,
         };
-        if selectable
-            && view_property(element, "rich_text").is_none()
-            && let Some(alignment) = view_property(element, "text_align")
-            && static_expr_str(&alignment.value, signatures).is_none()
-        {
-            return Err(diag(
-                alignment.value.span,
-                "bootstrap Windows selectable Text requires compile-time textAlign",
-            ));
-        }
         let rich_text = static_rich_text_markup(element, signatures)?;
         if rich_text.is_some() {
             if let Some(property) = view_property(element, "letter_spacing") {
@@ -18956,6 +18946,7 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
                 .is_some_and(|property| static_expr_str(&property.value, signatures).is_none())
     }) {
         out.push_str("static void flux__win_set_text_alignment(HWND control, const char *value) { if (control == NULL || value == NULL) return; LONG_PTR style = GetWindowLongPtrW(control, GWL_STYLE); style &= ~((LONG_PTR)SS_TYPEMASK); if (strcmp(value, \"center\") == 0) style |= SS_CENTER; else if (strcmp(value, \"right\") == 0) style |= SS_RIGHT; else if (strcmp(value, \"left\") == 0) style |= SS_LEFT; else if (strcmp(value, \"fill\") == 0) style |= SS_LEFT | SS_NOPREFIX; else { fputs(\"Flux runtime error: Text.textAlign must be one of 'left', 'center', 'right', or 'fill'\\n\", stderr); abort(); } SetWindowLongPtrW(control, GWL_STYLE, style); InvalidateRect(control, NULL, TRUE); }\n");
+        out.push_str("static void flux__win_set_selectable_text_alignment(HWND control, const char *value) { if (control == NULL || value == NULL) return; LONG_PTR style = GetWindowLongPtrW(control, GWL_STYLE); style &= ~((LONG_PTR)(ES_CENTER | ES_RIGHT)); if (strcmp(value, \"left\") == 0 || strcmp(value, \"fill\") == 0) style |= ES_LEFT; else if (strcmp(value, \"center\") == 0) style |= ES_CENTER; else if (strcmp(value, \"right\") == 0) style |= ES_RIGHT; else { fputs(\"Flux runtime error: Text.textAlign must be one of 'left', 'center', 'right', or 'fill'\\n\", stderr); abort(); } SetWindowLongPtrW(control, GWL_STYLE, style); SetWindowPos(control, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED); InvalidateRect(control, NULL, TRUE); }\n");
     }
     if uses_native_borders {
         for (index, element) in view.elements.iter().enumerate() {
@@ -19987,6 +19978,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             if view_property(element, "rich_text").is_some() {
                 out.push_str(&format!(
                     "flux__win_apply_rich_text_alignment({variable}, {value});\n"
+                ));
+            } else if view_property(element, "selectable")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                == Some(true)
+            {
+                out.push_str(&format!(
+                    "flux__win_set_selectable_text_alignment({variable}, {value});\n"
                 ));
             } else {
                 out.push_str(&format!(
