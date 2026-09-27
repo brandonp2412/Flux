@@ -11488,6 +11488,12 @@ static inline const char *flux__path_relative(const char *base, const char *targ
         out.push_str("static inline const char *flux__fs_read_text(const char *path, int64_t max_bytes, void (*callback)(const char *)) { if (path == NULL || callback == NULL || max_bytes < 1 || max_bytes > INT64_C(65536)) return \"invalid file read arguments\"; FILE *file = fopen(path, \"rb\"); if (file == NULL) return \"failed to open file for reading\"; size_t capacity = (size_t)max_bytes; char *buffer = (char *)malloc(capacity + 1); if (buffer == NULL) { fclose(file); return \"failed to allocate file read buffer\"; } size_t count = fread(buffer, 1, capacity, file); if (ferror(file)) { free(buffer); fclose(file); return \"failed to read file\"; } if (count == capacity) { int extra = fgetc(file); if (extra != EOF) { free(buffer); fclose(file); return \"file exceeds read limit\"; } if (ferror(file)) { free(buffer); fclose(file); return \"failed to read file\"; } } if (memchr(buffer, 0, count) != NULL) { free(buffer); fclose(file); return \"file contains NUL bytes and is not valid text\"; } if (!flux__fs_valid_utf8_text((const unsigned char *)buffer, count)) { free(buffer); fclose(file); return \"file contains invalid UTF-8\"; } buffer[count] = '\\0'; if (fclose(file) != 0) { free(buffer); return \"failed to close file after reading\"; } callback(buffer); free(buffer); return NULL; }\n");
     }
 
+    if runtime_usage.contains("flux__fs_read_link(") {
+        out.push_str("static inline bool flux__fs_valid_utf8_link(const unsigned char *value, size_t length) { size_t index = 0; while (index < length) { unsigned char lead = value[index]; size_t width = 0; uint32_t codepoint = 0; if (lead < 0x80u) { width = 1; codepoint = lead; } else if (lead >= 0xC2u && lead <= 0xDFu) { width = 2; codepoint = (uint32_t)(lead & 0x1Fu); } else if (lead >= 0xE0u && lead <= 0xEFu) { width = 3; codepoint = (uint32_t)(lead & 0x0Fu); } else if (lead >= 0xF0u && lead <= 0xF4u) { width = 4; codepoint = (uint32_t)(lead & 0x07u); } else return false; if (width > length - index) return false; for (size_t offset = 1; offset < width; offset += 1) { unsigned char continuation = value[index + offset]; if ((continuation & 0xC0u) != 0x80u) return false; codepoint = (codepoint << 6) | (uint32_t)(continuation & 0x3Fu); } if ((width == 3 && codepoint < 0x800u) || (width == 4 && codepoint < 0x10000u) || codepoint > 0x10FFFFu || (codepoint >= 0xD800u && codepoint <= 0xDFFFu)) return false; index += width; } return true; }\n");
+        out.push_str("extern ssize_t readlink(const char *, char *, size_t);\n");
+        out.push_str("static inline const char *flux__fs_read_link(const char *path, void (*callback)(const char *)) { if (path == NULL || callback == NULL) return \"invalid symbolic link read arguments\"; size_t path_length = 0; if (!flux__fs_bounded_length(path, &path_length)) return \"symbolic link path exceeds 65536 bytes\"; char buffer[65537]; ssize_t count = readlink(path, buffer, sizeof(buffer)); if (count < 0) return \"failed to read symbolic link\"; if ((size_t)count > 65536) return \"symbolic link target exceeds 65536 bytes\"; if (memchr(buffer, 0, (size_t)count) != NULL) return \"symbolic link target contains NUL bytes\"; if (!flux__fs_valid_utf8_link((const unsigned char *)buffer, (size_t)count)) return \"symbolic link target contains invalid UTF-8\"; buffer[(size_t)count] = '\\0'; callback(buffer); return NULL; }\n");
+    }
+
     if runtime_usage.contains("flux_print_i64(") {
         out.push_str("static inline void flux_print_i64(int64_t value) { printf(\"%lld\\n\", (long long)value); }\n");
     }
@@ -54300,6 +54306,21 @@ fn emit_qualified_call(
                     None,
                 ));
             }
+            "readLink" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        "invalid file.readLink call reached code generation",
+                    ));
+                }
+                let path = emit_expr(&args[0], env, signatures)?;
+                let callback = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__fs_read_link({}, {})", path.code, callback.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
             "read" => {
                 if args.len() != 3 {
                     return Err(diag(span, "invalid file.read call reached code generation"));
@@ -59984,6 +60005,20 @@ fn emit_cfg_scalar_expr_direct(
                     )
                 },
             )
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "file" && name == "readLink" && ty == Type::Error => {
+            if arguments.len() != 2 {
+                return None;
+            }
+            let path =
+                emit_cfg_ordinary_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+            let callback =
+                emit_cfg_callback_argument_direct(&arguments[1], &[Type::Str], env, signatures)?;
+            Some(format!("flux__fs_read_link({path}, {callback})"))
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,

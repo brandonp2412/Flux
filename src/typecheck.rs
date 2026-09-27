@@ -14315,6 +14315,28 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Error]);
             }
+            "readLink" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        "file.readLink expects 2 arguments: path, callback",
+                    ));
+                }
+                let path_type = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &path_type, "file.readLink path")?;
+                let callback_type = type_of_expr(&args[1], env, signatures)?;
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[1].span,
+                    &expected,
+                    &callback_type,
+                    "file.readLink callback",
+                )?;
+                return Ok(vec![Type::Error]);
+            }
             "read" => {
                 if args.len() != 3 {
                     return Err(diag(

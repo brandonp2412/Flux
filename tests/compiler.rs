@@ -17341,6 +17341,76 @@ fn file_link_typechecks_lowers_and_creates_hard_link() {
 
 #[cfg(unix)]
 #[test]
+fn file_read_link_lends_live_and_broken_link_targets() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!("flux-file-read-link-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("file.readLink fixture should be writable");
+    let live = root.join("live-link");
+    let broken = root.join("broken-link");
+    symlink("target.txt", &live).expect("live relative link should be creatable");
+    symlink("missing.txt", &broken).expect("broken relative link should be creatable");
+
+    let source = format!(
+        r#"
+fn show(value: str) -> void {{
+    print(value)
+}}
+
+fn main() -> i64 {{
+    print(file.readLink("{}", show))
+    print(file.readLink("{}", show))
+    return 0
+}}
+"#,
+        live.to_string_lossy(),
+        broken.to_string_lossy(),
+    );
+    check_source(&source).expect("file.readLink should typecheck");
+    let generated = compile_to_c(&source).expect("file.readLink should lower");
+    assert!(generated.contains("flux__fs_read_link"));
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("file.readLink source should be writable");
+    let binary = root.join("file-read-link");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("file.readLink binary should build");
+    assert!(
+        built.status.success(),
+        "file.readLink build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("file.readLink binary should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "target.txt
+nil
+missing.txt
+nil
+"
+    );
+
+    let shaken = compile_to_c(
+        "fn main() -> i64 {
+    return 0
+}
+",
+    )
+    .expect("readLink-free source should compile");
+    assert!(!shaken.contains("flux__fs_read_link"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
 fn file_symlink_creates_live_and_broken_symbolic_links() {
     let root =
         std::env::temp_dir().join(format!("flux-file-symlink-create-{}", std::process::id()));

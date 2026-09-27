@@ -2540,6 +2540,10 @@ fn add_qualified_namespace_completions(
                 "fn file.allocatedSize(path: str) -> (i64, error)",
             ),
             (
+                "readLink",
+                "fn file.readLink(path: str, callback: fn(str) -> void) -> error",
+            ),
+            (
                 "read",
                 "fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> error",
             ),
@@ -3775,6 +3779,7 @@ fn signature_help_for_document_cached(
             "create" | "createAll" | "remove" | "removeAll" | "sync" | "syncData" => {
                 (vec!["path: str"], "error")
             }
+            "readLink" => (vec!["path: str", "callback: fn(str) -> void"], "error"),
             "read" => (
                 vec!["path: str", "maxBytes: i64", "callback: fn(str) -> void"],
                 "error",
@@ -5585,6 +5590,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "file.writeBytesAt",
                         &["path: str", "offset: i64", "bytes: i64[]"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "readLink" => {
+                    return Some(signature_help_for_builtin(
+                        "file.readLink",
+                        &["path: str", "callback: fn(str) -> void"],
                         "error",
                         active_parameter,
                     ));
@@ -9739,6 +9752,9 @@ mod tests {
         ))
         .to_json();
         assert!(file_items.contains("\"label\":\"read\""));
+        assert!(
+            file_items.contains("fn file.readLink(path: str, callback: fn(str) -> void) -> error")
+        );
         assert!(file_items.contains(
             "fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> error"
         ));
@@ -12433,6 +12449,37 @@ fn main() -> i64 {
         .expect("file.isSymlink call should have signature help")
         .to_json();
         assert!(help.contains("fn file.isSymlink(path: str) -> bool"));
+    }
+
+    #[test]
+    fn file_read_link_completion_and_signature_help_are_builtin() {
+        let uri = "file:///tmp/file-read-link-signature.flux";
+        let source = r#"fn show(_value: str) -> void {
+}
+fn main() -> i64 {
+    print(file.readLink("path", show))
+    return 0
+}
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("file.readLink("))
+            .expect("file.readLink call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "file.readLink(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("file.readLink call should have signature help")
+        .to_json();
+        assert!(help.contains("fn file.readLink(path: str, callback: fn(str) -> void) -> error"));
     }
 
     #[test]
