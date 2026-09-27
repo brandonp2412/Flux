@@ -20463,7 +20463,15 @@ fn emit_linux_gtk_application(
             )
         })?;
     let _ = view_layout_transition_duration(view, signatures)?;
-    let development_callbacks = linux_ui_zero_arg_callback_functions(view);
+    let mut development_callbacks = linux_ui_zero_arg_callback_functions(view);
+    for metadata in ["on_start", "on_resume", "on_pause", "on_stop", "on_exit"] {
+        if let Some(function) = application_metadata_function(application, metadata)
+            && !development_callbacks.contains(&function.to_string())
+        {
+            development_callbacks.push(function.to_string());
+        }
+    }
+    development_callbacks.sort();
     for function in &development_callbacks {
         let slot = linux_ui_development_callback_slot_c_name(function);
         let call = linux_ui_callback_call_c_name(function);
@@ -22744,10 +22752,16 @@ fn emit_linux_gtk_application(
             out.push_str("    flux__ui_save_app_state();\n");
         }
         if let Some(function) = on_stop {
-            out.push_str(&format!("    {}();\n", function_c_name(function)));
+            out.push_str(&format!(
+                "    {}();\n",
+                linux_ui_callback_call_c_name(function)
+            ));
         }
         if let Some(function) = on_exit {
-            out.push_str(&format!("    {}();\n", function_c_name(function)));
+            out.push_str(&format!(
+                "    {}();\n",
+                linux_ui_callback_call_c_name(function)
+            ));
         }
         out.push_str("}\n\n");
     }
@@ -22758,13 +22772,13 @@ fn emit_linux_gtk_application(
         if let Some(function) = on_resume {
             out.push_str(&format!(
                 "    if (active) {}();\n",
-                function_c_name(function)
+                linux_ui_callback_call_c_name(function)
             ));
         }
         if let Some(function) = on_pause {
             out.push_str(&format!(
                 "    if (!active) {}();\n",
-                function_c_name(function)
+                linux_ui_callback_call_c_name(function)
             ));
         }
         out.push_str("}\n\n");
@@ -22776,7 +22790,10 @@ fn emit_linux_gtk_application(
     }
     out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n    flux__ui_restore_reload_state();\n#endif\n");
     if let Some(function) = application_metadata_function(application, "on_start") {
-        out.push_str(&format!("    {}();\n", function_c_name(function)));
+        out.push_str(&format!(
+            "    {}();\n",
+            linux_ui_callback_call_c_name(function)
+        ));
     }
     out.push_str("    GtkSettings *flux__ui_settings = gtk_settings_get_default();\n    if (flux__ui_settings != NULL) g_object_get(flux__ui_settings, \"gtk-application-prefer-dark-theme\", &flux__ui_system_prefer_dark_theme, NULL);\n");
     if let Some(theme) = application_metadata_string(application, "theme", signatures) {

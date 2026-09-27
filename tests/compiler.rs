@@ -60403,6 +60403,46 @@ app HelloApp
 }
 
 #[test]
+fn linux_development_lifecycle_callbacks_use_retargetable_slots() {
+    let source = r#"
+fn started() -> void {
+    print("started")
+}
+fn resumed() -> void {
+    print("resumed")
+}
+fn paused() -> void {
+    print("paused")
+}
+fn stopped() -> void {
+    print("stopped")
+}
+fn exiting() -> void {
+    print("exiting")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+
+app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped, onExit: exiting)
+"#;
+
+    check_source(source).expect("lifecycle callbacks should typecheck");
+    let generated = compile_to_c(source).expect("Linux lifecycle callbacks should lower");
+    for function in ["started", "resumed", "paused", "stopped", "exiting"] {
+        assert!(generated.contains(&format!(
+            "static void (*flux__ui_development_callback_{function})(void) = flux__fn_{function};"
+        )));
+        assert!(generated.contains(&format!(
+            "flux__ui_development_callback_{function} = target; return true;"
+        )));
+        assert!(generated.contains(&format!("flux__ui_call_{function}();")));
+    }
+}
+
+#[test]
 fn app_view_state_transitions_lower_to_native_state_and_refresh() {
     let source = r##"
 view Counter {
@@ -65741,14 +65781,14 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     check_source(source)
         .expect("lifecycle callbacks should typecheck as named fn() -> void values");
     let generated = compile_to_c(source).expect("lifecycle callbacks should lower natively");
-    assert!(generated.contains("flux__fn_started();"));
+    assert!(generated.contains("flux__ui_call_started();"));
     assert!(generated.contains("static void flux__ui_active_changed"));
-    assert!(generated.contains("flux__fn_resumed();"));
-    assert!(generated.contains("flux__fn_paused();"));
+    assert!(generated.contains("flux__ui_call_resumed();"));
+    assert!(generated.contains("flux__ui_call_paused();"));
     assert!(generated.contains("\"notify::is-active\", G_CALLBACK(flux__ui_active_changed)"));
     assert!(generated.contains("static void flux__ui_shutdown"));
-    assert!(generated.contains("flux__fn_stopped();"));
-    assert!(generated.contains("flux__fn_exiting();"));
+    assert!(generated.contains("flux__ui_call_stopped();"));
+    assert!(generated.contains("flux__ui_call_exiting();"));
     assert!(generated.contains("\"shutdown\", G_CALLBACK(flux__ui_shutdown)"));
     assert!(
         generated.contains("static void flux__ui_open(GApplication *application, GFile **files")
