@@ -3424,7 +3424,7 @@ app Screen(layoutDirection: "rtl")
 }
 
 #[test]
-fn windows_selectable_text_padding_remains_explicitly_unsupported() {
+fn windows_selectable_text_padding_preserves_native_selection_and_rtl_edges() {
     let source = r#"
 view Screen {
     grid columns: 1fr
@@ -3433,24 +3433,64 @@ view Screen {
         text: "Selectable"
         selectable: true
         padding: 4
+        paddingTop: 2
+        paddingStart: 6
+        paddingEnd: 8
 }
-app Screen
+app Screen(layoutDirection: "rtl")
 "#;
     let program =
         fluxc::parser::parse(source).expect("selectable Text padding source should parse");
     let signatures =
         fluxc::typecheck::check(&program).expect("selectable Text padding source should typecheck");
-    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
         &program,
         &signatures,
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Windows,
     )
-    .expect_err("selectable Text padding must not replace native Windows selection semantics");
+    .expect("compile-time selectable Text padding should lower through the native edit control");
+    assert!(windows.contains("CreateWindowExW(0, L\"EDIT\""));
+    assert!(windows.contains("EM_SETRECTNP"));
+    assert!(windows.contains("flux__win_text_padding_top_label"));
+    assert!(windows.contains(
+        "flux__win_text_layout_label.rtl ? flux__win_text_padding_end_label : flux__win_text_padding_start_label"
+    ));
+    assert!(windows.contains(
+        "flux__win_text_layout_label.rtl ? flux__win_text_padding_start_label : flux__win_text_padding_end_label"
+    ));
+    assert!(
+        !windows.contains("SetWindowSubclass(flux__ui_label, flux__win_text_layout_proc"),
+        "selectable Text must retain native edit-control painting/selection"
+    );
+
+    let dynamic = r#"
+view Screen {
+    state inset: i64 = 4
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Selectable"
+        selectable: true
+        padding: inset
+}
+app Screen
+"#;
+    let dynamic_program =
+        fluxc::parser::parse(dynamic).expect("dynamic selectable Text padding should parse");
+    let dynamic_signatures = fluxc::typecheck::check(&dynamic_program)
+        .expect("dynamic selectable Text padding should typecheck before target validation");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &dynamic_program,
+        &dynamic_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("state-driven selectable Text padding remains unsupported");
     assert!(
         error
             .message
-            .contains("selectable Text does not yet support padding")
+            .contains("selectable Text padding must be a compile-time i64 value")
     );
 }
 
