@@ -4704,7 +4704,7 @@ fn check_block_all(
                                         )) {
                                         diagnostics.push(diag(
                                             cond.span,
-                                            "optional binding patterns currently require a Copy payload; borrowed optional lists support '?[index]' until first-class borrow lifetimes are implemented",
+                                            "optional binding patterns currently require a Copy payload; borrowed optional lists support explicit borrow projections such as '?[index]' and '?[start:end]' until first-class borrow lifetimes are implemented",
                                         ));
                                     } else if binding.name != "_" {
                                         if env.contains_key(&binding.name) {
@@ -5666,7 +5666,7 @@ fn type_of_optional_pipe(
     if !signatures.is_copy_type(&inner) {
         return Err(diag(
             input.span,
-            "optional cascade '?..' currently requires a Copy payload; borrowed optional lists support '?[index]' until first-class borrow lifetimes are implemented",
+            "optional cascade '?..' currently requires a Copy payload; borrowed optional lists support explicit borrow projections such as '?[index]' and '?[start:end]' until first-class borrow lifetimes are implemented",
         ));
     }
 
@@ -6467,7 +6467,7 @@ pub(crate) fn binary_result_type(
             if !signatures.is_copy_type(&inner) {
                 return Err(diag(
                     left_span,
-                    "coalescing currently requires a Copy optional payload; borrowed optional lists support '?[index]' until first-class borrow lifetimes are implemented",
+                    "coalescing currently requires a Copy optional payload; borrowed optional lists support explicit borrow projections such as '?[index]' and '?[start:end]' until first-class borrow lifetimes are implemented",
                 ));
             }
             if right_ty == *inner {

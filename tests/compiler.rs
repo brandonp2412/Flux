@@ -22348,6 +22348,61 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_slice_borrow_skips_bounds_when_receiver_is_absent() {
+    let source = r#"
+fn bound(label: i64, value: i64) -> i64 {
+    print(label)
+    return value
+}
+
+fn main() -> i64 {
+    let absent: i64[]? = none
+    let absentView: i64[]? = borrow absent?[bound(90, 1):bound(91, 2)]
+    if let value = borrow absentView:
+        print(value[0])
+
+    let present: i64[]? = [10, 20, 30, 40]
+    let presentView: i64[]? = borrow present?[bound(1, 1):bound(2, 3)]
+    if let value = borrow presentView:
+        print(value[1])
+    return 0
+}
+"#;
+    check_source(source).expect("optional slice bounds should typecheck behind an explicit borrow");
+    let generated = compile_to_c(source).expect("optional slice bounds should lower natively");
+    assert!(
+        generated.contains("flux__optional_slice_base_"),
+        "{generated}"
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-optional-slice-borrow-lazy-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("optional slice laziness directory should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("optional slice laziness source should be writable");
+    let binary = root.join("optional-slice-borrow-lazy");
+    let build = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("optional slice laziness binary should build");
+    assert!(
+        build.status.success(),
+        "optional slice laziness build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("optional slice laziness binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "1\n2\n30\n");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn explicit_list_borrow_accepts_zero_copy_slice_and_property_views() {
     let source = r#"
 fn main() -> i64 {
