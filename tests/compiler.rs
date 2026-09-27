@@ -4121,18 +4121,19 @@ app Screen
     let selectable_dynamic_wrap_signatures =
         fluxc::typecheck::check(&selectable_dynamic_wrap_program)
             .expect("selectable dynamic Windows wrap source should typecheck");
-    let selectable_dynamic_wrap_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+    let selectable_dynamic_wrap_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
         &selectable_dynamic_wrap_program,
         &selectable_dynamic_wrap_signatures,
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Windows,
     )
-    .expect_err("selectable Windows Text must not replace native selection for dynamic wrap");
-    assert!(
-        selectable_dynamic_wrap_error
-            .message
-            .contains("selectable Text does not yet support state-driven wrap")
-    );
+    .expect("selectable Windows Text should preserve native selection for dynamic wrap");
+    assert!(selectable_dynamic_wrap_windows.contains(
+        "flux__ui_label = CreateWindowExW(0, L\"EDIT\", L\"\", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY"
+    ));
+    assert!(selectable_dynamic_wrap_windows.contains(
+        "flux__win_set_selectable_text_wrap(flux__ui_label, flux__win_next_wrap_label)"
+    ));
 
     for (property, message) in [
         (
