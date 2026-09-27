@@ -4239,12 +4239,8 @@ fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &s
         }
         "primary" => element.kind == "Button",
         "can_shrink" => element.kind == "Image",
-        "checked" => {
-            element.kind == "Toggle" && !development_ui_element_has_property(element, "on_change")
-        }
-        "selected" => {
-            element.kind == "Radio" && !development_ui_element_has_property(element, "on_select")
-        }
+        "checked" => element.kind == "Toggle",
+        "selected" => element.kind == "Radio",
         _ => false,
     }
 }

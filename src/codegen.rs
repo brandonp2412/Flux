@@ -21123,6 +21123,19 @@ fn emit_linux_gtk_application(
             ));
             out.push_str("#endif\n");
         }
+        let selection_callback = match element.kind.as_str() {
+            "Toggle" => view_property(element, "on_change").is_some(),
+            "Radio" => view_property(element, "on_select").is_some(),
+            _ => false,
+        };
+        if selection_callback {
+            out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+            out.push_str(&format!(
+                "static bool flux__ui_reload_selection_{} = false;\n",
+                element.name
+            ));
+            out.push_str("#endif\n");
+        }
         let multiline_text_input = element.kind == "TextInput"
             && view_property(element, "multiline")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
@@ -22486,20 +22499,36 @@ fn emit_linux_gtk_application(
                 ));
             }
             "Toggle" => {
-                if view_property(element, "on_change").is_none() {
-                    out.push_str(&format!(
-                        " if (strcmp(name, {}) == 0 && strcmp(property, \"checked\") == 0 && bool_value_valid && {widget} != NULL) gtk_check_button_set_active(GTK_CHECK_BUTTON({widget}), bool_value);",
-                        c_string(&element.name)
-                    ));
-                }
+                let suppress_selection = if view_property(element, "on_change").is_some() {
+                    format!(" flux__ui_reload_selection_{} = true;", element.name)
+                } else {
+                    String::new()
+                };
+                let restore_selection = if view_property(element, "on_change").is_some() {
+                    format!(" flux__ui_reload_selection_{} = false;", element.name)
+                } else {
+                    String::new()
+                };
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"checked\") == 0 && bool_value_valid && {widget} != NULL) {{{suppress_selection} gtk_check_button_set_active(GTK_CHECK_BUTTON({widget}), bool_value);{restore_selection} }}",
+                    c_string(&element.name)
+                ));
             }
             "Radio" => {
-                if view_property(element, "on_select").is_none() {
-                    out.push_str(&format!(
-                        " if (strcmp(name, {}) == 0 && strcmp(property, \"selected\") == 0 && bool_value_valid && {widget} != NULL) gtk_check_button_set_active(GTK_CHECK_BUTTON({widget}), bool_value);",
-                        c_string(&element.name)
-                    ));
-                }
+                let suppress_selection = if view_property(element, "on_select").is_some() {
+                    format!(" flux__ui_reload_selection_{} = true;", element.name)
+                } else {
+                    String::new()
+                };
+                let restore_selection = if view_property(element, "on_select").is_some() {
+                    format!(" flux__ui_reload_selection_{} = false;", element.name)
+                } else {
+                    String::new()
+                };
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"selected\") == 0 && bool_value_valid && {widget} != NULL) {{{suppress_selection} gtk_check_button_set_active(GTK_CHECK_BUTTON({widget}), bool_value);{restore_selection} }}",
+                    c_string(&element.name)
+                ));
             }
             _ => {}
         }
@@ -22644,6 +22673,14 @@ fn emit_linux_gtk_application(
         let Some(action) = view_property(element, action_name) else {
             continue;
         };
+        let reload_selection_guard = if matches!(element.kind.as_str(), "Toggle" | "Radio") {
+            format!(
+                "#ifdef FLUX_DEVELOPMENT_RELOAD\n if (flux__ui_reload_selection_{}) return;\n#endif\n",
+                element.name
+            )
+        } else {
+            String::new()
+        };
         if let Some(transition) = &action.transition {
             let next = ui_expr_c(&action.value, view, signatures)?;
             let active_guard = if element.kind == "Radio" {
@@ -22653,7 +22690,7 @@ fn emit_linux_gtk_application(
             };
             let state_index = ui_state_index(view, &transition.state);
             out.push_str(&format!(
-                "static void flux__ui_click_{}(GtkWidget *widget, gpointer data) {{{active_guard} (void)widget; (void)data; {} = {next}; flux__ui_refresh_changed({state_index}); }}\n",
+                "static void flux__ui_click_{}(GtkWidget *widget, gpointer data) {{{reload_selection_guard}{active_guard} (void)widget; (void)data; {} = {next}; flux__ui_refresh_changed({state_index}); }}\n",
                 element.name,
                 ui_state_c_name(&transition.state),
             ));
@@ -22671,7 +22708,7 @@ fn emit_linux_gtk_application(
             ""
         };
         out.push_str(&format!(
-            "static void flux__ui_click_{}(GtkWidget *widget, gpointer data) {{{active_guard} (void)widget; (void)data; {}(); flux__ui_refresh(); }}\n",
+            "static void flux__ui_click_{}(GtkWidget *widget, gpointer data) {{{reload_selection_guard}{active_guard} (void)widget; (void)data; {}(); flux__ui_refresh(); }}\n",
             element.name,
             linux_ui_callback_call_c_name(function),
         ));

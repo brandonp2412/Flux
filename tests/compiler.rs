@@ -56853,7 +56853,7 @@ app Screen
 }
 
 #[test]
-fn development_ui_string_patch_restarts_for_selection_state_with_callbacks() {
+fn development_ui_string_patch_hot_applies_selection_state_with_callbacks() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-selection-handler-patch-{}",
         std::process::id()
@@ -56887,6 +56887,19 @@ app Screen
     let first = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("initial selection-handler analysis should succeed");
+    let generated = first
+        .emit_c()
+        .expect("selection-handler fixture should lower for Linux");
+    assert!(generated.contains("static bool flux__ui_reload_selection_toggle = false;"));
+    assert!(generated.contains("static bool flux__ui_reload_selection_radio = false;"));
+    assert!(generated.contains("if (flux__ui_reload_selection_toggle) return;"));
+    assert!(generated.contains("if (flux__ui_reload_selection_radio) return;"));
+    assert!(generated.contains(
+        "flux__ui_reload_selection_toggle = true; gtk_check_button_set_active(GTK_CHECK_BUTTON(flux__ui_toggle), bool_value); flux__ui_reload_selection_toggle = false;"
+    ));
+    assert!(generated.contains(
+        "flux__ui_reload_selection_radio = true; gtk_check_button_set_active(GTK_CHECK_BUTTON(flux__ui_radio), bool_value); flux__ui_reload_selection_radio = false;"
+    ));
 
     fs::write(&entry, updated).expect("updated selection-handler source should be writable");
     let entry = fs::canonicalize(entry).expect("selection-handler patch entry should canonicalize");
@@ -56895,10 +56908,22 @@ app Screen
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("updated selection-handler analysis should succeed");
 
-    assert!(
-        second.development_ui_string_patch_from(&first).is_none(),
-        "Toggle.checked or Radio.selected with callbacks must use controlled restart instead of synthesizing application selection events"
+    assert_eq!(second.development_abi(), first.development_abi());
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("callback-owned selection changes should hot-apply without synthesizing application selection events")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("toggle".to_string(), "checked".to_string())),
+        Some(&"0".to_string())
     );
+    assert_eq!(
+        patch.get(&("radio".to_string(), "selected".to_string())),
+        Some(&"1".to_string())
+    );
+    assert_eq!(patch.len(), 2);
 
     let _ = fs::remove_dir_all(root);
 }
