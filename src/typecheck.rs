@@ -8894,6 +8894,32 @@ fn check_time_qualified_call(
     }
 }
 
+fn check_file_same_file_call(
+    args: &[Expr],
+    named_args: &[NamedArg],
+    span: SourceSpan,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Vec<Type>, Diagnostic> {
+    if !named_args.is_empty() {
+        return Err(diag(
+            span,
+            "file.sameFile accepts positional arguments only",
+        ));
+    }
+    if args.len() != 2 {
+        return Err(diag(
+            span,
+            &format!("file.sameFile expects 2 arguments, got {}", args.len()),
+        ));
+    }
+    let left = type_of_expr(&args[0], env, signatures)?;
+    require_type(args[0].span, &Type::Str, &left, "file.sameFile left")?;
+    let right = type_of_expr(&args[1], env, signatures)?;
+    require_type(args[1].span, &Type::Str, &right, "file.sameFile right")?;
+    Ok(vec![Type::Bool])
+}
+
 fn check_qualified_call(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -8922,6 +8948,9 @@ fn check_qualified_call(
         return check_qualified_call(&normalized, env, signatures).map_err(|diagnostic| {
             rename_builtin_diagnostic(diagnostic, &implementation, &canonical)
         });
+    }
+    if namespace == "file" && name == "sameFile" {
+        return check_file_same_file_call(args, named_args, span, env, signatures);
     }
     if namespace == "str" {
         if !named_args.is_empty() {

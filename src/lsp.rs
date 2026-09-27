@@ -2521,6 +2521,10 @@ fn add_qualified_namespace_completions(
         for (label, detail) in [
             ("exists", "fn file.exists(path: str) -> bool"),
             ("isSymlink", "fn file.isSymlink(path: str) -> bool"),
+            (
+                "sameFile",
+                "fn file.sameFile(left: str, right: str) -> bool",
+            ),
             ("size", "fn file.size(path: str) -> (i64, error)"),
             ("modified", "fn file.modified(path: str) -> (i64, error)"),
             ("accessed", "fn file.accessed(path: str) -> (i64, error)"),
@@ -3765,6 +3769,7 @@ fn signature_help_for_document_cached(
     {
         let (params, returns) = match member {
             "exists" | "isSymlink" => (vec!["path: str"], "bool"),
+            "sameFile" => (vec!["left: str", "right: str"], "bool"),
             "isFile" | "isDirectory" => (vec!["path: str"], "bool"),
             "createDirectory" | "createDirectories" | "removeFile" | "removeDirectory"
             | "removeDirectories" => (vec!["path: str"], "error"),
@@ -5556,6 +5561,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         &format!("file.{member}"),
                         &["path: str"],
+                        "bool",
+                        active_parameter,
+                    ));
+                }
+                "sameFile" => {
+                    return Some(signature_help_for_builtin(
+                        "file.sameFile",
+                        &["left: str", "right: str"],
                         "bool",
                         active_parameter,
                     ));
@@ -9760,6 +9773,7 @@ mod tests {
         ));
         assert!(file_items.contains("fn file.exists(path: str) -> bool"));
         assert!(file_items.contains("fn file.isSymlink(path: str) -> bool"));
+        assert!(file_items.contains("fn file.sameFile(left: str, right: str) -> bool"));
         assert!(file_items.contains("fn file.size(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.modified(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.owner(path: str) -> (i64, error)"));
@@ -12449,6 +12463,35 @@ fn main() -> i64 {
         .expect("file.isSymlink call should have signature help")
         .to_json();
         assert!(help.contains("fn file.isSymlink(path: str) -> bool"));
+    }
+
+    #[test]
+    fn file_same_file_completion_and_signature_help_are_builtin() {
+        let uri = "file:///tmp/file-same-file-signature.flux";
+        let source = r#"fn main() -> i64 {
+    print(file.sameFile("left", "right"))
+    return 0
+}
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("file.sameFile("))
+            .expect("file.sameFile call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "file.sameFile(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("file.sameFile call should have signature help")
+        .to_json();
+        assert!(help.contains("fn file.sameFile(left: str, right: str) -> bool"));
     }
 
     #[test]

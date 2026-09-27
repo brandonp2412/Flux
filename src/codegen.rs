@@ -11227,6 +11227,10 @@ static inline const char *flux__path_relative(const char *base, const char *targ
         out.push_str("static inline bool flux__fs_is_symlink(const char *path) { size_t length = 0; if (!flux__fs_bounded_length(path, &length)) return false; struct stat info; return lstat(path, &info) == 0 && S_ISLNK(info.st_mode); }
 ");
     }
+    if runtime_usage.contains("flux__fs_same_file(") {
+        out.push_str("static inline bool flux__fs_same_file(const char *left, const char *right) { size_t left_length = 0; size_t right_length = 0; if (!flux__fs_bounded_length(left, &left_length) || !flux__fs_bounded_length(right, &right_length)) return false; struct stat left_info; struct stat right_info; if (stat(left, &left_info) != 0 || stat(right, &right_info) != 0 || !S_ISREG(left_info.st_mode) || !S_ISREG(right_info.st_mode)) return false; return left_info.st_dev == right_info.st_dev && left_info.st_ino == right_info.st_ino; }
+");
+    }
     if runtime_usage.contains("flux__fs_is_directory(") {
         out.push_str("static inline bool flux__fs_is_directory(const char *path) { size_t length = 0; if (!flux__fs_bounded_length(path, &length)) return false; struct stat info; return stat(path, &info) == 0 && S_ISDIR(info.st_mode); }\n");
     }
@@ -54337,7 +54341,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "copy" | "rename" | "link" | "symlink" => {
+            "copy" | "rename" | "link" | "symlink" | "sameFile" => {
                 if args.len() != 2 {
                     return Err(diag(span, "invalid file call reached code generation"));
                 }
@@ -54348,11 +54352,16 @@ fn emit_qualified_call(
                     "rename" => "flux__fs_rename",
                     "link" => "flux__fs_file_link",
                     "symlink" => "flux__fs_file_symlink",
+                    "sameFile" => "flux__fs_same_file",
                     _ => unreachable!(),
                 };
                 return Ok((
                     format!("{helper}({}, {})", source.code, destination.code),
-                    vec![Type::Error],
+                    if name == "sameFile" {
+                        vec![Type::Bool]
+                    } else {
+                        vec![Type::Error]
+                    },
                     None,
                 ));
             }
@@ -60222,6 +60231,9 @@ fn emit_cfg_scalar_expr_direct(
             let (helper, expected, result) = match (namespace.as_str(), name) {
                 ("file", "exists") => ("flux__fs_is_file", vec![Type::Str], Type::Bool),
                 ("file", "isSymlink") => ("flux__fs_is_symlink", vec![Type::Str], Type::Bool),
+                ("file", "sameFile") => {
+                    ("flux__fs_same_file", vec![Type::Str, Type::Str], Type::Bool)
+                }
                 ("file", "write") => (
                     "flux__fs_write_text",
                     vec![Type::Str, Type::Str],

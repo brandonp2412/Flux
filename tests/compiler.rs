@@ -17341,6 +17341,85 @@ fn file_link_typechecks_lowers_and_creates_hard_link() {
 
 #[cfg(unix)]
 #[test]
+fn file_same_file_recognizes_hard_links_and_symlink_aliases() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!("flux-file-same-file-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("file.sameFile fixture should be writable");
+    let original = root.join("original.txt");
+    let hard_link = root.join("hard-link.txt");
+    let symlink_path = root.join("symlink.txt");
+    let other = root.join("other.txt");
+    let missing = root.join("missing.txt");
+    fs::write(&original, "same").expect("original should be writable");
+    fs::hard_link(&original, &hard_link).expect("hard link should be creatable");
+    symlink(&original, &symlink_path).expect("symlink should be creatable");
+    fs::write(&other, "same").expect("other should be writable");
+
+    let source = format!(
+        r#"
+fn main() -> i64 {{
+    print(file.sameFile("{}", "{}"))
+    print(file.sameFile("{}", "{}"))
+    print(file.sameFile("{}", "{}"))
+    print(file.sameFile("{}", "{}"))
+    return 0
+}}
+"#,
+        original.to_string_lossy(),
+        hard_link.to_string_lossy(),
+        original.to_string_lossy(),
+        symlink_path.to_string_lossy(),
+        original.to_string_lossy(),
+        other.to_string_lossy(),
+        original.to_string_lossy(),
+        missing.to_string_lossy(),
+    );
+    check_source(&source).expect("file.sameFile should typecheck");
+    let generated = compile_to_c(&source).expect("file.sameFile should lower");
+    assert!(generated.contains("flux__fs_same_file"));
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("file.sameFile source should be writable");
+    let binary = root.join("file-same-file");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("file.sameFile binary should build");
+    assert!(
+        built.status.success(),
+        "file.sameFile build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("file.sameFile binary should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true
+true
+false
+false
+"
+    );
+
+    let shaken = compile_to_c(
+        "fn main() -> i64 {
+    return 0
+}
+",
+    )
+    .expect("sameFile-free source should compile");
+    assert!(!shaken.contains("flux__fs_same_file"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
 fn file_read_link_lends_live_and_broken_link_targets() {
     use std::os::unix::fs::symlink;
 
