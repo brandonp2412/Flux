@@ -8362,6 +8362,538 @@ fn check_websocket_handshake_timeout_call(
     Ok(vec![Type::I64, Type::Error])
 }
 
+fn check_time_qualified_call(
+    span: SourceSpan,
+    name: &String,
+    name_span: SourceSpan,
+    args: &[Expr],
+    has_named_args: bool,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Vec<Type>, Diagnostic> {
+    if has_named_args {
+        return Err(diag(
+            span,
+            &format!("time.{name} accepts positional arguments only"),
+        ));
+    }
+    match name.as_str() {
+        "duration" => {
+            if args.len() != 1 {
+                return Err(diag(
+                    span,
+                    &format!("time.duration expects 1 argument, got {}", args.len()),
+                ));
+            }
+            let actual = type_of_expr(&args[0], env, signatures)?;
+            require_type(
+                args[0].span,
+                &Type::I64,
+                &actual,
+                "time.duration milliseconds",
+            )?;
+            return Ok(vec![duration_type()]);
+        }
+        "calendar" => {
+            if args.len() != 1 {
+                return Err(diag(
+                    span,
+                    &format!("time.calendar expects 1 argument, got {}", args.len()),
+                ));
+            }
+            let actual = type_of_expr(&args[0], env, signatures)?;
+            require_type(
+                args[0].span,
+                &Type::I64,
+                &actual,
+                "time.calendar unixMillis",
+            )?;
+            return Ok(vec![Type::Record(
+                [
+                    ("year", Type::I64),
+                    ("month", Type::I64),
+                    ("day", Type::I64),
+                    ("hour", Type::I64),
+                    ("minute", Type::I64),
+                    ("second", Type::I64),
+                    ("millis", Type::I64),
+                    ("weekday", Type::I64),
+                    ("dayOfYear", Type::I64),
+                ]
+                .into_iter()
+                .map(|(name, ty)| crate::ast::RecordTypeField {
+                    name: Some(name.to_string()),
+                    ty,
+                })
+                .collect(),
+            )]);
+        }
+        "calendarZone" => {
+            if args.len() != 3 {
+                return Err(diag(
+                    span,
+                    &format!("time.calendarZone expects 3 arguments, got {}", args.len()),
+                ));
+            }
+            let unix_millis = type_of_expr(&args[0], env, signatures)?;
+            require_type(
+                args[0].span,
+                &Type::I64,
+                &unix_millis,
+                "time.calendarZone unixMillis",
+            )?;
+            let zone = type_of_expr(&args[1], env, signatures)?;
+            require_type(args[1].span, &Type::Str, &zone, "time.calendarZone zone")?;
+            let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
+            let expected = Type::Function {
+                params: vec![Type::I64; 10],
+                returns: Vec::new(),
+            };
+            require_type(
+                args[2].span,
+                &expected,
+                &callback,
+                "time.calendarZone callback",
+            )?;
+            return Ok(vec![Type::Error]);
+        }
+        "unixMillis" | "monotonicMillis" => {
+            if !args.is_empty() {
+                return Err(diag(
+                    span,
+                    &format!("time.{name} expects 0 arguments, got {}", args.len()),
+                ));
+            }
+            return Ok(vec![Type::I64]);
+        }
+        "milliseconds" | "seconds" | "minutes" | "hours" | "days" | "weeks" => {
+            if args.len() != 1 {
+                return Err(diag(
+                    span,
+                    &format!("time.{name} expects 1 argument, got {}", args.len()),
+                ));
+            }
+            let actual = type_of_expr(&args[0], env, signatures)?;
+            require_type(
+                args[0].span,
+                &Type::I64,
+                &actual,
+                &format!("time.{name} value"),
+            )?;
+            let factor = match name.as_str() {
+                "milliseconds" => 1_i64,
+                "seconds" => 1_000_i64,
+                "minutes" => 60_000_i64,
+                "hours" => 3_600_000_i64,
+                "days" => 86_400_000_i64,
+                "weeks" => 604_800_000_i64,
+                _ => unreachable!(),
+            };
+            if let Some(ConstantValue::I64(value)) = constant_primitive_value(&args[0], signatures)
+            {
+                if value.checked_mul(factor).is_none() {
+                    return Err(diag(
+                        args[0].span,
+                        &format!("time.{name} duration overflows i64 milliseconds"),
+                    ));
+                }
+            }
+            return Ok(vec![Type::I64]);
+        }
+        "isLeapYear" => {
+            if args.len() != 1 {
+                return Err(diag(
+                    span,
+                    &format!("time.isLeapYear expects 1 argument, got {}", args.len()),
+                ));
+            }
+            let actual = type_of_expr(&args[0], env, signatures)?;
+            require_type(args[0].span, &Type::I64, &actual, "time.isLeapYear year")?;
+            return Ok(vec![Type::Bool]);
+        }
+        "daysInMonth" => {
+            if args.len() != 2 {
+                return Err(diag(
+                    span,
+                    &format!("time.daysInMonth expects 2 arguments, got {}", args.len()),
+                ));
+            }
+            for (arg, label) in args.iter().zip(["year", "month"]) {
+                let actual = type_of_expr(arg, env, signatures)?;
+                require_type(
+                    arg.span,
+                    &Type::I64,
+                    &actual,
+                    &format!("time.daysInMonth {label}"),
+                )?;
+            }
+            if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if !(1..=12).contains(&value))
+            {
+                return Err(diag(
+                    args[1].span,
+                    "time.daysInMonth month must be between 1 and 12",
+                ));
+            }
+            return Ok(vec![Type::I64]);
+        }
+        "daysInYear" => {
+            if args.len() != 1 {
+                return Err(diag(
+                    span,
+                    &format!("time.daysInYear expects 1 argument, got {}", args.len()),
+                ));
+            }
+            let actual = type_of_expr(&args[0], env, signatures)?;
+            require_type(args[0].span, &Type::I64, &actual, "time.daysInYear year")?;
+            return Ok(vec![Type::I64]);
+        }
+        "local" => {
+            if args.len() != 7 {
+                return Err(diag(
+                    span,
+                    &format!("time.local expects 7 arguments, got {}", args.len()),
+                ));
+            }
+            for (arg, label) in args.iter().zip([
+                "year",
+                "month",
+                "day",
+                "hour",
+                "minute",
+                "second",
+                "millisecond",
+            ]) {
+                let actual = type_of_expr(arg, env, signatures)?;
+                require_type(
+                    arg.span,
+                    &Type::I64,
+                    &actual,
+                    &format!("time.local {label}"),
+                )?;
+            }
+            for (index, (arg, range)) in args
+                .iter()
+                .zip([
+                    (i64::MIN, i64::MAX),
+                    (1, 12),
+                    (1, 31),
+                    (0, 23),
+                    (0, 59),
+                    (0, 59),
+                    (0, 999),
+                ])
+                .enumerate()
+                .skip(1)
+            {
+                if matches!(constant_primitive_value(arg, signatures), Some(ConstantValue::I64(value)) if value < range.0 || value > range.1)
+                {
+                    return Err(diag(
+                        arg.span,
+                        &format!(
+                            "time.local {} is out of range",
+                            [
+                                "year",
+                                "month",
+                                "day",
+                                "hour",
+                                "minute",
+                                "second",
+                                "millisecond"
+                            ][index]
+                        ),
+                    ));
+                }
+            }
+            if let (
+                Some(ConstantValue::I64(year)),
+                Some(ConstantValue::I64(month)),
+                Some(ConstantValue::I64(day)),
+            ) = (
+                constant_primitive_value(&args[0], signatures),
+                constant_primitive_value(&args[1], signatures),
+                constant_primitive_value(&args[2], signatures),
+            ) {
+                let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+                let max_day = if month == 2 {
+                    if leap { 29 } else { 28 }
+                } else if matches!(month, 4 | 6 | 9 | 11) {
+                    30
+                } else {
+                    31
+                };
+                if day > max_day {
+                    return Err(diag(
+                        args[2].span,
+                        &format!("time.local day {day} is invalid for year {year}, month {month}"),
+                    ));
+                }
+            }
+            return Ok(vec![Type::I64]);
+        }
+        "sleep" | "sleepMillis" => {
+            if args.len() != 1 {
+                return Err(diag(
+                    span,
+                    &format!("time.{name} expects 1 argument, got {}", args.len()),
+                ));
+            }
+            let actual = type_of_expr(&args[0], env, signatures)?;
+            if actual != Type::I64 && actual != duration_type() {
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &actual,
+                    &format!("time.{name} durationMs"),
+                )?;
+            }
+            if matches!(
+                constant_duration_millis(&args[0], signatures),
+                Some(value) if value < 0
+            ) {
+                return Err(diag(
+                    args[0].span,
+                    &format!("time.{name} durationMs must be non-negative"),
+                ));
+            }
+            return Ok(Vec::new());
+        }
+        "after" | "every" => {
+            if args.len() != 2 {
+                return Err(diag(
+                    span,
+                    &format!("time.{name} expects 2 arguments, got {}", args.len()),
+                ));
+            }
+            let duration = type_of_expr(&args[0], env, signatures)?;
+            if duration != Type::I64 && duration != duration_type() {
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &duration,
+                    &format!("time.{name} durationMs"),
+                )?;
+            }
+            if matches!(
+                constant_duration_millis(&args[0], signatures),
+                Some(value) if value < 0 || (name == "every" && value == 0)
+            ) {
+                return Err(diag(
+                    args[0].span,
+                    if name == "every" {
+                        "time.every durationMs must be positive"
+                    } else {
+                        "time.after durationMs must be non-negative"
+                    },
+                ));
+            }
+            let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+            let expected = Type::Function {
+                params: Vec::new(),
+                returns: Vec::new(),
+            };
+            require_type(
+                args[1].span,
+                &expected,
+                &callback,
+                &format!("time.{name} callback"),
+            )?;
+            return Ok(vec![Type::I64, Type::Error]);
+        }
+        "sleepUntilMonotonic" => {
+            if args.len() != 1 {
+                return Err(diag(
+                    span,
+                    &format!(
+                        "time.sleepUntilMonotonic expects 1 argument, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+            let actual = type_of_expr(&args[0], env, signatures)?;
+            require_type(
+                args[0].span,
+                &Type::I64,
+                &actual,
+                "time.sleepUntilMonotonic deadlineMillis",
+            )?;
+            return Ok(Vec::new());
+        }
+        "utcUnixMillis" => {
+            if args.len() != 7 {
+                return Err(diag(
+                    span,
+                    &format!("time.utcUnixMillis expects 7 arguments, got {}", args.len()),
+                ));
+            }
+            for (arg, label) in args.iter().zip([
+                "year",
+                "month",
+                "day",
+                "hour",
+                "minute",
+                "second",
+                "millisecond",
+            ]) {
+                let actual = type_of_expr(arg, env, signatures)?;
+                require_type(
+                    arg.span,
+                    &Type::I64,
+                    &actual,
+                    &format!("time.utcUnixMillis {label}"),
+                )?;
+            }
+            for (index, minimum, maximum, label) in [
+                (1, 1, 12, "month"),
+                (2, 1, 31, "day"),
+                (3, 0, 23, "hour"),
+                (4, 0, 59, "minute"),
+                (5, 0, 59, "second"),
+                (6, 0, 999, "millisecond"),
+            ] {
+                if matches!(
+                    constant_primitive_value(&args[index], signatures),
+                    Some(ConstantValue::I64(value)) if value < minimum || value > maximum
+                ) {
+                    return Err(diag(
+                        args[index].span,
+                        &format!("time.utcUnixMillis {label} must be in {minimum}..={maximum}"),
+                    ));
+                }
+            }
+            if let (
+                Some(ConstantValue::I64(year)),
+                Some(ConstantValue::I64(month)),
+                Some(ConstantValue::I64(day)),
+            ) = (
+                constant_primitive_value(&args[0], signatures),
+                constant_primitive_value(&args[1], signatures),
+                constant_primitive_value(&args[2], signatures),
+            ) {
+                let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+                let max_day = match month {
+                    2 if leap => 29,
+                    2 => 28,
+                    4 | 6 | 9 | 11 => 30,
+                    _ => 31,
+                };
+                if day > max_day {
+                    return Err(diag(
+                        args[2].span,
+                        &format!(
+                            "time.utcUnixMillis day {day} is invalid for year {year}, month {month}"
+                        ),
+                    ));
+                }
+            }
+            return Ok(vec![Type::I64]);
+        }
+        "formatUtc" | "formatLocal" | "formatOffset" | "formatZone" => {
+            let expected_args = match name.as_str() {
+                "formatOffset" | "formatZone" => 3,
+                _ => 2,
+            };
+            if args.len() != expected_args {
+                return Err(diag(
+                    span,
+                    &format!(
+                        "time.{name} expects {expected_args} arguments, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+            let timestamp = type_of_expr(&args[0], env, signatures)?;
+            require_type(
+                args[0].span,
+                &Type::I64,
+                &timestamp,
+                &format!("time.{name} unixMillis"),
+            )?;
+            if name == "formatOffset" {
+                let offset = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &offset,
+                    "time.formatOffset offsetMinutes",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[1], signatures),
+                    Some(ConstantValue::I64(value)) if !(-1_439..=1_439).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[1].span,
+                        "time.formatOffset offsetMinutes must be between -1439 and 1439",
+                    ));
+                }
+            }
+            if name == "formatZone" {
+                let zone = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::Str, &zone, "time.formatZone zone")?;
+            }
+            let callback_arg = if matches!(name.as_str(), "formatOffset" | "formatZone") {
+                &args[2]
+            } else {
+                &args[1]
+            };
+            let callback = signatures.canonical_type(&type_of_expr(callback_arg, env, signatures)?);
+            let expected = Type::Function {
+                params: vec![Type::Str],
+                returns: Vec::new(),
+            };
+            require_type(
+                callback_arg.span,
+                &expected,
+                &callback,
+                &format!("time.{name} callback"),
+            )?;
+            return Ok(vec![Type::Error]);
+        }
+        "zoneOffset" => {
+            if args.len() != 2 {
+                return Err(diag(
+                    span,
+                    &format!("time.zoneOffset expects 2 arguments, got {}", args.len()),
+                ));
+            }
+            let timestamp = type_of_expr(&args[0], env, signatures)?;
+            require_type(
+                args[0].span,
+                &Type::I64,
+                &timestamp,
+                "time.zoneOffset unixMillis",
+            )?;
+            let zone = type_of_expr(&args[1], env, signatures)?;
+            require_type(args[1].span, &Type::Str, &zone, "time.zoneOffset zone")?;
+            return Ok(vec![Type::I64, Type::Error]);
+        }
+        "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
+        | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" | "localYear" | "localMonth"
+        | "localDay" | "localHour" | "localMinute" | "localSecond" | "localMillisecond"
+        | "localWeekday" | "localDayOfYear" | "localOffset" => {
+            if args.len() != 1 {
+                return Err(diag(
+                    span,
+                    &format!("time.{name} expects 1 argument, got {}", args.len()),
+                ));
+            }
+            let actual = type_of_expr(&args[0], env, signatures)?;
+            require_type(
+                args[0].span,
+                &Type::I64,
+                &actual,
+                &format!("time.{name} unixMillis"),
+            )?;
+            return Ok(vec![Type::I64]);
+        }
+        _ => {
+            return Err(diag(
+                name_span,
+                &format!("time module has no function '{name}'"),
+            ));
+        }
+    }
+}
+
 fn check_qualified_call(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -13488,531 +14020,15 @@ fn check_qualified_call(
         }
     }
     if namespace == "time" {
-        if !named_args.is_empty() {
-            return Err(diag(
-                span,
-                &format!("time.{name} accepts positional arguments only"),
-            ));
-        }
-        match name.as_str() {
-            "duration" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!("time.duration expects 1 argument, got {}", args.len()),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::I64,
-                    &actual,
-                    "time.duration milliseconds",
-                )?;
-                return Ok(vec![duration_type()]);
-            }
-            "calendar" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!("time.calendar expects 1 argument, got {}", args.len()),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::I64,
-                    &actual,
-                    "time.calendar unixMillis",
-                )?;
-                return Ok(vec![Type::Record(
-                    [
-                        ("year", Type::I64),
-                        ("month", Type::I64),
-                        ("day", Type::I64),
-                        ("hour", Type::I64),
-                        ("minute", Type::I64),
-                        ("second", Type::I64),
-                        ("millis", Type::I64),
-                        ("weekday", Type::I64),
-                        ("dayOfYear", Type::I64),
-                    ]
-                    .into_iter()
-                    .map(|(name, ty)| crate::ast::RecordTypeField {
-                        name: Some(name.to_string()),
-                        ty,
-                    })
-                    .collect(),
-                )]);
-            }
-            "calendarZone" => {
-                if args.len() != 3 {
-                    return Err(diag(
-                        span,
-                        &format!("time.calendarZone expects 3 arguments, got {}", args.len()),
-                    ));
-                }
-                let unix_millis = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::I64,
-                    &unix_millis,
-                    "time.calendarZone unixMillis",
-                )?;
-                let zone = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::Str, &zone, "time.calendarZone zone")?;
-                let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
-                let expected = Type::Function {
-                    params: vec![Type::I64; 10],
-                    returns: Vec::new(),
-                };
-                require_type(
-                    args[2].span,
-                    &expected,
-                    &callback,
-                    "time.calendarZone callback",
-                )?;
-                return Ok(vec![Type::Error]);
-            }
-            "unixMillis" | "monotonicMillis" => {
-                if !args.is_empty() {
-                    return Err(diag(
-                        span,
-                        &format!("time.{name} expects 0 arguments, got {}", args.len()),
-                    ));
-                }
-                return Ok(vec![Type::I64]);
-            }
-            "milliseconds" | "seconds" | "minutes" | "hours" | "days" | "weeks" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!("time.{name} expects 1 argument, got {}", args.len()),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::I64,
-                    &actual,
-                    &format!("time.{name} value"),
-                )?;
-                let factor = match name.as_str() {
-                    "milliseconds" => 1_i64,
-                    "seconds" => 1_000_i64,
-                    "minutes" => 60_000_i64,
-                    "hours" => 3_600_000_i64,
-                    "days" => 86_400_000_i64,
-                    "weeks" => 604_800_000_i64,
-                    _ => unreachable!(),
-                };
-                if let Some(ConstantValue::I64(value)) =
-                    constant_primitive_value(&args[0], signatures)
-                {
-                    if value.checked_mul(factor).is_none() {
-                        return Err(diag(
-                            args[0].span,
-                            &format!("time.{name} duration overflows i64 milliseconds"),
-                        ));
-                    }
-                }
-                return Ok(vec![Type::I64]);
-            }
-            "isLeapYear" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!("time.isLeapYear expects 1 argument, got {}", args.len()),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &actual, "time.isLeapYear year")?;
-                return Ok(vec![Type::Bool]);
-            }
-            "daysInMonth" => {
-                if args.len() != 2 {
-                    return Err(diag(
-                        span,
-                        &format!("time.daysInMonth expects 2 arguments, got {}", args.len()),
-                    ));
-                }
-                for (arg, label) in args.iter().zip(["year", "month"]) {
-                    let actual = type_of_expr(arg, env, signatures)?;
-                    require_type(
-                        arg.span,
-                        &Type::I64,
-                        &actual,
-                        &format!("time.daysInMonth {label}"),
-                    )?;
-                }
-                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if !(1..=12).contains(&value))
-                {
-                    return Err(diag(
-                        args[1].span,
-                        "time.daysInMonth month must be between 1 and 12",
-                    ));
-                }
-                return Ok(vec![Type::I64]);
-            }
-            "daysInYear" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!("time.daysInYear expects 1 argument, got {}", args.len()),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &actual, "time.daysInYear year")?;
-                return Ok(vec![Type::I64]);
-            }
-            "local" => {
-                if args.len() != 7 {
-                    return Err(diag(
-                        span,
-                        &format!("time.local expects 7 arguments, got {}", args.len()),
-                    ));
-                }
-                for (arg, label) in args.iter().zip([
-                    "year",
-                    "month",
-                    "day",
-                    "hour",
-                    "minute",
-                    "second",
-                    "millisecond",
-                ]) {
-                    let actual = type_of_expr(arg, env, signatures)?;
-                    require_type(
-                        arg.span,
-                        &Type::I64,
-                        &actual,
-                        &format!("time.local {label}"),
-                    )?;
-                }
-                for (index, (arg, range)) in args
-                    .iter()
-                    .zip([
-                        (i64::MIN, i64::MAX),
-                        (1, 12),
-                        (1, 31),
-                        (0, 23),
-                        (0, 59),
-                        (0, 59),
-                        (0, 999),
-                    ])
-                    .enumerate()
-                    .skip(1)
-                {
-                    if matches!(constant_primitive_value(arg, signatures), Some(ConstantValue::I64(value)) if value < range.0 || value > range.1)
-                    {
-                        return Err(diag(
-                            arg.span,
-                            &format!(
-                                "time.local {} is out of range",
-                                [
-                                    "year",
-                                    "month",
-                                    "day",
-                                    "hour",
-                                    "minute",
-                                    "second",
-                                    "millisecond"
-                                ][index]
-                            ),
-                        ));
-                    }
-                }
-                if let (
-                    Some(ConstantValue::I64(year)),
-                    Some(ConstantValue::I64(month)),
-                    Some(ConstantValue::I64(day)),
-                ) = (
-                    constant_primitive_value(&args[0], signatures),
-                    constant_primitive_value(&args[1], signatures),
-                    constant_primitive_value(&args[2], signatures),
-                ) {
-                    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-                    let max_day = if month == 2 {
-                        if leap { 29 } else { 28 }
-                    } else if matches!(month, 4 | 6 | 9 | 11) {
-                        30
-                    } else {
-                        31
-                    };
-                    if day > max_day {
-                        return Err(diag(
-                            args[2].span,
-                            &format!(
-                                "time.local day {day} is invalid for year {year}, month {month}"
-                            ),
-                        ));
-                    }
-                }
-                return Ok(vec![Type::I64]);
-            }
-            "sleep" | "sleepMillis" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!("time.{name} expects 1 argument, got {}", args.len()),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                if actual != Type::I64 && actual != duration_type() {
-                    require_type(
-                        args[0].span,
-                        &Type::I64,
-                        &actual,
-                        &format!("time.{name} durationMs"),
-                    )?;
-                }
-                if matches!(
-                    constant_duration_millis(&args[0], signatures),
-                    Some(value) if value < 0
-                ) {
-                    return Err(diag(
-                        args[0].span,
-                        &format!("time.{name} durationMs must be non-negative"),
-                    ));
-                }
-                return Ok(Vec::new());
-            }
-            "after" | "every" => {
-                if args.len() != 2 {
-                    return Err(diag(
-                        span,
-                        &format!("time.{name} expects 2 arguments, got {}", args.len()),
-                    ));
-                }
-                let duration = type_of_expr(&args[0], env, signatures)?;
-                if duration != Type::I64 && duration != duration_type() {
-                    require_type(
-                        args[0].span,
-                        &Type::I64,
-                        &duration,
-                        &format!("time.{name} durationMs"),
-                    )?;
-                }
-                if matches!(
-                    constant_duration_millis(&args[0], signatures),
-                    Some(value) if value < 0 || (name == "every" && value == 0)
-                ) {
-                    return Err(diag(
-                        args[0].span,
-                        if name == "every" {
-                            "time.every durationMs must be positive"
-                        } else {
-                            "time.after durationMs must be non-negative"
-                        },
-                    ));
-                }
-                let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
-                let expected = Type::Function {
-                    params: Vec::new(),
-                    returns: Vec::new(),
-                };
-                require_type(
-                    args[1].span,
-                    &expected,
-                    &callback,
-                    &format!("time.{name} callback"),
-                )?;
-                return Ok(vec![Type::I64, Type::Error]);
-            }
-            "sleepUntilMonotonic" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "time.sleepUntilMonotonic expects 1 argument, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::I64,
-                    &actual,
-                    "time.sleepUntilMonotonic deadlineMillis",
-                )?;
-                return Ok(Vec::new());
-            }
-            "utcUnixMillis" => {
-                if args.len() != 7 {
-                    return Err(diag(
-                        span,
-                        &format!("time.utcUnixMillis expects 7 arguments, got {}", args.len()),
-                    ));
-                }
-                for (arg, label) in args.iter().zip([
-                    "year",
-                    "month",
-                    "day",
-                    "hour",
-                    "minute",
-                    "second",
-                    "millisecond",
-                ]) {
-                    let actual = type_of_expr(arg, env, signatures)?;
-                    require_type(
-                        arg.span,
-                        &Type::I64,
-                        &actual,
-                        &format!("time.utcUnixMillis {label}"),
-                    )?;
-                }
-                for (index, minimum, maximum, label) in [
-                    (1, 1, 12, "month"),
-                    (2, 1, 31, "day"),
-                    (3, 0, 23, "hour"),
-                    (4, 0, 59, "minute"),
-                    (5, 0, 59, "second"),
-                    (6, 0, 999, "millisecond"),
-                ] {
-                    if matches!(
-                        constant_primitive_value(&args[index], signatures),
-                        Some(ConstantValue::I64(value)) if value < minimum || value > maximum
-                    ) {
-                        return Err(diag(
-                            args[index].span,
-                            &format!("time.utcUnixMillis {label} must be in {minimum}..={maximum}"),
-                        ));
-                    }
-                }
-                if let (
-                    Some(ConstantValue::I64(year)),
-                    Some(ConstantValue::I64(month)),
-                    Some(ConstantValue::I64(day)),
-                ) = (
-                    constant_primitive_value(&args[0], signatures),
-                    constant_primitive_value(&args[1], signatures),
-                    constant_primitive_value(&args[2], signatures),
-                ) {
-                    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-                    let max_day = match month {
-                        2 if leap => 29,
-                        2 => 28,
-                        4 | 6 | 9 | 11 => 30,
-                        _ => 31,
-                    };
-                    if day > max_day {
-                        return Err(diag(
-                            args[2].span,
-                            &format!(
-                                "time.utcUnixMillis day {day} is invalid for year {year}, month {month}"
-                            ),
-                        ));
-                    }
-                }
-                return Ok(vec![Type::I64]);
-            }
-            "formatUtc" | "formatLocal" | "formatOffset" | "formatZone" => {
-                let expected_args = match name.as_str() {
-                    "formatOffset" | "formatZone" => 3,
-                    _ => 2,
-                };
-                if args.len() != expected_args {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "time.{name} expects {expected_args} arguments, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                let timestamp = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::I64,
-                    &timestamp,
-                    &format!("time.{name} unixMillis"),
-                )?;
-                if name == "formatOffset" {
-                    let offset = type_of_expr(&args[1], env, signatures)?;
-                    require_type(
-                        args[1].span,
-                        &Type::I64,
-                        &offset,
-                        "time.formatOffset offsetMinutes",
-                    )?;
-                    if matches!(
-                        constant_primitive_value(&args[1], signatures),
-                        Some(ConstantValue::I64(value)) if !(-1_439..=1_439).contains(&value)
-                    ) {
-                        return Err(diag(
-                            args[1].span,
-                            "time.formatOffset offsetMinutes must be between -1439 and 1439",
-                        ));
-                    }
-                }
-                if name == "formatZone" {
-                    let zone = type_of_expr(&args[1], env, signatures)?;
-                    require_type(args[1].span, &Type::Str, &zone, "time.formatZone zone")?;
-                }
-                let callback_arg = if matches!(name.as_str(), "formatOffset" | "formatZone") {
-                    &args[2]
-                } else {
-                    &args[1]
-                };
-                let callback =
-                    signatures.canonical_type(&type_of_expr(callback_arg, env, signatures)?);
-                let expected = Type::Function {
-                    params: vec![Type::Str],
-                    returns: Vec::new(),
-                };
-                require_type(
-                    callback_arg.span,
-                    &expected,
-                    &callback,
-                    &format!("time.{name} callback"),
-                )?;
-                return Ok(vec![Type::Error]);
-            }
-            "zoneOffset" => {
-                if args.len() != 2 {
-                    return Err(diag(
-                        span,
-                        &format!("time.zoneOffset expects 2 arguments, got {}", args.len()),
-                    ));
-                }
-                let timestamp = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::I64,
-                    &timestamp,
-                    "time.zoneOffset unixMillis",
-                )?;
-                let zone = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::Str, &zone, "time.zoneOffset zone")?;
-                return Ok(vec![Type::I64, Type::Error]);
-            }
-            "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
-            | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" | "localYear" | "localMonth"
-            | "localDay" | "localHour" | "localMinute" | "localSecond" | "localMillisecond"
-            | "localWeekday" | "localDayOfYear" | "localOffset" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!("time.{name} expects 1 argument, got {}", args.len()),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::I64,
-                    &actual,
-                    &format!("time.{name} unixMillis"),
-                )?;
-                return Ok(vec![Type::I64]);
-            }
-            _ => {
-                return Err(diag(
-                    *name_span,
-                    &format!("time module has no function '{name}'"),
-                ));
-            }
-        }
+        return check_time_qualified_call(
+            span,
+            name,
+            *name_span,
+            args,
+            !named_args.is_empty(),
+            env,
+            signatures,
+        );
     }
     if namespace == "file" {
         if !named_args.is_empty() {
