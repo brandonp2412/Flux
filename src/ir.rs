@@ -4414,12 +4414,12 @@ impl ControlFlowGraph {
                     ));
                 }
             }
-            ControlFlowValueKind::Slice { base, .. } | ControlFlowValueKind::Field { base, .. }
-                if matches!(value.ty, Type::List(_)) =>
-            {
+            ControlFlowValueKind::Field { base, .. } if matches!(value.ty, Type::List(_)) => {
                 visit(*base);
             }
-            ControlFlowValueKind::Index { base, .. } if is_non_copy_collection_type(&value.ty) => {
+            ControlFlowValueKind::Slice { base, .. } | ControlFlowValueKind::Index { base, .. }
+                if is_non_copy_collection_type(&value.ty) =>
+            {
                 visit(*base);
             }
             ControlFlowValueKind::Call { callee, arguments }
@@ -5755,6 +5755,7 @@ impl<'a> ControlFlowBuilder<'a> {
                 start,
                 end,
                 step,
+                ..
             } => {
                 let base = self.lower_scalar_expr(producer, base);
                 let start = complete_optional_value(start.as_deref(), |value| {
@@ -7705,6 +7706,7 @@ fn record_expr_types(
             start,
             end,
             step,
+            ..
         } => {
             record_expr_types(base, env, signatures, evaluations);
             for bound in [start.as_deref(), end.as_deref(), step.as_deref()]

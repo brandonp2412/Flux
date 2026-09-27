@@ -804,6 +804,7 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
             start,
             end,
             step,
+            ..
         } => {
             attach_expr_source(base, source_id);
             if let Some(start) = start {
@@ -1211,6 +1212,7 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
             start,
             end,
             step,
+            ..
         } => {
             shift_expr_columns(base, offset);
             if let Some(start) = start {
@@ -6254,13 +6256,6 @@ impl ExprParser<'_> {
                 self.tokens.get(self.index).map(|token| &token.kind),
                 Some(TokenKind::Colon)
             ) {
-                if optional {
-                    return Err(Diagnostic::new(
-                        DiagnosticStage::Parse,
-                        open,
-                        "optional-aware indexing currently supports an index expression, not a slice",
-                    ));
-                }
                 self.index += 1;
                 let end = if matches!(
                     self.tokens.get(self.index).map(|token| &token.kind),
@@ -6310,6 +6305,7 @@ impl ExprParser<'_> {
                         start,
                         end,
                         step,
+                        optional,
                     },
                 };
             } else {

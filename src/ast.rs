@@ -864,6 +864,7 @@ pub enum ExprKind {
         start: Option<Box<Expr>>,
         end: Option<Box<Expr>>,
         step: Option<Box<Expr>>,
+        optional: bool,
     },
     ListComprehension {
         value: Box<Expr>,

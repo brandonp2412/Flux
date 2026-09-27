@@ -590,6 +590,7 @@ fn collect_expr_pattern_symbols(
             start,
             end,
             step,
+            ..
         } => {
             collect_expr_pattern_symbols(base, symbols, signatures);
             if let Some(start) = start {

@@ -29447,6 +29447,7 @@ fn expr_contains_await(expr: &Expr) -> bool {
             start,
             end,
             step,
+            ..
         } => {
             expr_contains_await(base)
                 || start.as_deref().is_some_and(expr_contains_await)
@@ -31837,6 +31838,7 @@ fn collect_interface_names_from_expr(
             start,
             end,
             step,
+            ..
         } => {
             collect_interface_names_from_expr(base, signatures, reachable, pending);
             for part in [start, end, step].into_iter().flatten() {
@@ -32048,6 +32050,7 @@ fn collect_enum_variant_refs_from_expr(
             start,
             end,
             step,
+            ..
         } => {
             collect_enum_variant_refs_from_expr(base, signatures, variants);
             for part in [start, end, step].into_iter().flatten() {
@@ -32525,6 +32528,7 @@ fn collect_value_type_names_from_expr(
             start,
             end,
             step,
+            ..
         } => {
             collect_value_type_names_from_expr(base, signatures, known, reachable, pending);
             for part in [start, end, step].into_iter().flatten() {
@@ -33079,6 +33083,7 @@ fn collect_named_function_refs_from_expr(
             start,
             end,
             step,
+            ..
         } => {
             collect_named_function_refs_from_expr(base, known, references);
             for part in [start, end, step].into_iter().flatten() {
@@ -33439,6 +33444,7 @@ fn collect_function_helpers_from_expr<'a>(expr: &'a Expr, functions: &mut Vec<&'
             start,
             end,
             step,
+            ..
         } => {
             collect_function_helpers_from_expr(base, functions);
             for part in [start, end, step].into_iter().flatten() {
@@ -49961,13 +49967,9 @@ fn emit_expr(
             start,
             end,
             step,
+            optional,
         } => {
             let base_value = emit_expr(base, env, signatures)?;
-            let Type::List(element) =
-                typecheck::slice_result_type_from_base(base.span, &base_value.ty, signatures)?
-            else {
-                unreachable!()
-            };
             let (has_start, start_code) = if let Some(start) = start {
                 ("true", emit_expr(start, env, signatures)?.code)
             } else {
@@ -49983,13 +49985,52 @@ fn emit_expr(
             } else {
                 "INT64_C(1)".to_string()
             };
-            let element_c = c_type(&element, signatures);
-            EmittedExpr {
-                code: format!(
-                    "flux_list_slice({}, {has_start}, {start_code}, {has_end}, {end_code}, {step_code}, sizeof({element_c}))",
-                    base_value.code
-                ),
-                ty: Type::List(element),
+            if *optional {
+                let Type::Optional(inner) = signatures.canonical_type(&base_value.ty) else {
+                    return Err(diag(
+                        base.span,
+                        "optional-aware slicing requires an optional list value during code generation",
+                    ));
+                };
+                let Type::List(element) = signatures.canonical_type(&inner) else {
+                    return Err(diag(
+                        base.span,
+                        "optional-aware slicing requires an optional list value during code generation",
+                    ));
+                };
+                let result_ty = Type::Optional(Box::new(Type::List(element.clone())));
+                let base_c = c_type(&base_value.ty, signatures);
+                let result_c = c_type(&result_ty, signatures);
+                let element_c = c_type(&element, signatures);
+                let base_name = format!(
+                    "flux__optional_slice_base_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let result_name = format!(
+                    "flux__optional_slice_result_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                EmittedExpr {
+                    code: format!(
+                        "__extension__ ({{ {base_c} {base_name} = {}; {result_c} {result_name} = ({result_c}){{ .has_value = false }}; if ({base_name}.has_value) {{ {result_name}.has_value = true; {result_name}.value = flux_list_slice({base_name}.value, {has_start}, {start_code}, {has_end}, {end_code}, {step_code}, sizeof({element_c})); }} {result_name}; }})",
+                        base_value.code
+                    ),
+                    ty: result_ty,
+                }
+            } else {
+                let Type::List(element) =
+                    typecheck::slice_result_type_from_base(base.span, &base_value.ty, signatures)?
+                else {
+                    unreachable!()
+                };
+                let element_c = c_type(&element, signatures);
+                EmittedExpr {
+                    code: format!(
+                        "flux_list_slice({}, {has_start}, {start_code}, {has_end}, {end_code}, {step_code}, sizeof({element_c}))",
+                        base_value.code
+                    ),
+                    ty: Type::List(element),
+                }
             }
         }
         ExprKind::ListComprehension { .. } => {
@@ -62660,6 +62701,7 @@ fn substitute_direct_ir_constant_arguments(expr: &Expr, rewrite_facts: &CfgRewri
                 start,
                 end,
                 step,
+                ..
             } => {
                 **base = child(base);
                 for value in [start, end, step].into_iter().flatten() {
@@ -95577,6 +95619,7 @@ fn collect_update_helpers_from_expr(
             start,
             end,
             step,
+            ..
         } => {
             collect_update_helpers_from_expr(base, signatures, emitted, helpers);
             if let Some(start) = start {
@@ -95936,6 +95979,7 @@ fn static_list_length(
             start,
             end,
             step,
+            ..
         } => {
             let Some(len) = static_list_length(base, env, signatures)? else {
                 return Ok(None);

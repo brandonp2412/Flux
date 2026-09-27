@@ -3853,6 +3853,7 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
             start,
             end,
             step,
+            ..
         } => {
             collect_expr_reads(base, reads);
             if let Some(start) = start {
@@ -5993,6 +5994,48 @@ pub(crate) fn type_of_borrow_operand(
             base.span, index.span, expr.span, *optional, &base_ty, &index_ty, signatures,
         );
     }
+    if let ExprKind::Slice {
+        base,
+        start,
+        end,
+        step,
+        optional: true,
+    } = &expr.kind
+    {
+        let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
+        let Type::Optional(inner) = base_ty else {
+            return Err(diag(
+                base.span,
+                "optional-aware slicing requires an optional list value",
+            ));
+        };
+        let Type::List(element) = signatures.canonical_type(&inner) else {
+            return Err(diag(
+                base.span,
+                "optional-aware slicing requires an optional list value",
+            ));
+        };
+        for (bound, label) in [
+            (start.as_deref(), "slice start"),
+            (end.as_deref(), "slice end"),
+            (step.as_deref(), "slice step"),
+        ] {
+            if let Some(bound) = bound {
+                let bound_ty = type_of_expr(bound, env, signatures)?;
+                require_type(bound.span, &Type::I64, &bound_ty, label)?;
+            }
+        }
+        if matches!(
+            step.as_deref().map(|step| &step.kind),
+            Some(ExprKind::Int(0))
+        ) {
+            return Err(diag(
+                step.as_deref().expect("zero step exists").span,
+                "list slice step cannot be zero",
+            ));
+        }
+        return Ok(Type::Optional(Box::new(Type::List(element))));
+    }
     type_of_expr(expr, env, signatures)
 }
 
@@ -7122,7 +7165,14 @@ pub fn type_of_expr(
             start,
             end,
             step,
+            optional,
         } => {
+            if *optional {
+                return Err(diag(
+                    expr.span,
+                    "optional-aware slicing requires an explicit borrow so the zero-copy view has a tracked lifetime",
+                ));
+            }
             let base_ty = type_of_expr(base, env, signatures)?;
             let result_ty = slice_result_type_from_base(base.span, &base_ty, signatures)?;
             for (bound, label) in [

@@ -1199,8 +1199,10 @@ pub(crate) fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
             start,
             end,
             step,
+            optional,
         } => {
             let base = format_expr(base, 7);
+            let marker = if *optional { "?" } else { "" };
             let start = start
                 .as_deref()
                 .map(|value| format_expr(value, 0))
@@ -1210,9 +1212,9 @@ pub(crate) fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
                 .map(|value| format_expr(value, 0))
                 .unwrap_or_default();
             if let Some(step) = step {
-                format!("{base}[{start}:{end}:{}]", format_expr(step, 0))
+                format!("{base}{marker}[{start}:{end}:{}]", format_expr(step, 0))
             } else {
-                format!("{base}[{start}:{end}]")
+                format!("{base}{marker}[{start}:{end}]")
             }
         }
         ExprKind::ListComprehension {
