@@ -10367,6 +10367,122 @@ fn main() -> i64 {
 }
 
 #[test]
+fn uri_reference_classification_is_typed_native_tree_shaken_and_runnable() {
+    let source = r#"
+fn main() -> i64 {
+    let (httpAbsolute, httpAbsoluteError) = uri.isAbsolute("https://example.test/a")
+    print(httpAbsolute)
+    print(httpAbsoluteError)
+    let (mailtoAbsolute, mailtoAbsoluteError) = uri.isAbsolute("mailto:alice@example.test")
+    print(mailtoAbsolute)
+    print(mailtoAbsoluteError)
+    let (pathAbsolute, pathAbsoluteError) = uri.isAbsolute("../asset?q=1#frag")
+    print(pathAbsolute)
+    print(pathAbsoluteError)
+    let (pathRelative, pathRelativeError) = uri.isRelative("../asset?q=1#frag")
+    print(pathRelative)
+    print(pathRelativeError)
+    let (emptyRelative, emptyRelativeError) = uri.isRelative("")
+    print(emptyRelative)
+    print(emptyRelativeError)
+    let (schemeRelative, schemeRelativeError) = uri.isRelative("custom:value")
+    print(schemeRelative)
+    print(schemeRelativeError)
+    let (_badScheme, badSchemeError) = uri.isAbsolute("1bad:value")
+    print(badSchemeError)
+    let (_badPercent, badPercentError) = uri.isRelative("%ZZ")
+    print(badPercentError)
+    return 0
+}
+"#;
+    check_source(source).expect("URI reference classification should typecheck");
+    let generated =
+        compile_to_c(source).expect("URI reference classification should lower natively");
+    assert!(generated.contains("flux__uri_is_absolute("));
+    assert!(generated.contains("flux__uri_is_relative("));
+    assert!(generated.contains("flux__uri_reference_classify("));
+    assert!(generated.contains("flux__bounded_url_length("));
+    assert!(
+        !generated.contains("static inline const char *flux__uri_resolve("),
+        "classification should not pull in URI resolution support"
+    );
+
+    let invalid = r#"
+fn main() -> i64 {
+    let (_absolute, _absoluteError) = uri.isAbsolute(1)
+    let (_relative, _relativeError) = uri.isRelative(false)
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid)
+        .expect_err("URI reference classification should reject non-string values");
+    for label in ["uri.isAbsolute value", "uri.isRelative value"] {
+        assert!(
+            errors.iter().any(
+                |error| error.message.contains(label) && error.message.contains("expected str")
+            ),
+            "missing URI classification diagnostic for {label}: {errors:?}"
+        );
+    }
+
+    let unused = r#"
+fn hidden() -> void {
+    let (_absolute, _absoluteError) = uri.isAbsolute("https://example.test")
+    let (_relative, _relativeError) = uri.isRelative("../asset")
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead URI classification calls should lower");
+    assert!(!unused_generated.contains("flux__uri_is_absolute("));
+    assert!(!unused_generated.contains("flux__uri_is_relative("));
+
+    let root = std::env::temp_dir().join(format!("flux-uri-classification-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("URI classification fixture should be writable");
+    let source_path = root.join("uri-classification.flux");
+    fs::write(&source_path, source).expect("URI classification source should be writable");
+    let binary = root.join("uri-classification");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("URI classification binary should build");
+    assert!(
+        built.status.success(),
+        "URI classification build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("URI classification binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "true
+nil
+true
+nil
+false
+nil
+true
+nil
+true
+nil
+false
+nil
+URI scheme is invalid
+URI contains an invalid percent escape
+"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn general_uri_parsing_is_typed_borrowed_tree_shaken_and_runnable() {
     let source = r#"
 fn parsed(scheme: str, authority: str, path: str, query: str, fragment: str) -> void {

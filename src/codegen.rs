@@ -5064,6 +5064,8 @@ fn emit_runtime_prelude(
 
     if runtime_usage.contains("flux__url_parse_http(")
         || runtime_usage.contains("flux__uri_parse(")
+        || runtime_usage.contains("flux__uri_is_absolute(")
+        || runtime_usage.contains("flux__uri_is_relative(")
         || runtime_usage.contains("flux__uri_resolve(")
         || runtime_usage.contains("flux__url_decode_component(")
         || runtime_usage.contains("flux__url_encode_component(")
@@ -5178,6 +5180,77 @@ fn emit_runtime_prelude(
     callback(is_https ? "https" : "http", host, port, target);
     return NULL;
 }
+"#);
+    }
+    if runtime_usage.contains("flux__uri_is_absolute(")
+        || runtime_usage.contains("flux__uri_is_relative(")
+    {
+        out.push_str(r#"struct flux__uri_bool_error { bool v0; const char *v1; };
+static inline struct flux__uri_bool_error flux__uri_reference_classify(const char *value, bool relative) {
+    struct flux__uri_bool_error result = { .v0 = false, .v1 = NULL };
+    size_t length = 0;
+    if (!flux__bounded_url_length(value, &length)) {
+        result.v1 = "URI reference exceeds 65536 bytes";
+        return result;
+    }
+    size_t main_end = length;
+    for (size_t index = 0; index < length; index += 1) {
+        unsigned char byte = (unsigned char)value[index];
+        if (byte <= 0x20 || byte == 0x7f) {
+            result.v1 = "URI contains whitespace or control characters";
+            return result;
+        }
+        if (byte >= 0x80) {
+            result.v1 = "URI contains raw non-ASCII bytes; percent-encode UTF-8";
+            return result;
+        }
+        if (byte == '%') {
+            if (index + 2 >= length) {
+                result.v1 = "URI contains an incomplete percent escape";
+                return result;
+            }
+            unsigned char high = (unsigned char)value[index + 1];
+            unsigned char low = (unsigned char)value[index + 2];
+            bool high_hex = (high >= '0' && high <= '9') || (high >= 'a' && high <= 'f') || (high >= 'A' && high <= 'F');
+            bool low_hex = (low >= '0' && low <= '9') || (low >= 'a' && low <= 'f') || (low >= 'A' && low <= 'F');
+            if (!high_hex || !low_hex) {
+                result.v1 = "URI contains an invalid percent escape";
+                return result;
+            }
+            index += 2;
+            continue;
+        }
+        if ((byte == '?' || byte == '#') && main_end == length) main_end = index;
+    }
+    size_t colon_at = main_end;
+    for (size_t index = 0; index < main_end; index += 1) {
+        if (value[index] == ':') {
+            colon_at = index;
+            break;
+        }
+        if (value[index] == '/') break;
+    }
+    bool has_scheme = colon_at < main_end;
+    if (has_scheme) {
+        if (colon_at == 0) {
+            result.v1 = "URI scheme is invalid";
+            return result;
+        }
+        for (size_t index = 0; index < colon_at; index += 1) {
+            unsigned char byte = (unsigned char)value[index];
+            bool valid = (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z')
+                || (index > 0 && ((byte >= '0' && byte <= '9') || byte == '+' || byte == '-' || byte == '.'));
+            if (!valid) {
+                result.v1 = "URI scheme is invalid";
+                return result;
+            }
+        }
+    }
+    result.v0 = relative ? !has_scheme : has_scheme;
+    return result;
+}
+static inline struct flux__uri_bool_error flux__uri_is_absolute(const char *value) { return flux__uri_reference_classify(value, false); }
+static inline struct flux__uri_bool_error flux__uri_is_relative(const char *value) { return flux__uri_reference_classify(value, true); }
 "#);
     }
     if runtime_usage.contains("flux__uri_parse(") {
@@ -53292,6 +53365,25 @@ fn emit_qualified_call(
         if !named_args.is_empty() {
             return Err(diag(span, "invalid URI call reached code generation"));
         }
+        if matches!(name, "isAbsolute" | "isRelative") {
+            if args.len() != 1 {
+                return Err(diag(
+                    span,
+                    "invalid URI classification call reached code generation",
+                ));
+            }
+            let value = emit_expr(&args[0], env, signatures)?;
+            let helper = if name == "isAbsolute" {
+                "flux__uri_is_absolute"
+            } else {
+                "flux__uri_is_relative"
+            };
+            return Ok((
+                format!("{helper}({})", value.code),
+                vec![Type::Bool, Type::Error],
+                Some("flux__uri_bool_error".to_string()),
+            ));
+        }
         if name == "resolve" {
             if args.len() != 3 {
                 return Err(diag(
@@ -92008,6 +92100,24 @@ fn emit_cfg_multi_expr_direct(
             let i64_bool_error = vec![Type::I64, Type::Bool, Type::Error];
             let bool_error = vec![Type::Bool, Type::Error];
             match namespace.as_str() {
+                "uri" if arguments.len() == 1 && matches!(name, "isAbsolute" | "isRelative") => {
+                    let value = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::Str,
+                        env,
+                        signatures,
+                    )?;
+                    let helper = if name == "isAbsolute" {
+                        "flux__uri_is_absolute"
+                    } else {
+                        "flux__uri_is_relative"
+                    };
+                    Some((
+                        format!("{helper}({value})"),
+                        "flux__uri_bool_error".to_string(),
+                        bool_error,
+                    ))
+                }
                 "file" | "directory"
                     if arguments.len() == 1
                         && (name == "isEmpty"

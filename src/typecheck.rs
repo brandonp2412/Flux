@@ -13390,6 +13390,19 @@ fn check_qualified_call_fallback(
                 &format!("uri module has no function '{name}' or invalid arguments"),
             ));
         }
+        if matches!(name.as_str(), "isAbsolute" | "isRelative") {
+            if args.len() != 1 {
+                return Err(diag(*name_span, &format!("uri.{name} expects 1 argument")));
+            }
+            let value = type_of_expr(&args[0], env, signatures)?;
+            require_type(
+                args[0].span,
+                &Type::Str,
+                &value,
+                &format!("uri.{name} value"),
+            )?;
+            return Ok(vec![Type::Bool, Type::Error]);
+        }
         let (value_count, callback_index, callback_params) = match name.as_str() {
             "parse" => (
                 1usize,

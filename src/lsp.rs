@@ -1805,6 +1805,20 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "isAbsolute",
+            3,
+            "fn uri.isAbsolute(value: str) -> (bool, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "isRelative",
+            3,
+            "fn uri.isRelative(value: str) -> (bool, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
             "parse",
             3,
             "fn uri.parse(value: str, callback: fn(str, str, str, str, str) -> void) -> error",
@@ -4480,6 +4494,12 @@ fn signature_help_for_document_cached(
         }
         if namespace == "uri" {
             return match implementation_member {
+                "isAbsolute" | "isRelative" => Some(signature_help_for_builtin(
+                    &format!("uri.{implementation_member}"),
+                    &["value: str"],
+                    "(bool, error)",
+                    active_parameter,
+                )),
                 "parse" => Some(signature_help_for_builtin(
                     "uri.parse",
                     &[
@@ -12017,7 +12037,49 @@ fn main() -> i64 {
         assert!(items.contains(
             "fn uri.parse(value: str, callback: fn(str, str, str, str, str) -> void) -> error"
         ));
+        assert!(items.contains("fn uri.isAbsolute(value: str) -> (bool, error)"));
+        assert!(items.contains("fn uri.isRelative(value: str) -> (bool, error)"));
         assert!(items.contains("fn uri.normalize(value: str, callback: fn(str) -> void) -> error"));
+    }
+
+    #[test]
+    fn uri_reference_classification_signature_help_is_builtin() {
+        let uri = "file:///tmp/uri-reference-classification-signatures.flux";
+        let source = r#"fn main() -> i64 {
+    let (_absolute, _absoluteError) = uri.isAbsolute("https://example.test")
+    let (_relative, _relativeError) = uri.isRelative("../asset")
+    return 0
+}
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "uri.isAbsolute(",
+                "fn uri.isAbsolute(value: str) -> (bool, error)",
+            ),
+            (
+                "uri.isRelative(",
+                "fn uri.isRelative(value: str) -> (bool, error)",
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("URI classification call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("URI classification call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
     }
 
     #[test]
