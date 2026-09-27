@@ -1906,6 +1906,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "withExtension",
+            3,
+            "fn path.withExtension(value: str, extension: str, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
             "normalize",
             3,
             "fn path.normalize(value: str, callback: fn(str) -> void) -> error",
@@ -4453,6 +4460,12 @@ fn signature_help_for_document_cached(
                 "resolve" => Some(signature_help_for_builtin(
                     "path.resolve",
                     &["base: str", "target: str", "callback: fn(str) -> void"],
+                    "error",
+                    active_parameter,
+                )),
+                "withExtension" => Some(signature_help_for_builtin(
+                    "path.withExtension",
+                    &["value: str", "extension: str", "callback: fn(str) -> void"],
                     "error",
                     active_parameter,
                 )),
@@ -9760,6 +9773,9 @@ mod tests {
         assert!(
             path_items.contains("fn path.stem(value: str, callback: fn(str) -> void) -> error")
         );
+        assert!(path_items.contains(
+            "fn path.withExtension(value: str, extension: str, callback: fn(str) -> void) -> error"
+        ));
 
         let directory_line = source
             .lines()

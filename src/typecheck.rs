@@ -14409,9 +14409,12 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Bool]);
             }
-            "join" | "relative" | "resolve" | "dirname" | "basename" | "extension" | "stem"
-            | "normalize" => {
-                let expected_args = if matches!(name.as_str(), "join" | "relative" | "resolve") {
+            "join" | "relative" | "resolve" | "withExtension" | "dirname" | "basename"
+            | "extension" | "stem" | "normalize" => {
+                let expected_args = if matches!(
+                    name.as_str(),
+                    "join" | "relative" | "resolve" | "withExtension"
+                ) {
                     3
                 } else {
                     2
@@ -14429,8 +14432,8 @@ fn check_qualified_call(
                     vec!["base", "child", "callback"]
                 } else if matches!(name.as_str(), "relative" | "resolve") {
                     vec!["base", "target", "callback"]
-                } else if name == "dirname" {
-                    vec!["value", "callback"]
+                } else if name == "withExtension" {
+                    vec!["value", "extension", "callback"]
                 } else {
                     vec!["value", "callback"]
                 };

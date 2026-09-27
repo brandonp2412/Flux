@@ -10902,6 +10902,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         || runtime_usage.contains("flux__path_join(")
         || runtime_usage.contains("flux__path_component(")
         || runtime_usage.contains("flux__path_extension_or_stem(")
+        || runtime_usage.contains("flux__path_with_extension(")
         || runtime_usage.contains("flux__path_normalize(")
         || runtime_usage.contains("flux__path_relative(")
         || runtime_usage.contains("flux__path_resolve(")
@@ -10920,6 +10921,9 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     }
     if runtime_usage.contains("flux__path_extension_or_stem(") {
         out.push_str("static inline const char *flux__path_extension_or_stem(const char *value, bool extension, void (*callback)(const char *)) { if (value == NULL || callback == NULL) return \"invalid path component arguments\"; size_t length = strnlen(value, 65537); if (length > 65536) return \"path exceeds 65536 bytes\"; if (length == 0) return \"path must not be empty\"; size_t end = length; while (end > 1 && (value[end - 1] == '/' || value[end - 1] == '\\\\')) end -= 1; size_t slash = end; while (slash > 0 && value[slash - 1] != '/' && value[slash - 1] != '\\\\') slash -= 1; size_t dot = end; while (dot > slash && value[dot - 1] != '.') dot -= 1; bool has_extension = dot > slash && dot < end && value[dot] != '\\0' && !(dot == slash + 1 && value[slash] == '.'); size_t begin = extension ? (has_extension ? dot - 1 : end) : slash; size_t finish = extension ? end : (has_extension ? dot - 1 : end); size_t result_length = finish - begin; char result[65537]; if (result_length > 65536) return \"path component exceeds 65536 bytes\"; memcpy(result, value + begin, result_length); result[result_length] = '\\0'; callback(result); return NULL; }\n");
+    }
+    if runtime_usage.contains("flux__path_with_extension(") {
+        out.push_str("static inline const char *flux__path_with_extension(const char *value, const char *extension, void (*callback)(const char *)) { if (value == NULL || extension == NULL || callback == NULL) return \"invalid path.withExtension arguments\"; size_t length = strnlen(value, 65537); size_t extension_length = strnlen(extension, 65537); if (length > 65536 || extension_length > 65536) return \"path exceeds 65536 bytes\"; if (length == 0) return \"path must not be empty\"; if (value[length - 1] == '/' || value[length - 1] == '\\\\') return \"path.withExtension requires a file name\"; for (size_t index = 0; index < extension_length; index += 1) if (extension[index] == '/' || extension[index] == '\\\\') return \"path extension must not contain separators\"; size_t slash = length; while (slash > 0 && value[slash - 1] != '/' && value[slash - 1] != '\\\\') slash -= 1; size_t dot = length; while (dot > slash && value[dot - 1] != '.') dot -= 1; bool has_extension = dot > slash && dot < length && !(dot == slash + 1 && value[slash] == '.'); size_t stem_end = has_extension ? dot - 1 : length; size_t dot_prefix = (extension_length > 0 && extension[0] != '.') ? 1u : 0u; if (extension_length > 65536 - dot_prefix) return \"path with extension exceeds 65536 bytes\"; size_t suffix_length = extension_length + dot_prefix; if (stem_end > 65536 - suffix_length) return \"path with extension exceeds 65536 bytes\"; char result[65537]; memcpy(result, value, stem_end); size_t output = stem_end; if (extension_length > 0 && extension[0] != '.') result[output++] = '.'; if (extension_length > 0) { memcpy(result + output, extension, extension_length); output += extension_length; } result[output] = '\\0'; callback(result); return NULL; }\n");
     }
     if runtime_usage.contains("flux__path_normalize(") {
         out.push_str("static inline const char *flux__path_normalize(const char *value, void (*callback)(const char *)) { if (value == NULL || callback == NULL) return \"invalid path.normalize arguments\"; size_t length = strnlen(value, 65537); if (length > 65536) return \"path exceeds 65536 bytes\"; char result[65537]; size_t output = 0; size_t index = 0; bool absolute = length > 0 && (value[0] == '/' || value[0] == '\\\\'); if (absolute) result[output++] = '/'; while (index < length) { while (index < length && (value[index] == '/' || value[index] == '\\\\')) index += 1; size_t begin = index; while (index < length && value[index] != '/' && value[index] != '\\\\') index += 1; size_t part_length = index - begin; if (part_length == 0 || (part_length == 1 && value[begin] == '.') ) continue; bool parent = part_length == 2 && value[begin] == '.' && value[begin + 1] == '.'; if (parent) { size_t previous = output; if (previous > (absolute ? 1u : 0u)) { if (previous > 0 && result[previous - 1] == '/') previous -= 1; size_t slash = previous; while (slash > (absolute ? 1u : 0u) && result[slash - 1] != '/') slash -= 1; if (slash < previous && !(previous - slash == 2 && result[slash] == '.' && result[slash + 1] == '.')) { output = slash; continue; } } if (!absolute) { if (output > 0 && result[output - 1] != '/') result[output++] = '/'; if (output > 65536 - 2) return \"normalized path exceeds 65536 bytes\"; result[output++] = '.'; result[output++] = '.'; } continue; } if (output > 0 && result[output - 1] != '/') { if (output == 65536) return \"normalized path exceeds 65536 bytes\"; result[output++] = '/'; } if (part_length > 65536 - output) return \"normalized path exceeds 65536 bytes\"; memcpy(result + output, value + begin, part_length); output += part_length; } if (output == 0) result[output++] = '.'; while (output > 1 && result[output - 1] == '/') output -= 1; result[output] = '\\0'; callback(result); return NULL; }\n");
@@ -54373,6 +54377,25 @@ fn emit_qualified_call(
                     None,
                 ));
             }
+            "withExtension" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        "invalid path.withExtension call reached code generation",
+                    ));
+                }
+                let value = emit_expr(&args[0], env, signatures)?;
+                let extension = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__path_with_extension({}, {}, {})",
+                        value.code, extension.code, callback.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
             "normalize" => {
                 if args.len() != 2 {
                     return Err(diag(
@@ -59985,6 +60008,29 @@ fn emit_cfg_scalar_expr_direct(
                 let extension = if name == "extension" { "true" } else { "false" };
                 Some(format!(
                     "flux__path_extension_or_stem({value}, {extension}, {callback})"
+                ))
+            }
+            "withExtension" if arguments.len() == 3 => {
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::Str,
+                    env,
+                    signatures,
+                )?;
+                let extension = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[1],
+                    &Type::Str,
+                    env,
+                    signatures,
+                )?;
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[2],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                Some(format!(
+                    "flux__path_with_extension({value}, {extension}, {callback})"
                 ))
             }
             "normalize" if arguments.len() == 2 => {
