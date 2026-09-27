@@ -3480,17 +3480,24 @@ app Screen
         fluxc::parser::parse(dynamic).expect("dynamic selectable Text padding should parse");
     let dynamic_signatures = fluxc::typecheck::check(&dynamic_program)
         .expect("dynamic selectable Text padding should typecheck before target validation");
-    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+    let dynamic_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
         &dynamic_program,
         &dynamic_signatures,
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Windows,
     )
-    .expect_err("state-driven selectable Text padding remains unsupported");
+    .expect("state-driven selectable Text padding should refresh the native edit control");
     assert!(
-        error
-            .message
-            .contains("selectable Text padding must be a compile-time i64 value")
+        dynamic_windows.contains("int64_t flux__win_next_padding_top_label = flux__ui_state_inset")
+    );
+    assert!(
+        dynamic_windows
+            .contains("flux__win_text_layout_label.padding_top = flux__win_next_padding_top_label")
+    );
+    assert!(dynamic_windows.contains("flux__win_layout(flux__win_refresh_client.right"));
+    assert!(dynamic_windows.contains("EM_SETRECTNP"));
+    assert!(
+        !dynamic_windows.contains("SetWindowSubclass(flux__ui_label, flux__win_text_layout_proc")
     );
 }
 

@@ -16786,24 +16786,6 @@ fn emit_windows_native_application(
                 "bootstrap Windows selectable Text does not yet support letterSpacing",
             ));
         }
-        if selectable && rich_text.is_none() && windows_text_has_padding(element) {
-            for property_name in [
-                "padding",
-                "padding_top",
-                "padding_bottom",
-                "padding_start",
-                "padding_end",
-            ] {
-                if let Some(property) = view_property(element, property_name)
-                    && static_expr_i64(&property.value, signatures).is_none()
-                {
-                    return Err(diag(
-                        property.value.span,
-                        "bootstrap Windows selectable Text padding must be a compile-time i64 value",
-                    ));
-                }
-            }
-        }
         if let Some(property) = view_property(element, "letter_spacing")
             && let Some(value) = static_expr_i64(&property.value, signatures)
             && !(i64::from(i32::MIN) / 1024..=i64::from(i32::MAX) / 1024).contains(&value)
