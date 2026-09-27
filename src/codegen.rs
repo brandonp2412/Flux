@@ -46025,6 +46025,10 @@ fn sequence_transform(expr: &Expr) -> Option<SequenceTransform<'_>> {
 
 fn sequence_chunked(expr: &Expr) -> Option<(&Expr, &Expr)> {
     match &expr.kind {
+        ExprKind::Unary {
+            op: UnaryOp::Borrow,
+            expr: inner,
+        } => sequence_chunked(inner),
         ExprKind::Call {
             name,
             args,

@@ -22549,6 +22549,48 @@ fn main() -> i64 {
 }
 
 #[test]
+fn explicit_list_borrow_accepts_zero_copy_sequence_views() {
+    let source = r#"
+fn main() -> i64 {
+    let rows: i64[][] = [[10, 20], [30, 40], [50, 60]]
+    let prefix: i64[][] = borrow take(rows, 2)
+    print(prefix[1][0])
+    let tail: i64[][] = borrow skip(rows, 1)
+    print(tail[0][1])
+    let chunks: i64[][][] = borrow chunk(rows, 2)
+    print(chunks[0][1][1])
+    let destination: i64[][] = rows
+    print(destination[2][0])
+    return 0
+}
+"#;
+    check_source(source).expect(
+        "zero-copy take/skip/chunk views rooted in named storage should be explicitly borrowable",
+    );
+    compile_to_c(source)
+        .expect("explicit sequence-view borrows should remain descriptor-only in native lowering");
+}
+
+#[test]
+fn explicit_list_borrow_rejects_zero_copy_sequence_view_from_temporary_storage() {
+    let source = r#"
+fn main() -> i64 {
+    let view: i64[][] = borrow take([[10, 20], [30, 40]], 1)
+    print(view[0][0])
+    return 0
+}
+"#;
+    let error = check_source(source).expect_err(
+        "a zero-copy sequence view from temporary list storage must not become an explicit borrow",
+    );
+    assert!(
+        error.message.contains(
+            "borrow currently requires named list storage or a zero-copy view rooted in it"
+        )
+    );
+}
+
+#[test]
 fn explicit_list_borrow_rejects_projection_from_temporary_storage() {
     let source = r#"
 fn main() -> i64 {

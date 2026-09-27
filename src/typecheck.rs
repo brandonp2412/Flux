@@ -5964,6 +5964,15 @@ fn is_zero_copy_borrow_rooted_in_named_storage(expr: &Expr) -> bool {
             is_zero_copy_borrow_rooted_in_named_storage(base)
         }
         ExprKind::Field { base, .. } => is_zero_copy_borrow_rooted_in_named_storage(base),
+        ExprKind::Call { name, args, .. }
+            if matches!(
+                crate::builtin_names::global_impl(name),
+                "take" | "skip" | "chunked"
+            ) =>
+        {
+            args.first()
+                .is_some_and(is_zero_copy_borrow_rooted_in_named_storage)
+        }
         _ => false,
     }
 }
