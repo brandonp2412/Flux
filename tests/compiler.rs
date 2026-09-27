@@ -66194,7 +66194,11 @@ app Screen(onSaveState: saveState, onRestoreState: restoreState)
     let generated = compile_to_c(source).expect("Linux state callbacks should lower");
     assert!(generated.contains("FLUX_APP_STATE_PATH"));
     assert!(generated.contains("FLXA"));
-    assert!(generated.contains("flux__fn_saveState()"));
+    assert!(generated.contains("flux__ui_call_saveState()"));
+    assert!(generated.contains(
+        "static const char *(*flux__ui_development_callback_saveState)(void) = flux__fn_saveState;"
+    ));
+    assert!(generated.contains("flux__ui_development_callback_saveState = target; return true;"));
     assert!(generated.contains("flux__ui_call_restoreState(state)"));
     assert!(generated.contains(
         "static void (*flux__ui_development_callback_restoreState)(const char *) = flux__fn_restoreState;"

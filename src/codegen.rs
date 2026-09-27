@@ -20519,6 +20519,18 @@ fn emit_linux_gtk_application(
         }
         out.push_str(" return false; }\n#endif\n");
     }
+    if let Some(function) = application_metadata_function(application, "on_save_state") {
+        let slot = linux_ui_development_callback_slot_c_name(function);
+        let call = linux_ui_callback_call_c_name(function);
+        let target = function_c_name(function);
+        out.push_str(&format!(
+            "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic const char *(*{slot})(void) = {target};\n#define {call}() {slot}()\n#else\n#define {call}() {target}()\n#endif\n"
+        ));
+        out.push_str(&format!(
+            "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic bool flux__ui_development_retarget_string_result_callback(const char *name, const char *(*target)(void)) {{ if (name == NULL || target == NULL) return false; if (strcmp(name, {}) == 0) {{ {slot} = target; return true; }} return false; }}\n#endif\n",
+            c_string(function)
+        ));
+    }
     let development_i64_callbacks = linux_ui_i64_callback_functions(view);
     for function in &development_i64_callbacks {
         let slot = linux_ui_development_callback_slot_c_name(function);
@@ -20848,7 +20860,7 @@ fn emit_linux_gtk_application(
         if let Some(function) = on_save_state {
             out.push_str(&format!(
                 "static void flux__ui_save_app_state(void) {{ const char *path = flux__ui_app_state_path(); if (path == NULL) return; const char *state = {}(); if (state == NULL) return; size_t length = 0; if (!flux__ui_bounded_length(state, (size_t)16 * 1024 * 1024, &length)) return; char temporary[4096]; int written = snprintf(temporary, sizeof(temporary), \"%s.tmp\", path); if (written <= 0 || (size_t)written >= sizeof(temporary)) return; FILE *file = fopen(temporary, \"wb\"); if (file == NULL) return; const unsigned char magic[4] = {{'F','L','X','A'}}; uint64_t size = (uint64_t)length; if (fwrite(magic, sizeof(magic), 1, file) != 1 || fwrite(&size, sizeof(size), 1, file) != 1 || (length != 0 && fwrite(state, 1, length, file) != length)) {{ fclose(file); remove(temporary); return; }} if (fclose(file) != 0) {{ remove(temporary); return; }} if (rename(temporary, path) != 0) remove(temporary); }}\n",
-                function_c_name(function)
+                linux_ui_callback_call_c_name(function)
             ));
         }
         if let Some(function) = on_restore_state {
