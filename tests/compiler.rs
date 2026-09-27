@@ -22227,6 +22227,56 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_nested_index_can_unwrap_directly_through_explicit_borrow() {
+    let live = r#"
+fn main() -> i64 {
+    let rows: i64[][]? = [[10, 20], [30, 40]]
+    if let row = borrow rows?[0]:
+        let destination: i64[][]? = rows
+        print(row[0])
+        if let moved = borrow destination:
+            print(moved[0][0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live)
+        .expect_err("a direct optional-index borrow binding must keep the root owner live");
+    assert!(
+        errors.iter().any(|error| {
+            error.message.contains(
+                "cannot move non-copy binding 'rows' while borrowed view 'row' is still live",
+            )
+        }),
+        "direct optional-index borrow errors: {errors:?}"
+    );
+
+    let dead = r#"
+fn main() -> i64 {
+    let rows: i64[][]? = [[10, 20], [30, 40]]
+    if let row = borrow rows?[0]:
+        print(row[1])
+    let destination: i64[][]? = rows
+    if let moved = borrow destination:
+        print(moved[1][0])
+    return 0
+}
+"#;
+    check_source(dead).expect("the direct optional-index borrow should end at branch exit");
+    compile_to_c(dead).expect("direct optional-index borrow binding should lower natively");
+    let database = fluxc::semantic::SemanticDatabase::analyze(dead, SourceId::new(1216))
+        .expect("direct optional-index borrow binding should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    assert!(
+        graph
+            .borrow_lifetimes()
+            .iter()
+            .any(|lifetime| lifetime.borrower == "row" && lifetime.source == "rows")
+    );
+}
+
+#[test]
 fn explicit_list_borrow_accepts_zero_copy_slice_and_property_views() {
     let source = r#"
 fn main() -> i64 {
