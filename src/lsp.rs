@@ -1240,7 +1240,7 @@ fn completion_contract_program_cached(
             return Some(program);
         }
     }
-    crate::parser::parse_all(&probe).ok()
+    crate::parser::parse_all_with_source(&probe, source_id_for_uri(uri)).ok()
 }
 
 fn source_before_active_top_level_declaration(source: &str, line_index: usize) -> &str {
@@ -13529,6 +13529,79 @@ fn main() -> i64 {
         assert!(
             !labels.contains(&"label: "),
             "already supplied top-level parameter should not be suggested: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn local_named_argument_completion_survives_incomplete_project_call() {
+        let root = std::env::temp_dir().join(format!(
+            "flux-lsp-incomplete-local-named-argument-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary LSP project should be writable");
+        let main = root.join("main.flux");
+        let source = "fn configure(value: i64, *, enabled: bool, label: str) -> void {\n    return\n}\nfn main() -> i64 {\n    configure(1, enabled: true, \n    return 0\n}\n";
+        std::fs::write(&main, source).expect("entry should be writable");
+        let main = std::fs::canonicalize(main).unwrap();
+        let uri = format!("file://{}", main.display());
+        let documents = HashMap::from([(uri.clone(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("configure(1"))
+            .expect("incomplete call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let items = completion_items_at_cursor(
+            &uri,
+            source,
+            &documents,
+            Some(line_index),
+            Some(line.len()),
+            PositionEncoding::Utf8,
+        );
+        let labels = items
+            .iter()
+            .filter_map(|item| item.get("label").and_then(JsonValue::as_str))
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"label: "), "completion items: {labels:?}");
+        assert!(
+            !labels.contains(&"enabled: "),
+            "completion items: {labels:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_named_argument_completion_survives_incomplete_unsaved_buffer() {
+        let path = std::env::temp_dir().join(format!(
+            "flux-lsp-unsaved-local-named-argument-{}.flux",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let uri = format!("file://{}", path.display());
+        let source = "fn configure(value: i64, *, enabled: bool, label: str) -> void {\n    return\n}\nfn main() -> i64 {\n    configure(1, enabled: true, \n    return 0\n}\n";
+        let documents = HashMap::from([(uri.clone(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("configure(1"))
+            .expect("incomplete call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let items = completion_items_at_cursor(
+            &uri,
+            source,
+            &documents,
+            Some(line_index),
+            Some(line.len()),
+            PositionEncoding::Utf8,
+        );
+        let labels = items
+            .iter()
+            .filter_map(|item| item.get("label").and_then(JsonValue::as_str))
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"label: "), "completion items: {labels:?}");
+        assert!(
+            !labels.contains(&"enabled: "),
+            "completion items: {labels:?}"
         );
     }
 
