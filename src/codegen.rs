@@ -16696,6 +16696,7 @@ fn emit_windows_native_application(
             None => false,
         };
         if selectable
+            && view_property(element, "rich_text").is_none()
             && let Some(alignment) = view_property(element, "text_align")
             && static_expr_str(&alignment.value, signatures).is_none()
         {
@@ -16706,14 +16707,6 @@ fn emit_windows_native_application(
         }
         let rich_text = static_rich_text_markup(element, signatures)?;
         if rich_text.is_some() {
-            if let Some(property) = view_property(element, "text_align")
-                && static_expr_str(&property.value, signatures).is_none()
-            {
-                return Err(diag(
-                    property.value.span,
-                    "bootstrap Windows rich Text requires compile-time textAlign",
-                ));
-            }
             if let Some(property) = view_property(element, "letter_spacing") {
                 return Err(diag(
                     property.value.span,
@@ -17927,6 +17920,29 @@ static void flux__win_apply_rich_text_line_height(HWND control, int64_t percent)
         0,
         (LPARAM)&previous_selection
     );
+}
+
+static void flux__win_apply_rich_text_alignment(HWND control, const char *value) {
+    if (control == NULL || value == NULL) return;
+    WORD alignment = PFA_LEFT;
+    if (strcmp(value, "left") == 0 || strcmp(value, "fill") == 0) alignment = PFA_LEFT;
+    else if (strcmp(value, "center") == 0) alignment = PFA_CENTER;
+    else if (strcmp(value, "right") == 0) alignment = PFA_RIGHT;
+    else {
+        fputs("Flux runtime error: Text.textAlign must be one of 'left', 'center', 'right', or 'fill'\n", stderr);
+        abort();
+    }
+    FluxWinRichTextRange previous_selection = {0, 0};
+    (void)SendMessageW(control, FLUX__WIN_RICH_EM_EXGETSEL, 0, (LPARAM)&previous_selection);
+    FluxWinRichTextRange all_text = {0, -1};
+    (void)SendMessageW(control, FLUX__WIN_RICH_EM_EXSETSEL, 0, (LPARAM)&all_text);
+    PARAFORMAT2 paragraph = {0};
+    paragraph.cbSize = sizeof(paragraph);
+    paragraph.dwMask = PFM_ALIGNMENT;
+    paragraph.wAlignment = alignment;
+    (void)SendMessageW(control, EM_SETPARAFORMAT, 0, (LPARAM)&paragraph);
+    (void)SendMessageW(control, FLUX__WIN_RICH_EM_EXSETSEL, 0, (LPARAM)&previous_selection);
+    InvalidateRect(control, NULL, TRUE);
 }
 
 static void flux__win_apply_rich_text(
@@ -19958,9 +19974,15 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             && static_expr_str(&property.value, signatures).is_none()
         {
             let value = ui_expr_c(&property.value, view, signatures)?;
-            out.push_str(&format!(
-                "flux__win_set_text_alignment({variable}, {value});\n"
-            ));
+            if view_property(element, "rich_text").is_some() {
+                out.push_str(&format!(
+                    "flux__win_apply_rich_text_alignment({variable}, {value});\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "flux__win_set_text_alignment({variable}, {value});\n"
+                ));
+            }
         }
         if let Some(property) = view_property(element, "background_color")
             && static_expr_str(&property.value, signatures).is_none()
