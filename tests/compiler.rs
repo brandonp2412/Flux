@@ -1119,6 +1119,9 @@ fn main() -> i64 {
     print(path.relative("/tmp/flux", "/tmp/flux", show))
     print(path.relative("C:\\alpha", "c:\\beta", show))
     print(path.relative("/tmp", "tmp", show))
+    print(path.resolve("/tmp/flux/src", "../tests/./unit", show))
+    print(path.resolve("/tmp/flux/src", "/var/log/../tmp", show))
+    print(path.resolve("D:\\base", "C:\\alpha\\..\\beta", show))
     print(path.dirname("/tmp/flux", show))
     print(path.basename("/tmp/flux", show))
     print(path.dirname("/", show))
@@ -1138,6 +1141,10 @@ fn main() -> i64 {
     assert!(generated.contains(
         "flux__path_relative(\"/tmp/flux/src\", \"/tmp/flux/tests/unit\", flux__fn_show)"
     ));
+    assert!(
+        generated
+            .contains("flux__path_resolve(\"/tmp/flux/src\", \"../tests/./unit\", flux__fn_show)")
+    );
     assert!(generated.contains("flux__path_component(\"/tmp/flux\", false, flux__fn_show)"));
     assert!(generated.contains("flux__path_component(\"/tmp/flux\", true, flux__fn_show)"));
     assert!(
@@ -1176,7 +1183,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "true\n/tmp/flux\nnil\n../tests/unit\nnil\n.\nnil\n../beta\nnil\npath.relative requires matching absolute or relative paths\n/tmp\nnil\nflux\nnil\n/\nnil\n\\\nnil\n.txt\nnil\n\nnil\n.env\nnil\nflux\nnil\n/tmp/cache/item\nnil\n../../b\nnil\n"
+        "true\n/tmp/flux\nnil\n../tests/unit\nnil\n.\nnil\n../beta\nnil\npath.relative requires matching absolute or relative paths\n/tmp/flux/tests/unit\nnil\n/var/tmp\nnil\nC:/beta\nnil\n/tmp\nnil\nflux\nnil\n/\nnil\n\\\nnil\n.txt\nnil\n\nnil\n.env\nnil\nflux\nnil\n/tmp/cache/item\nnil\n../../b\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 
@@ -1187,6 +1194,7 @@ fn main() -> i64 {
     assert!(!shaken.contains("flux__path_extension_or_stem"));
     assert!(!shaken.contains("flux__path_normalize"));
     assert!(!shaken.contains("flux__path_relative"));
+    assert!(!shaken.contains("flux__path_resolve"));
 }
 
 #[test]

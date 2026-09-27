@@ -1864,6 +1864,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "resolve",
+            3,
+            "fn path.resolve(base: str, target: str, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
             "dirname",
             3,
             "fn path.dirname(value: str, callback: fn(str) -> void) -> error",
@@ -4432,6 +4439,12 @@ fn signature_help_for_document_cached(
                 )),
                 "relative" => Some(signature_help_for_builtin(
                     "path.relative",
+                    &["base: str", "target: str", "callback: fn(str) -> void"],
+                    "error",
+                    active_parameter,
+                )),
+                "resolve" => Some(signature_help_for_builtin(
+                    "path.resolve",
                     &["base: str", "target: str", "callback: fn(str) -> void"],
                     "error",
                     active_parameter,
@@ -9729,6 +9742,9 @@ mod tests {
         assert!(path_items.contains(
             "fn path.relative(base: str, target: str, callback: fn(str) -> void) -> error"
         ));
+        assert!(path_items.contains(
+            "fn path.resolve(base: str, target: str, callback: fn(str) -> void) -> error"
+        ));
         assert!(
             path_items
                 .contains("fn path.extension(value: str, callback: fn(str) -> void) -> error")
@@ -11724,6 +11740,33 @@ fn main() -> i64 {
             .to_json();
             assert!(help.contains(expected));
         }
+    }
+
+    #[test]
+    fn path_resolve_completion_and_signature_help_are_builtin() {
+        let uri = "file:///tmp/path-resolve-signature.flux";
+        let source = "fn resolved(_value: str) -> void {\n}\nfn main() -> i64 {\n    print(path.resolve(\"/tmp/base\", \"../target\", resolved))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("path.resolve("))
+            .expect("path resolve call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "path.resolve(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("path resolve call should have signature help")
+        .to_json();
+        assert!(help.contains(
+            "fn path.resolve(base: str, target: str, callback: fn(str) -> void) -> error"
+        ));
     }
 
     #[test]

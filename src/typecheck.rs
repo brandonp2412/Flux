@@ -14404,8 +14404,9 @@ fn check_qualified_call(
                 require_type(args[0].span, &Type::Str, &actual, "path.isAbsolute value")?;
                 return Ok(vec![Type::Bool]);
             }
-            "join" | "relative" | "dirname" | "basename" | "extension" | "stem" | "normalize" => {
-                let expected_args = if matches!(name.as_str(), "join" | "relative") {
+            "join" | "relative" | "resolve" | "dirname" | "basename" | "extension" | "stem"
+            | "normalize" => {
+                let expected_args = if matches!(name.as_str(), "join" | "relative" | "resolve") {
                     3
                 } else {
                     2
@@ -14421,7 +14422,7 @@ fn check_qualified_call(
                 }
                 let labels = if name == "join" {
                     vec!["base", "child", "callback"]
-                } else if name == "relative" {
+                } else if matches!(name.as_str(), "relative" | "resolve") {
                     vec!["base", "target", "callback"]
                 } else if name == "dirname" {
                     vec!["value", "callback"]

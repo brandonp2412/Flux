@@ -10904,6 +10904,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         || runtime_usage.contains("flux__path_extension_or_stem(")
         || runtime_usage.contains("flux__path_normalize(")
         || runtime_usage.contains("flux__path_relative(")
+        || runtime_usage.contains("flux__path_resolve(")
     {
         out.push_str("static inline bool flux__path_is_absolute(const char *path) { if (path == NULL) return false; size_t length = 0; while (length <= 65536 && path[length] != '\\0') length += 1; if (length > 65536 || length == 0) return false; if (path[0] == '/' || path[0] == '\\\\') return true; return length >= 3 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' && (path[2] == '/' || path[2] == '\\\\'); }\n");
     }
@@ -10918,6 +10919,85 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     }
     if runtime_usage.contains("flux__path_normalize(") {
         out.push_str("static inline const char *flux__path_normalize(const char *value, void (*callback)(const char *)) { if (value == NULL || callback == NULL) return \"invalid path.normalize arguments\"; size_t length = strnlen(value, 65537); if (length > 65536) return \"path exceeds 65536 bytes\"; char result[65537]; size_t output = 0; size_t index = 0; bool absolute = length > 0 && (value[0] == '/' || value[0] == '\\\\'); if (absolute) result[output++] = '/'; while (index < length) { while (index < length && (value[index] == '/' || value[index] == '\\\\')) index += 1; size_t begin = index; while (index < length && value[index] != '/' && value[index] != '\\\\') index += 1; size_t part_length = index - begin; if (part_length == 0 || (part_length == 1 && value[begin] == '.') ) continue; bool parent = part_length == 2 && value[begin] == '.' && value[begin + 1] == '.'; if (parent) { size_t previous = output; if (previous > (absolute ? 1u : 0u)) { if (previous > 0 && result[previous - 1] == '/') previous -= 1; size_t slash = previous; while (slash > (absolute ? 1u : 0u) && result[slash - 1] != '/') slash -= 1; if (slash < previous && !(previous - slash == 2 && result[slash] == '.' && result[slash + 1] == '.')) { output = slash; continue; } } if (!absolute) { if (output > 0 && result[output - 1] != '/') result[output++] = '/'; if (output > 65536 - 2) return \"normalized path exceeds 65536 bytes\"; result[output++] = '.'; result[output++] = '.'; } continue; } if (output > 0 && result[output - 1] != '/') { if (output == 65536) return \"normalized path exceeds 65536 bytes\"; result[output++] = '/'; } if (part_length > 65536 - output) return \"normalized path exceeds 65536 bytes\"; memcpy(result + output, value + begin, part_length); output += part_length; } if (output == 0) result[output++] = '.'; while (output > 1 && result[output - 1] == '/') output -= 1; result[output] = '\\0'; callback(result); return NULL; }\n");
+    }
+    if runtime_usage.contains("flux__path_resolve(") {
+        out.push_str(
+r#"static inline const char *flux__path_resolve(const char *base, const char *target, void (*callback)(const char *)) {
+    if (base == NULL || target == NULL || callback == NULL) return "invalid path.resolve arguments";
+    size_t base_length = strnlen(base, 65537);
+    size_t target_length = strnlen(target, 65537);
+    if (base_length > 65536 || target_length > 65536) return "path exceeds 65536 bytes";
+    char joined[65537];
+    const char *value = target;
+    if (!flux__path_is_absolute(target)) {
+        bool separator = base_length > 0 && base[base_length - 1] != '/' && base[base_length - 1] != '\\';
+        size_t total = base_length + (separator ? 1u : 0u) + target_length;
+        if (total > 65536) return "resolved path exceeds 65536 bytes";
+        memcpy(joined, base, base_length);
+        size_t offset = base_length;
+        if (separator) joined[offset++] = '/';
+        memcpy(joined + offset, target, target_length);
+        joined[offset + target_length] = '\0';
+        value = joined;
+    }
+    size_t length = strnlen(value, 65537);
+    char result[65537];
+    size_t output = 0;
+    size_t index = 0;
+    bool drive = length >= 2 && value[1] == ':' && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z'));
+    bool absolute = flux__path_is_absolute(value);
+    if (drive) {
+        result[output++] = value[0];
+        result[output++] = ':';
+        index = 2;
+        if (index < length && (value[index] == '/' || value[index] == '\\')) {
+            result[output++] = '/';
+            index += 1;
+        }
+    } else if (absolute) {
+        result[output++] = '/';
+        index = 1;
+    }
+    size_t root = output;
+    while (index < length) {
+        while (index < length && (value[index] == '/' || value[index] == '\\')) index += 1;
+        size_t begin = index;
+        while (index < length && value[index] != '/' && value[index] != '\\') index += 1;
+        size_t part_length = index - begin;
+        if (part_length == 0 || (part_length == 1 && value[begin] == '.')) continue;
+        bool parent = part_length == 2 && value[begin] == '.' && value[begin + 1] == '.';
+        if (parent) {
+            size_t previous = output;
+            if (previous > root) {
+                if (result[previous - 1] == '/') previous -= 1;
+                size_t slash = previous;
+                while (slash > root && result[slash - 1] != '/') slash -= 1;
+                if (slash < previous && !(previous - slash == 2 && result[slash] == '.' && result[slash + 1] == '.')) {
+                    output = slash;
+                    continue;
+                }
+            }
+            if (!absolute) {
+                if (output > 0 && result[output - 1] != '/') result[output++] = '/';
+                if (output > 65534) return "resolved path exceeds 65536 bytes";
+                result[output++] = '.';
+                result[output++] = '.';
+            }
+            continue;
+        }
+        if (output > 0 && result[output - 1] != '/') result[output++] = '/';
+        if (part_length > 65536 - output) return "resolved path exceeds 65536 bytes";
+        memcpy(result + output, value + begin, part_length);
+        output += part_length;
+    }
+    if (output == 0) result[output++] = '.';
+    while (output > root && output > 1 && result[output - 1] == '/') output -= 1;
+    result[output] = '\0';
+    callback(result);
+    return NULL;
+}
+"#,
+        );
     }
     if runtime_usage.contains("flux__path_relative(") {
         out.push_str(
@@ -54207,6 +54287,25 @@ fn emit_qualified_call(
                     None,
                 ));
             }
+            "resolve" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        "invalid path.resolve call reached code generation",
+                    ));
+                }
+                let base = emit_expr(&args[0], env, signatures)?;
+                let target = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__path_resolve({}, {}, {})",
+                        base.code, target.code, callback.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
             "relative" => {
                 if args.len() != 3 {
                     return Err(diag(
@@ -59799,6 +59898,26 @@ fn emit_cfg_scalar_expr_direct(
                     |rendered| {
                         format!(
                             "flux__path_join({}, {}, {callback})",
+                            rendered[0], rendered[1]
+                        )
+                    },
+                )
+            }
+            "resolve" if arguments.len() == 3 => {
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[2],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                emit_cfg_ordered_call_expression_direct(
+                    &arguments[..2],
+                    &[Type::Str, Type::Str],
+                    env,
+                    signatures,
+                    |rendered| {
+                        format!(
+                            "flux__path_resolve({}, {}, {callback})",
                             rendered[0], rendered[1]
                         )
                     },
