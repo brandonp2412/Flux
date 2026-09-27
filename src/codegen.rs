@@ -16947,7 +16947,10 @@ fn emit_windows_native_application(
                 ));
             }
         }
-        if element.kind != "Text" && element.kind != "Button" {
+        if !matches!(
+            element.kind.as_str(),
+            "Text" | "Button" | "Toggle" | "Radio"
+        ) {
             for (property_name, source_name) in [
                 ("padding", "padding"),
                 ("padding_top", "paddingTop"),
@@ -19574,33 +19577,35 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         let margin_bottom_value = margin_bottom.as_deref().unwrap_or(margin_value);
         let margin_start_value = margin_start.as_deref().unwrap_or(margin_value);
         let margin_end_value = margin_end.as_deref().unwrap_or(margin_value);
-        let button_padding = if element.kind == "Button" {
+        let button_padding = if matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio") {
             windows_layout_margin_value(element, "padding", "padding", view, signatures)?
         } else {
             None
         };
-        let button_padding_top = if element.kind == "Button" {
+        let button_padding_top = if matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio") {
             windows_layout_margin_value(element, "padding_top", "paddingTop", view, signatures)?
         } else {
             None
         };
-        let button_padding_bottom = if element.kind == "Button" {
-            windows_layout_margin_value(
-                element,
-                "padding_bottom",
-                "paddingBottom",
-                view,
-                signatures,
-            )?
-        } else {
-            None
-        };
-        let button_padding_start = if element.kind == "Button" {
+        let button_padding_bottom =
+            if matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio") {
+                windows_layout_margin_value(
+                    element,
+                    "padding_bottom",
+                    "paddingBottom",
+                    view,
+                    signatures,
+                )?
+            } else {
+                None
+            };
+        let button_padding_start = if matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
+        {
             windows_layout_margin_value(element, "padding_start", "paddingStart", view, signatures)?
         } else {
             None
         };
-        let button_padding_end = if element.kind == "Button" {
+        let button_padding_end = if matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio") {
             windows_layout_margin_value(element, "padding_end", "paddingEnd", view, signatures)?
         } else {
             None
@@ -19664,7 +19669,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     element.name, element.name
                 ),
             )
-        } else if element.kind == "Button" && windows_text_has_padding(element) {
+        } else if matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
+            && windows_text_has_padding(element)
+        {
             (
                 format!(
                     "(flux__win_scale({button_padding_start_value}) + flux__win_scale({button_padding_end_value}))"
@@ -19901,7 +19908,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         } else {
             ""
         };
-        let button_text_margin = if element.kind == "Button" && windows_text_has_padding(element) {
+        let button_text_margin = if matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
+            && windows_text_has_padding(element)
+        {
             let (button_padding_left_value, button_padding_right_value) =
                 if layout_direction == "rtl" {
                     (button_padding_end_value, button_padding_start_value)

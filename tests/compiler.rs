@@ -3413,6 +3413,78 @@ app Screen(layoutDirection: "rtl")
 }
 
 #[test]
+fn windows_toggle_and_radio_padding_use_native_button_text_margins() {
+    let source = r#"
+view Screen {
+    state inset: i64 = 5
+    grid columns: 1fr
+    grid rows: auto auto
+    Toggle enabled at 1,1
+        label: "Enabled"
+        padding: inset
+        paddingTop: 3
+        paddingEnd: 9
+        alignX: "start"
+    Radio choice at 2,1
+        label: "Choice"
+        padding: 4
+        paddingBottom: 7
+        paddingStart: 11
+        alignX: "start"
+}
+app Screen(layoutDirection: "rtl")
+"#;
+    let program =
+        fluxc::parser::parse(source).expect("Windows checkable padding source should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("Windows checkable padding source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows Toggle/Radio padding should lower through native button text margins");
+
+    assert!(windows.contains("RECT flux__win_button_text_margin_enabled"));
+    assert!(windows.contains(
+        "SendMessageW(flux__ui_enabled, BCM_SETTEXTMARGIN, 0, (LPARAM)&flux__win_button_text_margin_enabled)"
+    ));
+    assert!(windows.contains(
+        "flux__win_scale(INT64_C(9)), flux__win_scale(INT64_C(3)), flux__win_scale(flux__win_checked_margin((flux__ui_state_inset), \"padding\"))"
+    ));
+    assert!(windows.contains("RECT flux__win_button_text_margin_choice"));
+    assert!(windows.contains(
+        "SendMessageW(flux__ui_choice, BCM_SETTEXTMARGIN, 0, (LPARAM)&flux__win_button_text_margin_choice)"
+    ));
+    assert!(windows.contains(
+        "flux__win_scale(INT64_C(4)), flux__win_scale(INT64_C(4)), flux__win_scale(INT64_C(11)), flux__win_scale(INT64_C(7))"
+    ));
+    assert!(windows.contains(
+        "flux__win_preferred_size(flux__ui_enabled, false, (flux__win_scale(flux__win_checked_margin((flux__ui_state_inset), \"padding\")) + flux__win_scale(INT64_C(9)))"
+    ));
+
+    let invalid = source.replace("padding: inset", "padding: -1");
+    let invalid_program = fluxc::parser::parse(&invalid)
+        .expect("invalid Windows checkable padding source should parse");
+    let invalid_signatures = fluxc::typecheck::check(&invalid_program).expect(
+        "invalid Windows checkable padding source should typecheck before target validation",
+    );
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &invalid_program,
+        &invalid_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("negative Windows Toggle padding must fail target lowering");
+    assert!(
+        error
+            .message
+            .contains("padding must be non-negative and fit within a 32-bit signed integer")
+    );
+}
+
+#[test]
 fn windows_text_padding_insets_native_paint_and_refreshes_dynamic_edges() {
     let source = r#"
 view Screen {
