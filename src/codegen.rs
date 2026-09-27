@@ -11234,6 +11234,8 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     let uses_list_count = uses_list_take || uses_list_skip;
     let uses_list = runtime_usage.contains("struct flux__list")
         || runtime_usage.contains("flux__fs_read_bytes(")
+        || runtime_usage.contains("flux__fs_write_bytes(")
+        || runtime_usage.contains("flux__fs_append_bytes(")
         || uses_byte_timeout
         || uses_list_at
         || uses_list_single
@@ -11247,6 +11249,36 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     let uses_map = runtime_usage.contains("struct flux__map");
     if uses_list && !uses_byte_timeout {
         out.push_str("#ifndef FLUX_LIST_DEFINED\n#define FLUX_LIST_DEFINED\nstruct flux__list { void *data; size_t len; ptrdiff_t stride; };\n#endif\n");
+    }
+    if runtime_usage.contains("flux__fs_write_bytes(")
+        || runtime_usage.contains("flux__fs_append_bytes(")
+    {
+        out.push_str(r#"static inline const char *flux__fs_write_bytes_mode(const char *path, struct flux__list bytes, const char *mode) {
+    size_t path_length = 0;
+    if (!flux__fs_bounded_length(path, &path_length)) return "file path exceeds 65536 bytes";
+    if (bytes.len != 0 && bytes.data == NULL) return "file byte list has no storage";
+    ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride;
+    uint64_t magnitude = stride < 0 ? (uint64_t)(-(stride + 1)) + 1u : (uint64_t)stride;
+    if (magnitude < sizeof(int64_t) || (bytes.len > 1 && (uint64_t)(bytes.len - 1) > (uint64_t)PTRDIFF_MAX / magnitude)) return "file byte list has invalid element stride";
+    for (size_t index = 0; index < bytes.len; ++index) { int64_t value; memcpy(&value, (const char *)bytes.data + (ptrdiff_t)index * stride, sizeof(value)); if (value < 0 || value > 255) return "file byte values must be between 0 and 255"; }
+    FILE *file = fopen(path, mode);
+    if (file == NULL) return "failed to open file for writing";
+    unsigned char buffer[4096];
+    size_t offset = 0;
+    const char *failure = NULL;
+    while (offset < bytes.len) {
+        size_t count = bytes.len - offset;
+        if (count > sizeof(buffer)) count = sizeof(buffer);
+        for (size_t index = 0; index < count; ++index) { int64_t value; memcpy(&value, (const char *)bytes.data + (ptrdiff_t)(offset + index) * stride, sizeof(value)); buffer[index] = (unsigned char)value; }
+        if (fwrite(buffer, 1, count, file) != count) { failure = "failed to write file"; break; }
+        offset += count;
+    }
+    if (fclose(file) != 0 && failure == NULL) failure = "failed to close file after writing";
+    return failure;
+}
+static inline const char *flux__fs_write_bytes(const char *path, struct flux__list bytes) { return flux__fs_write_bytes_mode(path, bytes, "wb"); }
+static inline const char *flux__fs_append_bytes(const char *path, struct flux__list bytes) { return flux__fs_write_bytes_mode(path, bytes, "ab"); }
+"#);
     }
     if runtime_usage.contains("flux__fs_read_bytes(") {
         out.push_str(r#"static inline const char *flux__fs_read_bytes(const char *path, int64_t max_bytes, void (*callback)(struct flux__list)) { if (path == NULL || callback == NULL || max_bytes < 1 || max_bytes > INT64_C(65536)) return "invalid file readBytes arguments"; FILE *file = fopen(path, "rb"); if (file == NULL) return "failed to open file for reading"; size_t capacity = (size_t)max_bytes; unsigned char *raw = malloc(capacity); int64_t *buffer = malloc(capacity * sizeof(int64_t)); if (raw == NULL || buffer == NULL) { free(raw); free(buffer); fclose(file); return "failed to allocate file readBytes buffer"; } size_t count = fread(raw, 1, capacity, file); if (ferror(file)) { free(raw); free(buffer); fclose(file); return "failed to read file"; } if (count == capacity) { int extra = fgetc(file); if (extra != EOF) { free(raw); free(buffer); fclose(file); return "file exceeds read limit"; } if (ferror(file)) { free(raw); free(buffer); fclose(file); return "failed to read file"; } } if (fclose(file) != 0) { free(raw); free(buffer); return "failed to close file after reading"; } for (size_t index = 0; index < count; ++index) buffer[index] = (int64_t)raw[index]; free(raw); callback((struct flux__list){ .data = buffer, .len = count, .stride = sizeof(int64_t) }); free(buffer); return NULL; }
@@ -53557,6 +53589,26 @@ fn emit_qualified_call(
                     _ => ("flux__fs_remove_file", vec![Type::Error], None),
                 };
                 return Ok((format!("{helper}({})", path.code), returns, multi_value_tag));
+            }
+            "writeBytes" | "appendBytes" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        "invalid file byte write call reached code generation",
+                    ));
+                }
+                let path = emit_expr(&args[0], env, signatures)?;
+                let bytes = emit_expr(&args[1], env, signatures)?;
+                let helper = if name == "writeBytes" {
+                    "flux__fs_write_bytes"
+                } else {
+                    "flux__fs_append_bytes"
+                };
+                return Ok((
+                    format!("{helper}({}, {})", path.code, bytes.code),
+                    vec![Type::Error],
+                    None,
+                ));
             }
             "write" | "append" => {
                 if args.len() != 2 {

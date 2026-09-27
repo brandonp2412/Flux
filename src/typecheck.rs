@@ -14048,6 +14048,32 @@ fn check_qualified_call(
                     _ => vec![Type::Error],
                 });
             }
+            "writeBytes" | "appendBytes" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("file.{name} expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let path_type = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &path_type,
+                    &format!("file.{name} path"),
+                )?;
+                let bytes = signatures.canonical_type(&type_of_qualified_call_argument(
+                    &args[1], namespace, name, 1, env, signatures,
+                )?);
+                require_type(
+                    args[1].span,
+                    &Type::List(Box::new(Type::I64)),
+                    &bytes,
+                    &format!("file.{name} bytes"),
+                )?;
+                validate_literal_byte_list(&args[1], signatures, &format!("file.{name}"))?;
+                return Ok(vec![Type::Error]);
+            }
             "write" | "append" => {
                 if args.len() != 2 {
                     return Err(diag(

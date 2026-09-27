@@ -17575,6 +17575,106 @@ fn main() -> i64 {
 }
 
 #[test]
+fn file_binary_writes_preserve_bytes_and_validate_values() {
+    let root =
+        std::env::temp_dir().join(format!("flux-file-write-bytes-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("file writeBytes fixture should be writable");
+    let content = root.join("content.bin");
+    let escaped = content
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\"");
+    let source = format!(
+        r#"
+fn show(bytes: i64[]) -> void {{
+    print(bytes.length)
+    print(bytes[0])
+    print(bytes[1])
+    print(bytes[2])
+    print(bytes[3])
+}}
+fn main() -> i64 {{
+    let writeError: error = file.writeBytes("{}", [0, 127, 128])
+    print(writeError)
+    let appendError: error = file.appendBytes("{}", [255])
+    print(appendError)
+    let readError: error = file.readBytes("{}", 16, show)
+    print(readError)
+    return 0
+}}
+"#,
+        escaped, escaped, escaped
+    );
+    check_source(&source).expect("file byte writes should typecheck");
+    let generated = compile_to_c(&source).expect("file byte writes should lower natively");
+    assert!(generated.contains("flux__fs_write_bytes"));
+    assert!(generated.contains("flux__fs_append_bytes"));
+    assert!(generated.contains("file byte values must be between 0 and 255"));
+
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("file byte write source should be writable");
+    let binary = root.join("file-write-bytes-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("file byte write binary should build");
+    assert!(
+        built.status.success(),
+        "file byte write build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("file byte write binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil
+nil
+4
+0
+127
+128
+255
+nil
+"
+    );
+    assert_eq!(
+        fs::read(&content).expect("written binary fixture should be readable"),
+        [0x00, 0x7f, 0x80, 0xff]
+    );
+
+    let invalid = r#"
+fn main() -> i64 {
+    let _failure: error = file.writeBytes("content.bin", [0, 256])
+    return 0
+}
+"#;
+    let error = check_source(invalid).expect_err("out-of-range file byte literal should fail");
+    assert!(
+        error
+            .message
+            .contains("file.writeBytes byte values must be between 0 and 255")
+    );
+
+    let dead = r#"
+fn hidden() -> void {
+    print(file.appendBytes("unused.bin", [1, 2, 3]))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let dead_generated = compile_to_c(dead).expect("dead file.appendBytes should lower");
+    assert!(!dead_generated.contains("flux__fs_append_bytes"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn directory_list_lends_entry_names_to_a_callback() {
     let root = std::env::temp_dir().join(format!("flux-directory-list-api-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

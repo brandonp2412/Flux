@@ -2499,6 +2499,14 @@ fn add_qualified_namespace_completions(
             ),
             ("write", "fn file.write(path: str, text: str) -> error"),
             ("append", "fn file.append(path: str, text: str) -> error"),
+            (
+                "writeBytes",
+                "fn file.writeBytes(path: str, bytes: i64[]) -> error",
+            ),
+            (
+                "appendBytes",
+                "fn file.appendBytes(path: str, bytes: i64[]) -> error",
+            ),
             ("sync", "fn file.sync(path: str) -> error"),
             ("syncData", "fn file.syncData(path: str) -> error"),
             (
@@ -3697,6 +3705,7 @@ fn signature_help_for_document_cached(
             "writeText" | "appendText" | "write" | "append" => {
                 (vec!["path: str", "text: str"], "error")
             }
+            "writeBytes" | "appendBytes" => (vec!["path: str", "bytes: i64[]"], "error"),
             "rename" | "copyFile" | "copy" | "link" => {
                 (vec!["source: str", "destination: str"], "error")
             }
@@ -5467,6 +5476,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         &format!("file.{member}"),
                         &["path: str", "text: str"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "writeBytes" | "appendBytes" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("file.{member}"),
+                        &["path: str", "bytes: i64[]"],
                         "error",
                         active_parameter,
                     ));
@@ -12355,6 +12372,34 @@ fn main() -> i64 {
         assert!(help.contains(
             "fn file.readBytes(path: str, maxBytes: i64, callback: fn(i64[]) -> void) -> error"
         ));
+    }
+
+    #[test]
+    fn signature_help_supports_binary_file_writes() {
+        let uri = "file:///tmp/file-write-bytes-signatures.flux";
+        let source = r#"fn main() -> i64 {
+    print(file.writeBytes("a", [0, 255]))
+    return 0
+}
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("file.writeBytes("))
+            .unwrap();
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find("file.writeBytes(").unwrap() + "file.writeBytes(".len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("file.writeBytes should have signature help")
+        .to_json();
+        assert!(help.contains("fn file.writeBytes(path: str, bytes: i64[]) -> error"));
     }
 
     #[test]
