@@ -77917,6 +77917,8 @@ fn main() -> i64 {
     assert!(generated.contains("WebSocket handshake is missing Host"));
     assert!(generated.contains("WebSocket handshake has duplicate Host"));
     assert!(generated.contains("WebSocket handshake has empty Host"));
+    assert!(generated.contains("WebSocket handshake has invalid Host"));
+    assert!(generated.contains("flux__websocket_valid_host_authority"));
     assert!(generated.contains("upgrade = upgrade ||"));
     assert!(generated.contains("connection = connection ||"));
     assert!(generated.contains("WebSocket handshake contains NUL"));
@@ -78332,6 +78334,7 @@ fn main() -> i64 {
     check_source(source).expect("WebSocket host validation should typecheck");
     let generated = compile_to_c(source).expect("WebSocket host validation should lower");
     assert!(generated.contains("invalid WebSocket client host"));
+    assert!(generated.contains("flux__websocket_valid_host_authority(host)"));
 }
 
 #[test]
@@ -78379,6 +78382,78 @@ fn main() -> i64 {
     assert!(generated.contains("flux__websocket_begin_read(session)"));
     assert!(generated.contains("WebSocket session already has an active reader"));
     assert!(generated.contains("flux__websocket_end_read(session)"));
+}
+
+#[test]
+fn websocket_server_rejects_malformed_host_authority() {
+    let probe = TcpListener::bind("127.0.0.1:0").expect("WebSocket Host probe should bind");
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let source = format!(
+        r#"fn main() -> i64 {{
+    let (listener, listenError) = net.listen("127.0.0.1", {port}, 8)
+    if listenError != nil:
+        return 1
+    let (socket, acceptError) = net.accept(listener)
+    if acceptError != nil:
+        return 2
+    let (_session, handshakeError) = websocket.accept(socket)
+    let socketCloseError: error = net.close(socket)
+    let listenerCloseError: error = net.close(listener)
+    if socketCloseError != nil || listenerCloseError != nil:
+        return 3
+    if handshakeError == nil:
+        return 4
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("WebSocket Host validation should typecheck");
+    let root = std::env::temp_dir().join(format!(
+        "flux-websocket-invalid-host-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("WebSocket Host fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("WebSocket Host source should be writable");
+    let binary = root.join("websocket-invalid-host");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("WebSocket Host binary should build");
+    assert!(
+        built.status.success(),
+        "WebSocket Host build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        Command::new(&binary)
+            .output()
+            .expect("WebSocket invalid-Host server should run")
+    });
+    thread::sleep(Duration::from_millis(100));
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port))
+        .expect("WebSocket invalid-Host client should connect");
+    client
+        .write_all(
+            b"GET / HTTP/1.1\r\nHost: bad host\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .unwrap();
+    drop(client);
+
+    let output = server
+        .join()
+        .expect("WebSocket invalid-Host server thread should finish");
+    assert!(
+        output.status.success(),
+        "server accepted malformed WebSocket Host authority: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]

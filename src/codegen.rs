@@ -10618,6 +10618,43 @@ static inline int flux__websocket_begin_write(int64_t session) { flux__websocket
 static inline void flux__websocket_end_write(int64_t session) { flux__websocket_lock_sessions(); for (size_t index = 0; index < flux__websocket_session_count; ++index) if (flux__websocket_sessions[index].socket == session) { flux__websocket_sessions[index].writing = false; break; } flux__websocket_unlock_sessions(); }
 static inline const char *flux__websocket_release(int64_t session) { if (session < 0 || session > INT_MAX) return "invalid WebSocket session"; flux__websocket_forget_session(session); int result = close((int)session); flux__net_unregister_socket((int)session); return result == 0 ? NULL : "failed to close WebSocket session"; }
 static inline bool flux__websocket_bounded_length(const char *value, size_t maximum, size_t *length) { if (value == NULL || length == NULL) return false; size_t cursor = 0; while (cursor <= maximum && value[cursor] != '\0') cursor += 1; if (cursor > maximum) return false; *length = cursor; return true; }
+static inline int flux__websocket_valid_host_authority(const char *value) {
+    size_t length = 0;
+    if (!flux__websocket_bounded_length(value, 255, &length) || length == 0) return 0;
+    size_t host_end = length;
+    size_t port_start = length;
+    if (value[0] == '[') {
+        size_t close = 1;
+        while (close < length && value[close] != ']') close += 1;
+        if (close == 1 || close == length) return 0;
+        for (size_t index = 1; index < close; index += 1) {
+            unsigned char byte = (unsigned char)value[index];
+            if (byte <= 0x20u || byte == 0x7fu || byte == '[' || byte == '/' || byte == '?' || byte == '#' || byte == '@' || byte == ',') return 0;
+        }
+        if (close + 1 < length) {
+            if (value[close + 1] != ':') return 0;
+            port_start = close + 2;
+        } else if (close + 1 == length) {
+            return 1;
+        }
+    } else {
+        for (size_t index = 0; index < length; index += 1) {
+            unsigned char byte = (unsigned char)value[index];
+            if (byte == ':') {
+                if (host_end != length) return 0;
+                host_end = index;
+                port_start = index + 1;
+                continue;
+            }
+            if (byte <= 0x20u || byte == 0x7fu || byte == '[' || byte == ']' || byte == '/' || byte == '?' || byte == '#' || byte == '@' || byte == ',') return 0;
+        }
+        if (host_end == 0) return 0;
+        if (host_end == length) return 1;
+    }
+    if (port_start >= length) return 0;
+    for (size_t index = port_start; index < length; index += 1) if (value[index] < '0' || value[index] > '9') return 0;
+    return 1;
+}
 static inline int flux__websocket_base64_value(unsigned char value) { if (value >= 'A' && value <= 'Z') return (int)(value - 'A'); if (value >= 'a' && value <= 'z') return (int)(value - 'a') + 26; if (value >= '0' && value <= '9') return (int)(value - '0') + 52; if (value == '+') return 62; if (value == '/') return 63; return -1; }
 static inline bool flux__websocket_valid_client_key(const char *key) { size_t length = 0; if (!flux__websocket_bounded_length(key, 24, &length) || length != 24 || key[22] != '=' || key[23] != '=') return false; for (size_t index = 0; index < 22; index += 1) if (flux__websocket_base64_value((unsigned char)key[index]) < 0) return false; return (flux__websocket_base64_value((unsigned char)key[21]) & 15) == 0; }
 static inline const char *flux__websocket_find_bytes(const char *value, size_t length, const char *needle, size_t needle_length) { if (value == NULL || needle == NULL) return NULL; if (needle_length == 0) return value; if (needle_length > length) return NULL; for (size_t offset = 0; offset + needle_length <= length; offset += 1) if (memcmp(value + offset, needle, needle_length) == 0) return value + offset; return NULL; }
@@ -10729,7 +10766,7 @@ static inline struct flux__net_i64_error flux__websocket_accept_with_timeout(int
     char *line = (char *)flux__websocket_find_bytes(request, length, "\r\n", 2); char *request_version = (char *)flux__websocket_find_bytes(request, length, " HTTP/1.1\r\n", 11); if (line == NULL || strncmp(request, "GET ", 4) != 0 || request_version == NULL || request_version + 9 != line) return flux__websocket_result(-1, "malformed WebSocket request line");
     char *request_target = request + 4; if (request_version == request_target) return flux__websocket_result(-1, "WebSocket request target must not be empty"); for (const unsigned char *part = (const unsigned char *)request_target; part < (const unsigned char *)request_version; part += 1) if (*part <= 0x20 || *part == 0x7f || *part == '#') return flux__websocket_result(-1, "invalid WebSocket request target");
     char *key = NULL; bool key_seen = false; bool host_seen = false; bool version_seen = false; bool upgrade = false; bool connection = false; bool version = false; char *cursor = line + 2;
-    while (cursor < request + length - 2 && !(cursor[0] == '\r' && cursor[1] == '\n')) { size_t remaining = (size_t)((request + length) - cursor); char *next = (char *)flux__websocket_find_bytes(cursor, remaining, "\r\n", 2); if (next == NULL) return flux__websocket_result(-1, "malformed WebSocket headers"); if (cursor[0] == ' ' || cursor[0] == '\t') return flux__websocket_result(-1, "folded WebSocket headers are not supported"); char *colon = (char *)memchr(cursor, ':', (size_t)(next - cursor)); if (colon == NULL || colon == cursor) return flux__websocket_result(-1, "malformed WebSocket header"); for (const unsigned char *part = (const unsigned char *)cursor; part < (const unsigned char *)colon; part += 1) { bool token = (*part >= '0' && *part <= '9') || (*part >= 'A' && *part <= 'Z') || (*part >= 'a' && *part <= 'z') || *part == 0x60 || strchr("!#$%&'*+-.^_|~", *part) != NULL; if (!token) return flux__websocket_result(-1, "invalid WebSocket header name"); } for (const unsigned char *part = (const unsigned char *)(colon + 1); part < (const unsigned char *)next; part += 1) if ((*part < 0x20 && *part != '\t') || *part == 0x7f) return flux__websocket_result(-1, "invalid WebSocket header value"); *next = '\0'; *colon = '\0'; char *value = colon + 1; while (*value == ' ' || *value == '\t') value += 1; char *end = next - 1; while (end >= value && (*end == ' ' || *end == '\t')) { *end = '\0'; end -= 1; } if (strcasecmp(cursor, "Sec-WebSocket-Key") == 0) { if (key_seen) return flux__websocket_result(-1, "WebSocket handshake has duplicate Sec-WebSocket-Key"); key_seen = true; key = value; } else if (strcasecmp(cursor, "Host") == 0) { if (host_seen) return flux__websocket_result(-1, "WebSocket handshake has duplicate Host"); host_seen = true; if (value[0] == '\0') return flux__websocket_result(-1, "WebSocket handshake has empty Host"); } else if (strcasecmp(cursor, "Upgrade") == 0) upgrade = upgrade || flux__websocket_header_has_token(value, "websocket"); else if (strcasecmp(cursor, "Connection") == 0) connection = connection || flux__websocket_header_has_token(value, "Upgrade"); else if (strcasecmp(cursor, "Sec-WebSocket-Version") == 0) { if (version_seen) return flux__websocket_result(-1, "WebSocket handshake has duplicate Sec-WebSocket-Version"); version_seen = true; version = strcmp(value, "13") == 0; } cursor = next + 2; }
+    while (cursor < request + length - 2 && !(cursor[0] == '\r' && cursor[1] == '\n')) { size_t remaining = (size_t)((request + length) - cursor); char *next = (char *)flux__websocket_find_bytes(cursor, remaining, "\r\n", 2); if (next == NULL) return flux__websocket_result(-1, "malformed WebSocket headers"); if (cursor[0] == ' ' || cursor[0] == '\t') return flux__websocket_result(-1, "folded WebSocket headers are not supported"); char *colon = (char *)memchr(cursor, ':', (size_t)(next - cursor)); if (colon == NULL || colon == cursor) return flux__websocket_result(-1, "malformed WebSocket header"); for (const unsigned char *part = (const unsigned char *)cursor; part < (const unsigned char *)colon; part += 1) { bool token = (*part >= '0' && *part <= '9') || (*part >= 'A' && *part <= 'Z') || (*part >= 'a' && *part <= 'z') || *part == 0x60 || strchr("!#$%&'*+-.^_|~", *part) != NULL; if (!token) return flux__websocket_result(-1, "invalid WebSocket header name"); } for (const unsigned char *part = (const unsigned char *)(colon + 1); part < (const unsigned char *)next; part += 1) if ((*part < 0x20 && *part != '\t') || *part == 0x7f) return flux__websocket_result(-1, "invalid WebSocket header value"); *next = '\0'; *colon = '\0'; char *value = colon + 1; while (*value == ' ' || *value == '\t') value += 1; char *end = next - 1; while (end >= value && (*end == ' ' || *end == '\t')) { *end = '\0'; end -= 1; } if (strcasecmp(cursor, "Sec-WebSocket-Key") == 0) { if (key_seen) return flux__websocket_result(-1, "WebSocket handshake has duplicate Sec-WebSocket-Key"); key_seen = true; key = value; } else if (strcasecmp(cursor, "Host") == 0) { if (host_seen) return flux__websocket_result(-1, "WebSocket handshake has duplicate Host"); host_seen = true; if (value[0] == '\0') return flux__websocket_result(-1, "WebSocket handshake has empty Host"); if (!flux__websocket_valid_host_authority(value)) return flux__websocket_result(-1, "WebSocket handshake has invalid Host"); } else if (strcasecmp(cursor, "Upgrade") == 0) upgrade = upgrade || flux__websocket_header_has_token(value, "websocket"); else if (strcasecmp(cursor, "Connection") == 0) connection = connection || flux__websocket_header_has_token(value, "Upgrade"); else if (strcasecmp(cursor, "Sec-WebSocket-Version") == 0) { if (version_seen) return flux__websocket_result(-1, "WebSocket handshake has duplicate Sec-WebSocket-Version"); version_seen = true; version = strcmp(value, "13") == 0; } cursor = next + 2; }
     if (key == NULL || key[0] == '\0') return flux__websocket_result(-1, "WebSocket handshake is missing Sec-WebSocket-Key");
     if (!flux__websocket_valid_client_key(key)) return flux__websocket_result(-1, "WebSocket handshake has invalid Sec-WebSocket-Key");
     if (!host_seen) return flux__websocket_result(-1, "WebSocket handshake is missing Host");
@@ -10757,7 +10794,7 @@ static inline struct flux__net_i64_error flux__websocket_connect_path_with_timeo
     struct sockaddr_storage peer; socklen_t peer_length = sizeof(peer);
     if (getpeername((int)socket_handle, (struct sockaddr *)&peer, &peer_length) != 0) return flux__websocket_result(-1, "WebSocket requires a connected TCP socket");
     int64_t deadline = -1; if (timeout_millis >= 0) { struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return flux__websocket_result(-1, "WebSocket connectTimeout clock failed"); deadline = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + timeout_millis; }
-    for (const unsigned char *part = (const unsigned char *)host; *part != '\0'; part += 1) if (*part <= 0x20 || *part == 0x7f) return flux__websocket_result(-1, "invalid WebSocket client host");
+    if (!flux__websocket_valid_host_authority(host)) return flux__websocket_result(-1, "invalid WebSocket client host");
     for (const unsigned char *part = (const unsigned char *)path; *part != '\0'; part += 1) if (*part <= 0x20 || *part == 0x7f || *part == '#') return flux__websocket_result(-1, "invalid WebSocket client path");
     unsigned char nonce[16]; FILE *random_source = fopen("/dev/urandom", "rb"); if (random_source == NULL || fread(nonce, 1, sizeof(nonce), random_source) != sizeof(nonce)) { if (random_source != NULL) fclose(random_source); return flux__websocket_result(-1, "failed to create WebSocket client nonce"); } fclose(random_source);
     const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; char key[25]; size_t key_length = 0; for (size_t index = 0; index < sizeof(nonce); index += 3) { unsigned value = (unsigned)nonce[index] << 16; if (index + 1 < sizeof(nonce)) value |= (unsigned)nonce[index + 1] << 8; if (index + 2 < sizeof(nonce)) value |= nonce[index + 2]; key[key_length++] = alphabet[(value >> 18) & 63]; key[key_length++] = alphabet[(value >> 12) & 63]; key[key_length++] = index + 1 < sizeof(nonce) ? alphabet[(value >> 6) & 63] : '='; key[key_length++] = index + 2 < sizeof(nonce) ? alphabet[value & 63] : '='; } key[key_length] = '\0';
