@@ -16713,14 +16713,6 @@ fn emit_windows_native_application(
                     "bootstrap Windows rich Text does not yet support letterSpacing",
                 ));
             }
-            if let Some(property) = view_property(element, "wrap")
-                && static_expr_bool(&property.value, signatures).is_none()
-            {
-                return Err(diag(
-                    property.value.span,
-                    "bootstrap Windows rich Text does not yet support state-driven wrap",
-                ));
-            }
             if let Some(property) = view_property(element, "wrap_mode") {
                 match static_expr_str(&property.value, signatures).as_deref() {
                     Some("word") => {}
@@ -16802,7 +16794,7 @@ fn emit_windows_native_application(
             Some(property) => {
                 if let Some(wrap) = static_expr_bool(&property.value, signatures) {
                     wrap
-                } else if selectable {
+                } else if selectable && rich_text.is_none() {
                     return Err(diag(
                         property.value.span,
                         "bootstrap Windows selectable Text does not yet support state-driven wrap",
@@ -17920,6 +17912,16 @@ static void flux__win_apply_rich_text_line_height(HWND control, int64_t percent)
         0,
         (LPARAM)&previous_selection
     );
+}
+
+static void flux__win_apply_rich_text_wrap(HWND control, bool wrap) {
+    if (control == NULL) return;
+    LONG_PTR style = GetWindowLongPtrW(control, GWL_STYLE);
+    if (wrap) style &= ~((LONG_PTR)ES_AUTOHSCROLL);
+    else style |= ES_AUTOHSCROLL;
+    SetWindowLongPtrW(control, GWL_STYLE, style);
+    (void)SendMessageW(control, EM_SETTARGETDEVICE, 0, wrap ? 0 : 1);
+    InvalidateRect(control, NULL, TRUE);
 }
 
 static void flux__win_apply_rich_text_alignment(HWND control, const char *value) {
@@ -19939,11 +19941,19 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             && static_expr_bool(&property.value, signatures).is_none()
         {
             let value = ui_expr_c(&property.value, view, signatures)?;
-            out.push_str(&format!(
-                "bool flux__win_next_wrap_{0} = {value}; if (flux__win_text_layout_{0}.wrap != flux__win_next_wrap_{0}) {{ flux__win_text_layout_{0}.wrap = flux__win_next_wrap_{0}; if ({variable} != NULL) InvalidateRect({variable}, NULL, TRUE); }}
+            if view_property(element, "rich_text").is_some() {
+                out.push_str(&format!(
+                    "bool flux__win_next_wrap_{0} = {value}; if (flux__win_text_layout_{0}.wrap != flux__win_next_wrap_{0}) {{ flux__win_text_layout_{0}.wrap = flux__win_next_wrap_{0}; flux__win_apply_rich_text_wrap({variable}, flux__win_next_wrap_{0}); }}
 ",
-                element.name
-            ));
+                    element.name
+                ));
+            } else {
+                out.push_str(&format!(
+                    "bool flux__win_next_wrap_{0} = {value}; if (flux__win_text_layout_{0}.wrap != flux__win_next_wrap_{0}) {{ flux__win_text_layout_{0}.wrap = flux__win_next_wrap_{0}; if ({variable} != NULL) InvalidateRect({variable}, NULL, TRUE); }}
+",
+                    element.name
+                ));
+            }
         }
         if let Some(property) = view_property(element, "wrap_mode")
             && static_expr_str(&property.value, signatures).is_none()

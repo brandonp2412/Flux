@@ -4576,6 +4576,39 @@ app Screen
 }
 
 #[test]
+fn windows_backend_refreshes_dynamic_rich_text_wrap_in_place() {
+    let source = r#"
+view Screen {
+    state wrapping: bool = true
+    grid columns: 1fr
+    grid rows: auto
+    Text rich at 1,1
+        richText: "<b>Rich</b>"
+        selectable: true
+        wrap: wrapping
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("dynamic rich text wrap should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("dynamic rich text wrap should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("dynamic rich text wrap should lower for Windows");
+    assert!(generated.contains("flux__win_apply_rich_text_wrap"));
+    assert!(
+        generated
+            .contains("flux__win_apply_rich_text_wrap(flux__ui_rich, flux__win_next_wrap_rich)")
+    );
+    assert!(generated.contains("SendMessageW(control, EM_SETTARGETDEVICE, 0, wrap ? 0 : 1)"));
+    assert!(generated.contains("style |= ES_AUTOHSCROLL"));
+}
+
+#[test]
 fn windows_backend_applies_text_max_width_chars_to_native_layout() {
     let source = r#"
 view Screen {
