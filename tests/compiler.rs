@@ -4165,6 +4165,7 @@ fn windows_rich_text_uses_native_richedit_runs_and_preserves_selection_semantics
 view Screen {
     state emphasized: bool = false
     state inset: i64 = 4
+    state lineHeight: i64 = 125
     grid columns: 1fr
     grid rows: auto
     Text label at 1,1
@@ -4174,6 +4175,7 @@ view Screen {
         paddingTop: 2
         paddingStart: 6
         paddingEnd: 8
+        lineHeightPercent: lineHeight
         bold: emphasized
         color: "accent"
         onTap: emphasized => true
@@ -4208,6 +4210,13 @@ app Screen
     assert!(windows.contains("EM_SETRECTNP"));
     assert!(windows.contains("flux__win_next_padding_top_label"));
     assert!(windows.contains("flux__win_text_layout_label.padding_top"));
+    assert!(windows.contains("#include <richedit.h>"));
+    assert!(windows.contains("PARAFORMAT2 paragraph"));
+    assert!(windows.contains("PFM_LINESPACING"));
+    assert!(windows.contains("paragraph.bLineSpacingRule = 4"));
+    assert!(windows.contains(
+        "flux__win_apply_rich_text_line_height(flux__ui_label, flux__win_text_layout_label.line_height_percent)"
+    ));
     assert!(windows.contains("flux__win_selectable_tap_proc_0"));
     assert!(windows.contains("flux__win_rich_text_shutdown();"));
     assert!(!windows.contains("flux__win_rich_text_nonselectable_proc, (UINT_PTR)10001"));
@@ -4215,7 +4224,7 @@ app Screen
     for (property, message) in [
         (
             "letterSpacing: 1",
-            "rich Text does not yet support letterSpacing or lineHeightPercent",
+            "rich Text does not yet support letterSpacing",
         ),
         (
             r#"wrapMode: "char""#,
@@ -4290,6 +4299,7 @@ app Screen
     assert!(windows.contains(
         "SetWindowSubclass(flux__ui_label, flux__win_rich_text_nonselectable_proc, (UINT_PTR)10001, 0)"
     ));
+    assert!(!windows.contains("SetWindowSubclass(flux__ui_label, flux__win_text_layout_proc"));
     assert!(windows.contains("if (parent != NULL) SetFocus(parent);"));
     assert!(windows.contains("flux__win_selectable_tap_proc_0"));
 }

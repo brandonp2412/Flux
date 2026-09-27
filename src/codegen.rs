@@ -2687,7 +2687,7 @@ fn emit_runtime_prelude(
         out.push_str("#include <libsecret/secret.h>\n");
     }
     if uses_windows {
-        out.push_str("#ifndef WINVER\n#define WINVER 0x0601\n#endif\n#ifndef _WIN32_WINNT\n#define _WIN32_WINNT 0x0601\n#endif\n#define WIN32_LEAN_AND_MEAN\n#include <windows.h>\n#include <commctrl.h>\n#include <commdlg.h>\n#include <shellapi.h>\n#include <shlobj.h>\n#include <wchar.h>\n");
+        out.push_str("#ifndef WINVER\n#define WINVER 0x0601\n#endif\n#ifndef _WIN32_WINNT\n#define _WIN32_WINNT 0x0601\n#endif\n#define WIN32_LEAN_AND_MEAN\n#include <windows.h>\n#include <commctrl.h>\n#include <commdlg.h>\n#include <richedit.h>\n#include <shellapi.h>\n#include <shlobj.h>\n#include <wchar.h>\n");
         if runtime_usage.contains("flux__windows_secure_") {
             out.push_str("#include <wincred.h>\n");
         }
@@ -16706,13 +16706,10 @@ fn emit_windows_native_application(
                     "bootstrap Windows rich Text requires compile-time textAlign",
                 ));
             }
-            if let Some(property) = ["letter_spacing", "line_height_percent"]
-                .iter()
-                .find_map(|property_name| view_property(element, property_name))
-            {
+            if let Some(property) = view_property(element, "letter_spacing") {
                 return Err(diag(
                     property.value.span,
-                    "bootstrap Windows rich Text does not yet support letterSpacing or lineHeightPercent",
+                    "bootstrap Windows rich Text does not yet support letterSpacing",
                 ));
             }
             if let Some(property) = view_property(element, "wrap")
@@ -16772,7 +16769,7 @@ fn emit_windows_native_application(
         }
         let uses_custom_text_layout = view_property(element, "letter_spacing").is_some()
             || view_property(element, "line_height_percent").is_some();
-        if selectable && uses_custom_text_layout {
+        if selectable && rich_text.is_none() && uses_custom_text_layout {
             let property = view_property(element, "letter_spacing")
                 .or_else(|| view_property(element, "line_height_percent"))
                 .expect("custom Text layout property exists");
@@ -17875,6 +17872,71 @@ static DWORD flux__win_rich_text_base_format(HWND control) {
         (LPARAM)background
     );
     return format.effects;
+}
+
+static void flux__win_apply_rich_text_line_height(HWND control, int64_t percent) {
+    if (control == NULL) return;
+    if (percent <= 0 || percent > INT32_MAX) {
+        fputs("Flux runtime error: Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer\n", stderr);
+        abort();
+    }
+
+    HDC dc = GetDC(control);
+    if (dc == NULL) return;
+    HFONT font = (HFONT)SendMessageW(control, WM_GETFONT, 0, 0);
+    HGDIOBJ previous_font = font != NULL ? SelectObject(dc, font) : NULL;
+    TEXTMETRICW metrics = {0};
+    int64_t spacing_twips = 0;
+    if (GetTextMetricsW(dc, &metrics)) {
+        int64_t base_height = (int64_t)metrics.tmHeight + metrics.tmExternalLeading;
+        if (base_height < 1) base_height = 1;
+        UINT dpi = flux__win_dpi > 0 ? flux__win_dpi : 96;
+        int64_t scaled_height =
+            (base_height * percent + INT64_C(50)) / INT64_C(100);
+        if (scaled_height < 1) scaled_height = 1;
+        spacing_twips =
+            (scaled_height * INT64_C(1440) + (int64_t)dpi / INT64_C(2))
+            / (int64_t)dpi;
+        if (spacing_twips < 1) spacing_twips = 1;
+        if (spacing_twips > INT32_MAX) spacing_twips = INT32_MAX;
+    }
+    if (previous_font != NULL && previous_font != HGDI_ERROR) {
+        SelectObject(dc, previous_font);
+    }
+    ReleaseDC(control, dc);
+    if (spacing_twips < 1) return;
+
+    FluxWinRichTextRange previous_selection = {0, 0};
+    (void)SendMessageW(
+        control,
+        FLUX__WIN_RICH_EM_EXGETSEL,
+        0,
+        (LPARAM)&previous_selection
+    );
+    FluxWinRichTextRange all_text = {0, -1};
+    (void)SendMessageW(
+        control,
+        FLUX__WIN_RICH_EM_EXSETSEL,
+        0,
+        (LPARAM)&all_text
+    );
+    PARAFORMAT2 paragraph = {0};
+    paragraph.cbSize = sizeof(paragraph);
+    paragraph.dwMask = PFM_LINESPACING;
+    paragraph.dyLineSpacing = (LONG)spacing_twips;
+    paragraph.bLineSpacingRule = 4;
+    (void)SendMessageW(
+        control,
+        EM_SETPARAFORMAT,
+        0,
+        (LPARAM)&paragraph
+    );
+    (void)SendMessageW(
+        control,
+        FLUX__WIN_RICH_EM_EXSETSEL,
+        0,
+        (LPARAM)&previous_selection
+    );
 }
 
 static void flux__win_apply_rich_text(
@@ -20221,6 +20283,12 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     element.name, element.name, element.name
                 ));
             }
+            if view_property(element, "line_height_percent").is_some() {
+                out.push_str(&format!(
+                    "flux__win_apply_rich_text_line_height({variable}, flux__win_text_layout_{}.line_height_percent);\n",
+                    element.name
+                ));
+            }
         }
     }
     out.push_str("flux__win_refreshing = previous_refreshing; }\n");
@@ -20879,6 +20947,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             ));
         }
         if element.kind == "Text"
+            && view_property(element, "rich_text").is_none()
             && view_property(element, "selectable")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
                 != Some(true)
