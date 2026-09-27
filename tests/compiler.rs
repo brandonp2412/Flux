@@ -63481,7 +63481,7 @@ app Form
     );
     assert!(generated.contains("GTK_ACCESSIBLE_STATE_HIDDEN, false, -1"));
     assert!(generated.contains("gtk_editable_get_text(GTK_EDITABLE(widget))"));
-    assert!(generated.contains("flux__fn_submit(gtk_editable_get_text"));
+    assert!(generated.contains("flux__ui_call_submit(gtk_editable_get_text"));
 
     let bad_callback = r#"
 fn submit() -> void {}
@@ -64026,7 +64026,12 @@ app KeyCard
     assert!(generated.contains("return \"ArrowLeft\";"));
     assert!(generated.contains("gdk_keyval_to_unicode(keyval)"));
     assert!(generated.contains("g_unichar_to_utf8(character, utf8)"));
-    assert!(generated.contains("flux__fn_key_notice(key); flux__ui_refresh(); return FALSE;"));
+    assert!(generated.contains("static void (*flux__ui_development_callback_key_notice)(const char *) = flux__fn_key_notice;"));
+    assert!(generated.contains(
+        "#define flux__ui_call_key_notice(value) flux__ui_development_callback_key_notice(value)"
+    ));
+    assert!(generated.contains("flux__ui_development_retarget_string_callback(const char *name, void (*target)(const char *))"));
+    assert!(generated.contains("flux__ui_call_key_notice(key); flux__ui_refresh(); return FALSE;"));
     assert!(generated.contains("gtk_widget_set_focusable(flux__ui_title, TRUE)"));
     assert!(generated.contains("gtk_event_controller_key_new()"));
     assert!(generated.contains(
@@ -64579,7 +64584,7 @@ app DragDrop
     assert!(linux.contains("gtk_drop_target_new(G_TYPE_STRING, GDK_ACTION_COPY)"));
     assert!(linux.contains("G_CALLBACK(flux__ui_drop_target)"));
     assert!(linux.contains("const char *text = g_value_get_string(value)"));
-    assert!(linux.contains("flux__fn_dropped(text); flux__ui_refresh();"));
+    assert!(linux.contains("flux__ui_call_dropped(text); flux__ui_refresh();"));
 
     let program = fluxc::parser::parse(source).expect("drag/drop app should parse");
     let signatures = fluxc::typecheck::check(&program).expect("drag/drop app should typecheck");

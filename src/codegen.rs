@@ -20483,6 +20483,26 @@ fn emit_linux_gtk_application(
         }
         out.push_str(" return false; }\n#endif\n");
     }
+    let development_string_callbacks = linux_ui_string_callback_functions(view);
+    for function in &development_string_callbacks {
+        let slot = linux_ui_development_callback_slot_c_name(function);
+        let call = linux_ui_callback_call_c_name(function);
+        let target = function_c_name(function);
+        out.push_str(&format!(
+            "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic void (*{slot})(const char *) = {target};\n#define {call}(value) {slot}(value)\n#else\n#define {call}(value) {target}(value)\n#endif\n"
+        ));
+    }
+    if !development_string_callbacks.is_empty() {
+        out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic bool flux__ui_development_retarget_string_callback(const char *name, void (*target)(const char *)) { if (name == NULL || target == NULL) return false;");
+        for function in &development_string_callbacks {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0) {{ {} = target; return true; }}",
+                c_string(function),
+                linux_ui_development_callback_slot_c_name(function),
+            ));
+        }
+        out.push_str(" return false; }\n#endif\n");
+    }
     let has_size_constraints = view.elements.iter().any(|element| {
         view_property(element, "max_width").is_some()
             || view_property(element, "max_height").is_some()
@@ -22285,19 +22305,19 @@ fn emit_linux_gtk_application(
                     out.push_str(&format!(
                         "static void flux__ui_{callback_name}_{}(GtkTextBuffer *buffer, gpointer data) {{ (void)data;{submit_guard} GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {}(text); g_free(text); flux__ui_refresh(); }}\n",
                         element.name,
-                        function_c_name(function),
+                        linux_ui_callback_call_c_name(function),
                     ));
                 } else if multiline {
                     out.push_str(&format!(
                         "static gboolean flux__ui_{callback_name}_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)keycode; (void)state; (void)data;{submit_guard} if (keyval != GDK_KEY_Return && keyval != GDK_KEY_KP_Enter) return FALSE; GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)); GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)); GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {}(text); g_free(text); flux__ui_refresh(); return TRUE; }}\n",
                         element.name,
-                        function_c_name(function),
+                        linux_ui_callback_call_c_name(function),
                     ));
                 } else {
                     out.push_str(&format!(
                         "static void flux__ui_{callback_name}_{}(GtkWidget *widget, gpointer data) {{ (void)data;{submit_guard} {}(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh(); }}\n",
                         element.name,
-                        function_c_name(function),
+                        linux_ui_callback_call_c_name(function),
                     ));
                 }
             }
@@ -22507,7 +22527,7 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "static gboolean flux__ui_drop_{}(GtkDropTarget *target, const GValue *value, double x, double y, gpointer data) {{ (void)target; (void)x; (void)y; (void)data; const char *text = g_value_get_string(value); if (text == NULL) return FALSE; {}(text); flux__ui_refresh(); return TRUE; }}\n",
                 element.name,
-                function_c_name(function),
+                linux_ui_callback_call_c_name(function),
             ));
         }
         let drag_action = view_property(element, "on_drag");
@@ -22644,7 +22664,7 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "static gboolean flux__ui_key_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)controller; (void)keycode; (void)state; (void)data; char utf8[8] = {{0}}; const char *key = flux__ui_key_name(keyval, utf8); {}(key); flux__ui_refresh();{consume_native_activation} return FALSE; }}\n",
                 element.name,
-                function_c_name(function),
+                linux_ui_callback_call_c_name(function),
             ));
         }
         for (property_name, callback_name) in [("on_hover", "hover"), ("on_leave", "leave")] {
@@ -26057,6 +26077,32 @@ fn linux_ui_zero_arg_callback_functions(view: &crate::ast::ViewDef) -> Vec<Strin
         ] {
             collect(view_property(element, property));
         }
+    }
+    let mut functions = functions.into_iter().collect::<Vec<_>>();
+    functions.sort();
+    functions
+}
+
+fn linux_ui_string_callback_functions(view: &crate::ast::ViewDef) -> Vec<String> {
+    let mut functions = HashSet::new();
+    let mut collect = |action: Option<&crate::ast::ViewProperty>| {
+        let Some(action) = action else {
+            return;
+        };
+        if action.transition.is_some() {
+            return;
+        }
+        if let ExprKind::Var(function) = &action.value.kind {
+            functions.insert(function.clone());
+        }
+    };
+    for element in &view.elements {
+        if element.kind == "TextInput" {
+            collect(view_property(element, "on_change"));
+            collect(view_property(element, "on_submit"));
+        }
+        collect(view_property(element, "on_key"));
+        collect(view_property(element, "on_drop"));
     }
     let mut functions = functions.into_iter().collect::<Vec<_>>();
     functions.sort();
