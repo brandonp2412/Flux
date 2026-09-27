@@ -50895,14 +50895,25 @@ fn emit_expr(
                 static_list_length(base, env, signatures)?
             };
             let emitted_base = emit_expr(base, env, signatures)?;
-            let result_ty = typecheck::field_result_type(
-                base.span,
-                *name_span,
-                name,
-                *optional,
-                &emitted_base.ty,
-                signatures,
-            )?;
+            let result_ty = if *optional {
+                typecheck::borrow_field_result_type(
+                    base.span,
+                    *name_span,
+                    name,
+                    true,
+                    &emitted_base.ty,
+                    signatures,
+                )?
+            } else {
+                typecheck::field_result_type(
+                    base.span,
+                    *name_span,
+                    name,
+                    false,
+                    &emitted_base.ty,
+                    signatures,
+                )?
+            };
             let code = if *optional {
                 let base_ty = signatures.canonical_type(&emitted_base.ty);
                 let Type::Optional(inner) = &base_ty else {

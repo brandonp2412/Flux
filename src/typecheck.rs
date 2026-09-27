@@ -5963,11 +5963,7 @@ fn is_zero_copy_borrow_rooted_in_named_storage(expr: &Expr) -> bool {
         ExprKind::Index { base, .. } | ExprKind::Slice { base, .. } => {
             is_zero_copy_borrow_rooted_in_named_storage(base)
         }
-        ExprKind::Field {
-            base,
-            optional: false,
-            ..
-        } => is_zero_copy_borrow_rooted_in_named_storage(base),
+        ExprKind::Field { base, .. } => is_zero_copy_borrow_rooted_in_named_storage(base),
         _ => false,
     }
 }
@@ -5993,6 +5989,16 @@ pub(crate) fn type_of_borrow_operand(
         return borrow_index_result_type(
             base.span, index.span, expr.span, *optional, &base_ty, &index_ty, signatures,
         );
+    }
+    if let ExprKind::Field {
+        base,
+        name,
+        name_span,
+        optional: true,
+    } = &expr.kind
+    {
+        let base_ty = type_of_expr(base, env, signatures)?;
+        return borrow_field_result_type(base.span, *name_span, name, true, &base_ty, signatures);
     }
     if let ExprKind::Slice {
         base,
@@ -6599,6 +6605,34 @@ pub(crate) fn slice_result_type_from_base(
     Ok(Type::List(element))
 }
 
+pub(crate) fn borrow_field_result_type(
+    base_span: SourceSpan,
+    name_span: SourceSpan,
+    name: &str,
+    optional: bool,
+    base_ty: &Type,
+    signatures: &Signatures,
+) -> Result<Type, Diagnostic> {
+    let canonical = signatures.canonical_type(base_ty);
+    if optional
+        && let Type::Optional(inner) = canonical
+        && let Type::List(element) = signatures.canonical_type(&inner)
+        && !signatures.is_copy_type(&element)
+        && is_borrowable_collection_type(&element)
+        && matches!(
+            crate::builtin_names::list_member_impl(name),
+            "first" | "last" | "single"
+        )
+    {
+        return Ok(if matches!(element.as_ref(), Type::Optional(_)) {
+            *element
+        } else {
+            Type::Optional(element)
+        });
+    }
+    field_result_type(base_span, name_span, name, optional, base_ty, signatures)
+}
+
 pub(crate) fn field_result_type(
     base_span: SourceSpan,
     name_span: SourceSpan,
@@ -6709,6 +6743,12 @@ pub(crate) fn field_result_type(
     };
     if optional_result {
         let field_ty = signatures.canonical_type(&field_ty);
+        if !signatures.is_copy_type(&field_ty) {
+            return Err(diag(
+                name_span,
+                "optional-aware field access currently requires a Copy result; borrowed collection properties require an explicit 'borrow'",
+            ));
+        }
         if matches!(field_ty, Type::Optional(_)) {
             Ok(field_ty)
         } else {
