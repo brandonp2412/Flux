@@ -78276,8 +78276,7 @@ fn main() -> i64 {{
 }}
 "#
         );
-        let error =
-            check_source(&source).expect_err("reserved WebSocket close code should fail");
+        let error = check_source(&source).expect_err("reserved WebSocket close code should fail");
         assert!(
             error
                 .message
@@ -78366,19 +78365,30 @@ fn main() -> i64 {
     assert!(generated.contains("WebSocket binary byte list has an invalid element stride"));
     assert!(generated.contains("PTRDIFF_MAX / (uint64_t)stride"));
     assert!(generated.contains("WebSocket binary byte values must be between 0 and 255"));
-    assert!(generated.contains("flux__websocket_fail_write(session, \"failed to send WebSocket binary frame\")"));
-    let binary_mask = generated.find("failed to create WebSocket binary frame mask").unwrap();
+    assert!(generated.contains(
+        "flux__websocket_fail_write(session, \"failed to send WebSocket binary frame\")"
+    ));
+    let binary_mask = generated
+        .find("failed to create WebSocket binary frame mask")
+        .unwrap();
     let binary_header = generated[binary_mask..]
         .find("flux__websocket_write_all((int)session, header, header_length)")
         .unwrap();
     assert!(binary_header > 0);
-    assert!(generated.contains("flux__websocket_fail_write(session, \"failed to send WebSocket control frame\")"));
-    assert!(generated.contains("flux__websocket_fail_write(session, \"failed to send WebSocket control mask\")"));
-    assert!(generated.contains("flux__websocket_fail_write(session, \"failed to send WebSocket control payload\")"));
+    assert!(generated.contains(
+        "flux__websocket_fail_write(session, \"failed to send WebSocket control frame\")"
+    ));
+    assert!(generated.contains(
+        "flux__websocket_fail_write(session, \"failed to send WebSocket control mask\")"
+    ));
+    assert!(generated.contains(
+        "flux__websocket_fail_write(session, \"failed to send WebSocket control payload\")"
+    ));
     assert!(generated.contains("(void)flux__websocket_release(session); return error;"));
     assert!(generated.contains("flux__websocket_begin_write(session)"));
     assert!(generated.contains("WebSocket session already has an active writer"));
-    assert!(generated.contains("flux__websocket_end_write(session)"));
+    assert!(generated.contains("flux__websocket_finish_write(session)"));
+    assert!(generated.contains("flux__websocket_finish_write_state(session)"));
     assert!(generated.contains("flux__websocket_begin_read(session)"));
     assert!(generated.contains("WebSocket session already has an active reader"));
     assert!(generated.contains("flux__websocket_end_read(session)"));
@@ -78572,7 +78582,8 @@ fn main() -> i64 {{
 
 #[test]
 fn websocket_text_protocol_errors_invalidate_session() {
-    let probe = TcpListener::bind("127.0.0.1:0").expect("WebSocket protocol-error probe should bind");
+    let probe =
+        TcpListener::bind("127.0.0.1:0").expect("WebSocket protocol-error probe should bind");
     let port = probe.local_addr().unwrap().port();
     drop(probe);
     let source = format!(
@@ -78899,7 +78910,7 @@ fn main() -> i64 {{
 }
 
 #[test]
-fn websocket_peer_close_does_not_release_an_active_writer() {
+fn websocket_peer_close_finishes_after_active_writer() {
     let probe = TcpListener::bind("127.0.0.1:0").expect("WebSocket peer-close probe should bind");
     let port = probe.local_addr().unwrap().port();
     drop(probe);
@@ -78946,9 +78957,8 @@ fn main() -> i64 {{
     let floodJoinError: error = worker.join(floodHandle)
     if floodJoinError != nil:
         return 7
-    let closeError: error = websocket.close(session)
-    if closeError != nil:
-        print(closeError)
+    let afterCloseError: error = websocket.writeText(session, "after")
+    if afterCloseError == nil:
         return 8
     let listenerCloseError: error = net.close(listener)
     if listenerCloseError != nil:
@@ -78960,9 +78970,12 @@ fn main() -> i64 {{
     check_source(&source).expect("peer close with an active writer should typecheck");
     let generated =
         compile_to_c(&source).expect("peer close with an active writer should lower natively");
-    assert!(generated.contains(
-        "strcmp(ack_error, \"WebSocket session already has an active writer\") == 0"
-    ));
+    assert!(
+        generated
+            .contains("strcmp(ack_error, \"WebSocket session already has an active writer\") == 0")
+    );
+    assert!(generated.contains("flux__websocket_mark_peer_close_pending(session)"));
+    assert!(generated.contains("flux__websocket_finish_write(session)"));
     assert!(generated.contains(
         "flux__websocket_end_read(session); return flux__websocket_result(0, \"WebSocket peer closed\")"
     ));
@@ -79043,6 +79056,10 @@ fn main() -> i64 {{
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "WebSocket peer closed\n"
+    );
+    assert!(
+        drained.ends_with(&[0x88, 0x00]),
+        "active writer should finish with an unmasked empty close acknowledgement"
     );
     let _ = fs::remove_dir_all(&root);
 }
