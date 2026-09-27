@@ -2493,6 +2493,10 @@ fn add_qualified_namespace_completions(
                 "read",
                 "fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> error",
             ),
+            (
+                "readBytes",
+                "fn file.readBytes(path: str, maxBytes: i64, callback: fn(i64[]) -> void) -> error",
+            ),
             ("write", "fn file.write(path: str, text: str) -> error"),
             ("append", "fn file.append(path: str, text: str) -> error"),
             ("sync", "fn file.sync(path: str) -> error"),
@@ -3701,6 +3705,10 @@ fn signature_help_for_document_cached(
             }
             "read" => (
                 vec!["path: str", "maxBytes: i64", "callback: fn(str) -> void"],
+                "error",
+            ),
+            "readBytes" => (
+                vec!["path: str", "maxBytes: i64", "callback: fn(i64[]) -> void"],
                 "error",
             ),
             "list" => (vec!["path: str", "callback: fn(str) -> void"], "error"),
@@ -5467,6 +5475,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "file.read",
                         &["path: str", "maxBytes: i64", "callback: fn(str) -> void"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "readBytes" => {
+                    return Some(signature_help_for_builtin(
+                        "file.readBytes",
+                        &["path: str", "maxBytes: i64", "callback: fn(i64[]) -> void"],
                         "error",
                         active_parameter,
                     ));
@@ -12306,6 +12322,38 @@ fn main() -> i64 {
         .to_json();
         assert!(help.contains(
             "fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> error"
+        ));
+    }
+
+    #[test]
+    fn signature_help_supports_bounded_binary_file_reads() {
+        let uri = "file:///tmp/file-read-bytes-signatures.flux";
+        let source = r#"fn show(_bytes: i64[]) -> void {
+}
+fn main() -> i64 {
+    print(file.readBytes("a", 1024, show))
+    return 0
+}
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("file.readBytes("))
+            .unwrap();
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find("file.readBytes(").unwrap() + "file.readBytes(".len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("file.readBytes should have signature help")
+        .to_json();
+        assert!(help.contains(
+            "fn file.readBytes(path: str, maxBytes: i64, callback: fn(i64[]) -> void) -> error"
         ));
     }
 

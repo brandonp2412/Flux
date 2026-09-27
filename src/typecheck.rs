@@ -14131,6 +14131,46 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::Error]);
             }
+            "readBytes" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        "file.readBytes expects 3 arguments: path, maxBytes, callback",
+                    ));
+                }
+                let path_type = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &path_type, "file.readBytes path")?;
+                let max_bytes_type = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &max_bytes_type,
+                    "file.readBytes maxBytes",
+                )?;
+                if let Some(ConstantValue::I64(max_bytes)) =
+                    constant_primitive_value(&args[1], signatures)
+                {
+                    if !(1..=65536).contains(&max_bytes) {
+                        return Err(diag(
+                            args[1].span,
+                            "file.readBytes maxBytes must be in 1..=65536",
+                        ));
+                    }
+                }
+                let callback_type =
+                    signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::List(Box::new(Type::I64))],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[2].span,
+                    &expected,
+                    &callback_type,
+                    "file.readBytes callback",
+                )?;
+                return Ok(vec![Type::Error]);
+            }
             "read" => {
                 if args.len() != 3 {
                     return Err(diag(

@@ -17482,6 +17482,99 @@ fn main() -> i64 {
 }
 
 #[test]
+fn file_read_bytes_lends_bounded_binary_data_to_a_callback() {
+    let root =
+        std::env::temp_dir().join(format!("flux-file-read-bytes-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("file readBytes fixture should be writable");
+    let content = root.join("content.bin");
+    fs::write(&content, [0x00, 0x7f, 0x80, 0xff])
+        .expect("file readBytes fixture content should be writable");
+    let escaped = content
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\"");
+    let source = format!(
+        r#"
+fn show(bytes: i64[]) -> void {{
+    print(bytes.length)
+    print(bytes[0])
+    print(bytes[2])
+    print(bytes[3])
+}}
+fn main() -> i64 {{
+    let readError: error = file.readBytes("{}", 32, show)
+    print(readError)
+    return 0
+}}
+"#,
+        escaped
+    );
+    check_source(&source).expect("file.readBytes should typecheck");
+    let generated = compile_to_c(&source).expect("file.readBytes should lower natively");
+    assert!(generated.contains("flux__fs_read_bytes"));
+    assert!(generated.contains("buffer[index] = (int64_t)raw[index]"));
+
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("file readBytes source should be writable");
+    let binary = root.join("file-read-bytes-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("file readBytes binary should build");
+    assert!(
+        built.status.success(),
+        "file readBytes build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("file readBytes binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "4
+0
+128
+255
+nil
+"
+    );
+
+    let invalid = r#"
+fn show(_bytes: i64[]) -> void {
+}
+fn main() -> i64 {
+    let _failure: error = file.readBytes("content.bin", 0, show)
+    return 0
+}
+"#;
+    let error = check_source(invalid).expect_err("zero file.readBytes limit should fail");
+    assert!(
+        error
+            .message
+            .contains("file.readBytes maxBytes must be in 1..=65536")
+    );
+
+    let dead = r#"
+fn show(_bytes: i64[]) -> void {
+}
+fn hidden() -> void {
+    print(file.readBytes("unused.bin", 16, show))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let dead_generated = compile_to_c(dead).expect("dead file.readBytes should lower");
+    assert!(!dead_generated.contains("flux__fs_read_bytes"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn directory_list_lends_entry_names_to_a_callback() {
     let root = std::env::temp_dir().join(format!("flux-directory-list-api-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

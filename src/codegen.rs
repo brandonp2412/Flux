@@ -11233,6 +11233,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         || uses_list_slice;
     let uses_list_count = uses_list_take || uses_list_skip;
     let uses_list = runtime_usage.contains("struct flux__list")
+        || runtime_usage.contains("flux__fs_read_bytes(")
         || uses_byte_timeout
         || uses_list_at
         || uses_list_single
@@ -11246,6 +11247,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     let uses_map = runtime_usage.contains("struct flux__map");
     if uses_list && !uses_byte_timeout {
         out.push_str("#ifndef FLUX_LIST_DEFINED\n#define FLUX_LIST_DEFINED\nstruct flux__list { void *data; size_t len; ptrdiff_t stride; };\n#endif\n");
+    }
+    if runtime_usage.contains("flux__fs_read_bytes(") {
+        out.push_str(r#"static inline const char *flux__fs_read_bytes(const char *path, int64_t max_bytes, void (*callback)(struct flux__list)) { if (path == NULL || callback == NULL || max_bytes < 1 || max_bytes > INT64_C(65536)) return "invalid file readBytes arguments"; FILE *file = fopen(path, "rb"); if (file == NULL) return "failed to open file for reading"; size_t capacity = (size_t)max_bytes; unsigned char *raw = malloc(capacity); int64_t *buffer = malloc(capacity * sizeof(int64_t)); if (raw == NULL || buffer == NULL) { free(raw); free(buffer); fclose(file); return "failed to allocate file readBytes buffer"; } size_t count = fread(raw, 1, capacity, file); if (ferror(file)) { free(raw); free(buffer); fclose(file); return "failed to read file"; } if (count == capacity) { int extra = fgetc(file); if (extra != EOF) { free(raw); free(buffer); fclose(file); return "file exceeds read limit"; } if (ferror(file)) { free(raw); free(buffer); fclose(file); return "failed to read file"; } } if (fclose(file) != 0) { free(raw); free(buffer); return "failed to close file after reading"; } for (size_t index = 0; index < count; ++index) buffer[index] = (int64_t)raw[index]; free(raw); callback((struct flux__list){ .data = buffer, .len = count, .stride = sizeof(int64_t) }); free(buffer); return NULL; }
+"#);
     }
     if runtime_usage.contains("flux__net_receive_bytes(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_receive_bytes(int64_t socket_handle, int64_t max_bytes, void (*callback)(int64_t, struct flux__list)) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); if (max_bytes < 1 || max_bytes > 65536) return flux__net_result(-1, \"receiveBytes maxBytes must be between 1 and 65536\"); int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, \"failed to inspect socket type\"); if (socket_type != SOCK_STREAM) return flux__net_result(-1, \"readBytes requires a TCP socket\"); int accepting = 0; socklen_t accepting_length = sizeof(accepting); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_result(-1, \"failed to inspect TCP socket state\"); if (accepting != 0) return flux__net_result(-1, \"readBytes requires a connected TCP socket\"); unsigned char raw[(size_t)max_bytes]; int64_t buffer[(size_t)max_bytes]; ssize_t received; do { received = recv((int)socket_handle, raw, (size_t)max_bytes, 0); } while (received < 0 && errno == EINTR); if (received < 0) return flux__net_result(-1, \"failed to receive bytes\"); for (ssize_t index = 0; index < received; ++index) buffer[index] = (int64_t)raw[index]; callback(socket_handle, (struct flux__list){ .data = buffer, .len = (size_t)received, .stride = sizeof(int64_t) }); return flux__net_result((int64_t)received, NULL); }\n");
@@ -53570,6 +53575,25 @@ fn emit_qualified_call(
                     None,
                 ));
             }
+            "readBytes" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        "invalid file.readBytes call reached code generation",
+                    ));
+                }
+                let path = emit_expr(&args[0], env, signatures)?;
+                let max_bytes = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__fs_read_bytes({}, {}, {})",
+                        path.code, max_bytes.code, callback.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
             "read" => {
                 if args.len() != 3 {
                     return Err(diag(span, "invalid file.read call reached code generation"));
@@ -59152,6 +59176,33 @@ fn emit_cfg_scalar_expr_direct(
             };
             let value = emit_cfg_ordinary_call_argument_direct(value, &Type::Str, env, signatures)?;
             Some(format!("flux__str_length({value})"))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "file" && name == "readBytes" && ty == Type::Error => {
+            if arguments.len() != 3 {
+                return None;
+            }
+            let callback = emit_cfg_callback_argument_direct(
+                &arguments[2],
+                &[Type::List(Box::new(Type::I64))],
+                env,
+                signatures,
+            )?;
+            emit_cfg_ordered_call_expression_direct(
+                &arguments[..2],
+                &[Type::Str, Type::I64],
+                env,
+                signatures,
+                |rendered| {
+                    format!(
+                        "flux__fs_read_bytes({}, {}, {callback})",
+                        rendered[0], rendered[1]
+                    )
+                },
+            )
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,
