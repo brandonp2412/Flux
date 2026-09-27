@@ -17496,6 +17496,82 @@ fn directory_same_directory_recognizes_aliases_and_rejects_files() {
     let _ = fs::remove_dir_all(&root);
 }
 
+#[test]
+fn directory_is_empty_reports_cardinality_and_errors() {
+    let root = std::env::current_dir()
+        .expect("current directory should be available")
+        .join("target")
+        .join(format!("flux-directory-is-empty-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("fixture root should be writable");
+    let empty = root.join("empty");
+    let populated = root.join("populated");
+    let file = root.join("file.txt");
+    fs::create_dir(&empty).expect("empty directory fixture should be writable");
+    fs::create_dir(&populated).expect("populated directory fixture should be writable");
+    fs::write(populated.join("entry.txt"), "x").expect("directory entry should be writable");
+    fs::write(&file, "x").expect("file fixture should be writable");
+
+    let source = format!(
+        r#"fn main() -> i64 {{
+    let (empty, emptyError) = directory.isEmpty("{}")
+    print(empty)
+    print(emptyError == nil)
+    let (populated, populatedError) = directory.isEmpty("{}")
+    print(populated)
+    print(populatedError == nil)
+    let (_fileEmpty, fileError) = directory.isEmpty("{}")
+    print(fileError != nil)
+    return 0
+}}
+"#,
+        empty.display(),
+        populated.display(),
+        file.display(),
+    );
+    check_source(&source).expect("directory.isEmpty should typecheck");
+    let generated = compile_to_c(&source).expect("directory.isEmpty should lower");
+    assert!(generated.contains("flux__fs_directory_is_empty"));
+    assert!(generated.contains("struct flux__fs_bool_error"));
+
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("source program should be writable");
+    let binary = root.join("directory-is-empty");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .env("TMPDIR", &root)
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("directory.isEmpty binary should build");
+    assert!(
+        built.status.success(),
+        "directory.isEmpty build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("directory.isEmpty binary should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true\ntrue\nfalse\ntrue\ntrue\n"
+    );
+
+    let shaken = compile_to_c(
+        r#"fn main() -> i64 {
+    print(directory.exists("/tmp"))
+    return 0
+}
+"#,
+    )
+    .expect("isEmpty-free source should compile");
+    assert!(!shaken.contains("flux__fs_directory_is_empty"));
+    assert!(!shaken.contains("struct flux__fs_bool_error"));
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[cfg(unix)]
 #[test]
 fn file_read_link_lends_live_and_broken_link_targets() {

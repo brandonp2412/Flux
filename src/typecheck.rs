@@ -14545,9 +14545,10 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Error]);
             }
-            "exists" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions" | "owner"
-            | "group" | "inode" | "device" | "hardLinks" | "blockSize" | "allocatedSize"
-            | "create" | "createAll" | "remove" | "removeAll" | "sync" => {
+            "exists" | "isEmpty" | "modifiedUnixMillis" | "accessed" | "changed"
+            | "permissions" | "owner" | "group" | "inode" | "device" | "hardLinks"
+            | "blockSize" | "allocatedSize" | "create" | "createAll" | "remove" | "removeAll"
+            | "sync" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -14563,6 +14564,7 @@ fn check_qualified_call(
                 )?;
                 return Ok(match name.as_str() {
                     "exists" => vec![Type::Bool],
+                    "isEmpty" => vec![Type::Bool, Type::Error],
                     "modifiedUnixMillis" | "accessed" | "changed" | "permissions" | "owner"
                     | "group" | "inode" | "device" | "hardLinks" | "blockSize"
                     | "allocatedSize" => {

@@ -2506,6 +2506,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_directory_set_modified_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
         || runtime_usage.contains("flux__fs_list_directory(")
+        || runtime_usage.contains("flux__fs_directory_is_empty(")
         || runtime_usage.contains("flux__net_")
         || (runtime_usage.contains("flux__preferences_") && !uses_windows)
         || runtime_usage.contains("flux__tls_")
@@ -2565,6 +2566,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_create_directories(")
         || runtime_usage.contains("flux__fs_remove_directories(")
         || runtime_usage.contains("flux__fs_list_directory(")
+        || runtime_usage.contains("flux__fs_directory_is_empty(")
         || runtime_usage.contains("flux__net_")
         || runtime_usage.contains("flux__preferences_")
     {
@@ -2627,6 +2629,7 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__fs_remove_directories(")
         || runtime_usage.contains("flux__fs_list_directory(")
+        || runtime_usage.contains("flux__fs_directory_is_empty(")
     {
         out.push_str("#include <dirent.h>\n");
     }
@@ -11339,6 +11342,10 @@ static inline const char *flux__path_relative(const char *base, const char *targ
     }
     if runtime_usage.contains("flux__fs_copy_file(") {
         out.push_str("static inline const char *flux__fs_copy_file(const char *source, const char *destination) { FILE *input = fopen(source, \"rb\"); if (input == NULL) return \"failed to open source file\"; FILE *output = fopen(destination, \"wb\"); if (output == NULL) { fclose(input); return \"failed to open destination file\"; } unsigned char buffer[16384]; const char *failure = NULL; for (;;) { size_t read_count = fread(buffer, 1, sizeof(buffer), input); if (read_count > 0 && fwrite(buffer, 1, read_count, output) != read_count) { failure = \"failed to write destination file\"; break; } if (read_count < sizeof(buffer)) { if (ferror(input)) failure = \"failed to read source file\"; break; } } if (fclose(input) != 0 && failure == NULL) failure = \"failed to close source file\"; if (fclose(output) != 0 && failure == NULL) failure = \"failed to close destination file\"; return failure; }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_is_empty(") {
+        out.push_str("struct flux__fs_bool_error { bool v0; const char *v1; };\n");
+        out.push_str("static inline struct flux__fs_bool_error flux__fs_directory_is_empty(const char *path) { struct flux__fs_bool_error result = { .v0 = false, .v1 = NULL }; size_t length = 0; if (!flux__fs_bounded_length(path, &length)) { result.v1 = \"directory path is invalid or too long\"; return result; } struct stat info; if (stat(path, &info) != 0 || !S_ISDIR(info.st_mode)) { result.v1 = \"path is not a directory\"; return result; } DIR *directory = opendir(path); if (directory == NULL) { result.v1 = \"failed to open directory\"; return result; } bool empty = true; const char *error = NULL; for (;;) { errno = 0; struct dirent *entry = readdir(directory); if (entry == NULL) { if (errno != 0) error = \"failed to inspect directory\"; break; } if (strcmp(entry->d_name, \".\") == 0 || strcmp(entry->d_name, \"..\") == 0) continue; empty = false; break; } if (closedir(directory) != 0 && error == NULL) error = \"failed to close directory\"; result.v0 = error == NULL && empty; result.v1 = error; return result; }\n");
     }
     if runtime_usage.contains("flux__fs_file_size(")
         || runtime_usage.contains("flux__fs_file_modified_unix_millis(")
@@ -54620,6 +54627,11 @@ fn emit_qualified_call(
         let path = emit_expr(&args[0], env, signatures)?;
         let (helper, returns, multi_value_tag) = match name {
             "exists" => ("flux__fs_is_directory", vec![Type::Bool], None),
+            "isEmpty" => (
+                "flux__fs_directory_is_empty",
+                vec![Type::Bool, Type::Error],
+                Some("flux__fs_bool_error".to_string()),
+            ),
             "modifiedUnixMillis" => (
                 "flux__fs_directory_modified_unix_millis",
                 vec![Type::I64, Type::Error],
@@ -91859,6 +91871,19 @@ fn emit_cfg_multi_expr_direct(
             let i64_bool_error = vec![Type::I64, Type::Bool, Type::Error];
             let bool_error = vec![Type::Bool, Type::Error];
             match namespace.as_str() {
+                "directory" if name == "isEmpty" && arguments.len() == 1 => {
+                    let path = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::Str,
+                        env,
+                        signatures,
+                    )?;
+                    Some((
+                        format!("flux__fs_directory_is_empty({path})"),
+                        "flux__fs_bool_error".to_string(),
+                        bool_error,
+                    ))
+                }
                 "file" | "directory" if arguments.len() == 1 => {
                     let path = emit_cfg_ordinary_call_argument_direct(
                         &arguments[0],
