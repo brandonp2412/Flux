@@ -22316,6 +22316,41 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_nested_property_can_unwrap_directly_through_explicit_borrow() {
+    for property in ["first", "last", "single"] {
+        let live = format!(
+            "fn main() -> i64 {{\n    let rows: i64[][]? = [[10, 20], [30, 40]]\n    if let row = borrow rows?.{property}:\n        let destination: i64[][]? = rows\n        print(row[0])\n        if let moved = borrow destination:\n            print(moved[0][0])\n    return 0\n}}\n"
+        );
+        let errors = check_source_all(&live)
+            .expect_err("a direct optional-property borrow binding must keep the root owner live");
+        assert!(
+            errors.iter().any(|error| error.message.contains(
+                "cannot move non-copy binding 'rows' while borrowed view 'row' is still live"
+            )),
+            "direct optional-property borrow errors for {property}: {errors:?}"
+        );
+
+        let dead = format!(
+            "fn main() -> i64 {{\n    let rows: i64[][]? = [[10, 20], [30, 40]]\n    if let row = borrow rows?.{property}:\n        print(row[0])\n    let destination: i64[][]? = rows\n    if let moved = borrow destination:\n        print(moved[0][0])\n    return 0\n}}\n"
+        );
+        check_source(&dead).expect("the direct optional-property borrow should end at branch exit");
+        compile_to_c(&dead).expect("direct optional-property borrow binding should lower natively");
+
+        let database = fluxc::semantic::SemanticDatabase::analyze(&dead, SourceId::new(1217))
+            .expect("direct optional-property borrow binding should analyze");
+        let graph = database
+            .control_flow_graph("main")
+            .expect("main should expose a CFG");
+        assert!(
+            graph
+                .borrow_lifetimes()
+                .iter()
+                .any(|lifetime| lifetime.borrower == "row" && lifetime.source == "rows")
+        );
+    }
+}
+
+#[test]
 fn explicit_borrow_supports_optional_aware_slices_with_tracked_lifetimes() {
     let live = r#"
 fn main() -> i64 {
