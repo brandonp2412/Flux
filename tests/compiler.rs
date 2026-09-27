@@ -3553,6 +3553,82 @@ app Screen(layoutDirection: "rtl")
 }
 
 #[test]
+fn windows_semantic_text_padding_reuses_native_static_text_layout() {
+    let source = r#"
+view Screen {
+    state inset: i64 = 5
+    grid columns: 1fr
+    grid rows: auto auto auto auto auto
+    Nav navigation at 1,1
+        label: "Navigation"
+        paddingStart: inset
+        paddingEnd: 9
+        alignX: "start"
+    Chart chart at 2,1
+        label: "Chart"
+        padding: 2
+    Card card at 3,1
+        title: "Card"
+        paddingTop: 3
+    Header header at 4,1
+        text: "Header"
+        paddingBottom: 4
+    Content content at 5,1
+        label: "Content"
+        paddingStart: 6
+}
+app Screen(layoutDirection: "rtl")
+"#;
+    let program =
+        fluxc::parser::parse(source).expect("Windows semantic text padding source should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("Windows semantic text padding source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows semantic text padding should reuse the native STATIC text layout path");
+
+    for name in ["navigation", "chart", "card", "header", "content"] {
+        assert!(windows.contains(&format!(
+            "static flux__win_text_layout_state flux__win_text_layout_{name}"
+        )));
+        assert!(windows.contains(&format!(
+            "SetWindowSubclass(flux__ui_{name}, flux__win_text_layout_proc"
+        )));
+    }
+    assert!(windows.contains(
+        "flux__win_padding_extent(flux__win_text_layout_navigation.padding_start, flux__win_text_layout_navigation.padding_end)"
+    ));
+    assert!(windows.contains("flux__win_next_padding_start_navigation = flux__ui_state_inset"));
+    assert!(windows.contains(
+        "flux__win_layout(flux__win_refresh_client.right - flux__win_refresh_client.left, flux__win_refresh_client.bottom - flux__win_refresh_client.top)"
+    ));
+    assert!(windows.contains("state->rtl ? physical_padding_end : physical_padding_start"));
+
+    let invalid = source.replace("padding: 2", "padding: -1");
+    let invalid_program = fluxc::parser::parse(&invalid)
+        .expect("invalid Windows semantic padding source should parse");
+    let invalid_signatures = fluxc::typecheck::check(&invalid_program).expect(
+        "invalid Windows semantic padding source should typecheck before target validation",
+    );
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &invalid_program,
+        &invalid_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("negative Windows semantic text padding must fail target lowering");
+    assert!(
+        error
+            .message
+            .contains("padding must be non-negative and fit within a 32-bit signed integer")
+    );
+}
+
+#[test]
 fn windows_text_padding_insets_native_paint_and_refreshes_dynamic_edges() {
     let source = r#"
 view Screen {

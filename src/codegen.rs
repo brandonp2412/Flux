@@ -16965,7 +16965,16 @@ fn emit_windows_native_application(
         }
         if !matches!(
             element.kind.as_str(),
-            "Text" | "Button" | "Toggle" | "Radio" | "TextInput"
+            "Text"
+                | "Button"
+                | "Toggle"
+                | "Radio"
+                | "TextInput"
+                | "Nav"
+                | "Chart"
+                | "Card"
+                | "Header"
+                | "Content"
         ) {
             for (property_name, source_name) in [
                 ("padding", "padding"),
@@ -17111,25 +17120,13 @@ fn emit_windows_native_application(
                 .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
         })
     });
-    let uses_custom_windows_text_layout = view.elements.iter().any(|element| {
-        element.kind == "Text"
-            && (view_property(element, "letter_spacing").is_some()
-                || view_property(element, "line_height_percent").is_some()
-                || windows_text_has_padding(element)
-                || view_property(element, "wrap").is_some_and(|property| {
-                    static_expr_bool(&property.value, signatures).is_none()
-                })
-                || view_property(element, "wrap_mode").is_some_and(|property| {
-                    static_expr_str(&property.value, signatures).is_none_or(|value| value != "word")
-                })
-                || view_property(element, "ellipsize").is_some_and(|property| {
-                    static_expr_str(&property.value, signatures)
-                        .is_none_or(|value| matches!(value.as_str(), "start" | "middle"))
-                }))
-    });
+    let uses_custom_windows_text_layout = view
+        .elements
+        .iter()
+        .any(|element| windows_element_uses_custom_text_layout(element, signatures));
     let uses_dynamic_text_layout = view.elements.iter().any(|element| {
-        element.kind == "Text"
-            && [
+        let property_names: &[&str] = if element.kind == "Text" {
+            &[
                 "max_width_chars",
                 "max_lines",
                 "letter_spacing",
@@ -17140,11 +17137,21 @@ fn emit_windows_native_application(
                 "padding_start",
                 "padding_end",
             ]
-            .iter()
-            .any(|property_name| {
-                view_property(element, property_name)
-                    .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
-            })
+        } else if windows_semantic_text_surface(element) {
+            &[
+                "padding",
+                "padding_top",
+                "padding_bottom",
+                "padding_start",
+                "padding_end",
+            ]
+        } else {
+            &[]
+        };
+        property_names.iter().any(|property_name| {
+            view_property(element, property_name)
+                .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
+        })
     });
     let uses_dynamic_text_typography = view.elements.iter().any(|element| {
         element.kind == "Text"
@@ -18233,21 +18240,7 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
                 element.name
             ));
         }
-        if element.kind == "Text"
-            && (view_property(element, "letter_spacing").is_some()
-                || view_property(element, "line_height_percent").is_some()
-                || windows_text_has_padding(element)
-                || view_property(element, "wrap").is_some_and(|property| {
-                    static_expr_bool(&property.value, signatures).is_none()
-                })
-                || view_property(element, "wrap_mode").is_some_and(|property| {
-                    static_expr_str(&property.value, signatures).is_none_or(|value| value != "word")
-                })
-                || view_property(element, "ellipsize").is_some_and(|property| {
-                    static_expr_str(&property.value, signatures)
-                        .is_none_or(|value| matches!(value.as_str(), "start" | "middle"))
-                }))
-        {
+        if windows_element_uses_custom_text_layout(element, signatures) {
             let initial_letter_spacing = view_property(element, "letter_spacing")
                 .and_then(|property| static_expr_i64(&property.value, signatures))
                 .unwrap_or(0);
@@ -19688,51 +19681,50 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         let (align_x_setup, align_x_value) = alignment_value("align_x", "alignX")?;
         let (align_y_setup, align_y_value) = alignment_value("align_y", "alignY")?;
         let alignment_setup = format!("{align_x_setup}{align_y_setup}");
-        let (preferred_horizontal_padding, preferred_vertical_padding) = if element.kind == "Text"
-            && windows_text_has_padding(element)
-        {
-            (
-                format!(
-                    "flux__win_padding_extent(flux__win_text_layout_{}.padding_start, flux__win_text_layout_{}.padding_end)",
-                    element.name, element.name
-                ),
-                format!(
-                    "flux__win_padding_extent(flux__win_text_layout_{}.padding_top, flux__win_text_layout_{}.padding_bottom)",
-                    element.name, element.name
-                ),
-            )
-        } else if matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
-            && windows_text_has_padding(element)
-        {
-            (
-                format!(
-                    "(flux__win_scale({button_padding_start_value}) + flux__win_scale({button_padding_end_value}))"
-                ),
-                format!(
-                    "(flux__win_scale({button_padding_top_value}) + flux__win_scale({button_padding_bottom_value}))"
-                ),
-            )
-        } else if element.kind == "TextInput"
-            && (text_input_padding_start.is_some() || text_input_padding_end.is_some())
-        {
-            (
-                format!(
-                    "(flux__win_scale({text_input_padding_start_value}) + flux__win_scale({text_input_padding_end_value}))"
-                ),
-                "flux__win_scale(INT64_C(12))".to_string(),
-            )
-        } else {
-            let (horizontal, vertical) = match element.kind.as_str() {
-                "Button" => (24, 12),
-                "TextInput" => (16, 12),
-                "Toggle" | "Radio" => (28, 8),
-                _ => (0, 0),
+        let (preferred_horizontal_padding, preferred_vertical_padding) =
+            if windows_text_layout_surface(element) && windows_text_has_padding(element) {
+                (
+                    format!(
+                        "flux__win_padding_extent(flux__win_text_layout_{}.padding_start, flux__win_text_layout_{}.padding_end)",
+                        element.name, element.name
+                    ),
+                    format!(
+                        "flux__win_padding_extent(flux__win_text_layout_{}.padding_top, flux__win_text_layout_{}.padding_bottom)",
+                        element.name, element.name
+                    ),
+                )
+            } else if matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
+                && windows_text_has_padding(element)
+            {
+                (
+                    format!(
+                        "(flux__win_scale({button_padding_start_value}) + flux__win_scale({button_padding_end_value}))"
+                    ),
+                    format!(
+                        "(flux__win_scale({button_padding_top_value}) + flux__win_scale({button_padding_bottom_value}))"
+                    ),
+                )
+            } else if element.kind == "TextInput"
+                && (text_input_padding_start.is_some() || text_input_padding_end.is_some())
+            {
+                (
+                    format!(
+                        "(flux__win_scale({text_input_padding_start_value}) + flux__win_scale({text_input_padding_end_value}))"
+                    ),
+                    "flux__win_scale(INT64_C(12))".to_string(),
+                )
+            } else {
+                let (horizontal, vertical) = match element.kind.as_str() {
+                    "Button" => (24, 12),
+                    "TextInput" => (16, 12),
+                    "Toggle" | "Radio" => (28, 8),
+                    _ => (0, 0),
+                };
+                (
+                    format!("flux__win_scale(INT64_C({horizontal}))"),
+                    format!("flux__win_scale(INT64_C({vertical}))"),
+                )
             };
-            (
-                format!("flux__win_scale(INT64_C({horizontal}))"),
-                format!("flux__win_scale(INT64_C({vertical}))"),
-            )
-        };
         let preferred_size = if view_property(element, "align_x").is_some()
             || view_property(element, "align_y").is_some()
         {
@@ -20009,20 +20001,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         out.push_str("flux__win_apply_fonts();\n");
     }
     for element in &view.elements {
-        let uses_text_layout_state = element.kind == "Text"
-            && (view_property(element, "letter_spacing").is_some()
-                || view_property(element, "line_height_percent").is_some()
-                || windows_text_has_padding(element)
-                || view_property(element, "wrap").is_some_and(|property| {
-                    static_expr_bool(&property.value, signatures).is_none()
-                })
-                || view_property(element, "wrap_mode").is_some_and(|property| {
-                    static_expr_str(&property.value, signatures).is_none_or(|value| value != "word")
-                })
-                || view_property(element, "ellipsize").is_some_and(|property| {
-                    static_expr_str(&property.value, signatures)
-                        .is_none_or(|value| matches!(value.as_str(), "start" | "middle"))
-                }));
+        let uses_text_layout_state = windows_element_uses_custom_text_layout(element, signatures);
         if !uses_text_layout_state {
             continue;
         }
@@ -21148,25 +21127,14 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 function_c_name(function)
             ));
         }
-        if element.kind == "Text"
-            && view_property(element, "rich_text").is_none()
-            && view_property(element, "selectable")
-                .and_then(|property| static_expr_bool(&property.value, signatures))
-                != Some(true)
-            && (view_property(element, "letter_spacing").is_some()
-                || view_property(element, "line_height_percent").is_some()
-                || windows_text_has_padding(element)
-                || view_property(element, "wrap").is_some_and(|property| {
-                    static_expr_bool(&property.value, signatures).is_none()
-                })
-                || view_property(element, "wrap_mode").is_some_and(|property| {
-                    static_expr_str(&property.value, signatures).is_none_or(|value| value != "word")
-                })
-                || view_property(element, "ellipsize").is_some_and(|property| {
-                    static_expr_str(&property.value, signatures)
-                        .is_none_or(|value| matches!(value.as_str(), "start" | "middle"))
-                }))
-        {
+        let uses_static_text_layout_subclass =
+            windows_element_uses_custom_text_layout(element, signatures)
+                && (element.kind != "Text"
+                    || (view_property(element, "rich_text").is_none()
+                        && view_property(element, "selectable")
+                            .and_then(|property| static_expr_bool(&property.value, signatures))
+                            != Some(true)));
+        if uses_static_text_layout_subclass {
             out.push_str(&format!(
                 "if (!SetWindowSubclass({variable}, flux__win_text_layout_proc, (UINT_PTR){}, (DWORD_PTR)(uintptr_t)&flux__win_text_layout_{})) return 1;\n",
                 index + 1,
@@ -29447,6 +29415,39 @@ fn static_rich_text_markup(
         ));
     }
     Ok(Some(markup))
+}
+
+fn windows_semantic_text_surface(element: &crate::ast::ViewElement) -> bool {
+    matches!(
+        element.kind.as_str(),
+        "Nav" | "Chart" | "Card" | "Header" | "Content"
+    )
+}
+
+fn windows_text_layout_surface(element: &crate::ast::ViewElement) -> bool {
+    element.kind == "Text" || windows_semantic_text_surface(element)
+}
+
+fn windows_element_uses_custom_text_layout(
+    element: &crate::ast::ViewElement,
+    signatures: &Signatures,
+) -> bool {
+    if element.kind == "Text" {
+        view_property(element, "letter_spacing").is_some()
+            || view_property(element, "line_height_percent").is_some()
+            || windows_text_has_padding(element)
+            || view_property(element, "wrap")
+                .is_some_and(|property| static_expr_bool(&property.value, signatures).is_none())
+            || view_property(element, "wrap_mode").is_some_and(|property| {
+                static_expr_str(&property.value, signatures).is_none_or(|value| value != "word")
+            })
+            || view_property(element, "ellipsize").is_some_and(|property| {
+                static_expr_str(&property.value, signatures)
+                    .is_none_or(|value| matches!(value.as_str(), "start" | "middle"))
+            })
+    } else {
+        windows_semantic_text_surface(element) && windows_text_has_padding(element)
+    }
 }
 
 fn windows_text_has_padding(element: &crate::ast::ViewElement) -> bool {
