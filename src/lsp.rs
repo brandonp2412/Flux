@@ -1186,8 +1186,9 @@ fn member_receiver_at_cursor(
     if receiver_prefix.is_empty() {
         return None;
     }
+
+    let bytes = receiver_prefix.as_bytes();
     if receiver_prefix.ends_with(')') {
-        let bytes = receiver_prefix.as_bytes();
         let mut depth = 0usize;
         let mut open = None;
         for index in (0..bytes.len()).rev() {
@@ -1213,7 +1214,61 @@ fn member_receiver_at_cursor(
         }
         return Some(receiver_prefix[start..].to_string());
     }
-    let bytes = receiver_prefix.as_bytes();
+
+    if receiver_prefix.ends_with(']') {
+        let mut depth = 0usize;
+        let mut open = None;
+        for index in (0..bytes.len()).rev() {
+            match bytes[index] {
+                b']' => depth += 1,
+                b'[' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        open = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let open = open?;
+        let mut start = open;
+        while start > 0 {
+            if is_identifier_byte(bytes[start - 1]) || bytes[start - 1] == b'.' {
+                start -= 1;
+                continue;
+            }
+            if bytes[start - 1] != b')' {
+                break;
+            }
+            let mut call_depth = 0usize;
+            let mut call_open = None;
+            for index in (0..start).rev() {
+                match bytes[index] {
+                    b')' => call_depth += 1,
+                    b'(' => {
+                        call_depth = call_depth.checked_sub(1)?;
+                        if call_depth == 0 {
+                            call_open = Some(index);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let call_open = call_open?;
+            start = call_open;
+            while start > 0 && is_identifier_byte(bytes[start - 1]) {
+                start -= 1;
+            }
+            break;
+        }
+        if start == open {
+            return None;
+        }
+        return Some(receiver_prefix[start..].to_string());
+    }
+
     let mut start = bytes.len();
     while start > 0 && (is_identifier_byte(bytes[start - 1]) || bytes[start - 1] == b'.') {
         start -= 1;
@@ -2860,6 +2915,35 @@ fn member_receiver_type_name(
     receiver: &str,
     program: &crate::ast::Program,
 ) -> Option<String> {
+    if receiver.ends_with(']') {
+        let bytes = receiver.as_bytes();
+        let mut depth = 0usize;
+        let mut open = None;
+        for index in (0..bytes.len()).rev() {
+            match bytes[index] {
+                b']' => depth += 1,
+                b'[' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        open = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let base = receiver[..open?].trim_end();
+        let base_type = crate::ast::Type::parse(&member_receiver_type_name(
+            source, line_index, base, program,
+        )?)?;
+        let concrete = crate::ast::Type::parse(&named_type_name(&base_type, program)?)?;
+        return match concrete {
+            crate::ast::Type::List(element) => named_type_name(&element, program),
+            crate::ast::Type::Map(_, value) => named_type_name(&value, program),
+            _ => None,
+        };
+    }
+
     if receiver.ends_with(')') {
         let open = receiver.find('(')?;
         let function_name = receiver[..open].trim();
@@ -2881,20 +2965,38 @@ fn member_receiver_type_name(
     if !is_valid_identifier(root) {
         return None;
     }
-    let source_type = crate::ast::Type::parse(&visible_value_type_name(source, line_index, root)?)?;
-    let mut type_name = named_type_name(&source_type, program)?;
-    for field_name in parts {
-        if !is_valid_identifier(field_name) {
+    let mut current = crate::ast::Type::parse(&visible_value_type_name(source, line_index, root)?)?;
+    for member in parts {
+        if !is_valid_identifier(member) {
             return None;
         }
-        let definition = struct_definition_for_type(&type_name, program)?;
-        let field = definition
-            .fields
-            .iter()
-            .find(|field| field.name == field_name)?;
-        type_name = named_type_name(&field.ty, program)?;
+        let concrete_name = named_type_name(&current, program)?;
+        let concrete = crate::ast::Type::parse(&concrete_name)?;
+        current = match concrete {
+            crate::ast::Type::List(element) => match crate::builtin_names::list_member_impl(member)
+            {
+                "length" => crate::ast::Type::I64,
+                "isEmpty" | "isNotEmpty" => crate::ast::Type::Bool,
+                "first" | "last" | "single" => *element,
+                _ => return None,
+            },
+            crate::ast::Type::Set(_) | crate::ast::Type::Map(_, _) => match member {
+                "count" => crate::ast::Type::I64,
+                "empty" | "nonempty" => crate::ast::Type::Bool,
+                _ => return None,
+            },
+            _ => {
+                let definition = struct_definition_for_type(&concrete_name, program)?;
+                definition
+                    .fields
+                    .iter()
+                    .find(|field| field.name == member)?
+                    .ty
+                    .clone()
+            }
+        };
     }
-    Some(type_name)
+    named_type_name(&current, program)
 }
 
 fn named_type_name(ty: &crate::ast::Type, program: &crate::ast::Program) -> Option<String> {
@@ -9779,6 +9881,46 @@ mod tests {
         .to_json();
         assert!(call.contains("\"label\":\"profile\""));
         assert!(call.contains("field User.profile: Profile"));
+    }
+
+    #[test]
+    fn struct_field_completion_follows_collection_elements() {
+        let uri = "file:///tmp/collection-member-completion.flux";
+        let source = "struct Profile {
+    display_name: str
+    score: i64
+}
+fn load_profiles() -> Profile[] {
+    return []
+}
+fn describe(profiles: Profile[]) -> i64 {
+    profiles[0].
+    profiles.first.
+    load_profiles()[0].
+    return 0
+}
+";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+
+        for target in ["profiles[0].", "profiles.first.", "load_profiles()[0]."] {
+            let line_index = source
+                .lines()
+                .position(|line| line.trim() == target)
+                .expect("member completion line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let items = JsonValue::Array(completion_items_at_cursor(
+                uri,
+                source,
+                &documents,
+                Some(line_index),
+                Some(line.len()),
+                PositionEncoding::Utf8,
+            ))
+            .to_json();
+            assert!(items.contains("\"label\":\"display_name\""));
+            assert!(items.contains("field Profile.display_name: str"));
+            assert!(items.contains("\"label\":\"score\""));
+        }
     }
 
     #[test]
