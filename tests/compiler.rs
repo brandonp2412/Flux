@@ -17219,6 +17219,65 @@ fn main() -> i64 {
 }
 
 #[test]
+fn file_link_typechecks_lowers_and_creates_hard_link() {
+    let root = std::env::temp_dir().join(format!("flux-file-link-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("file.link fixture should be writable");
+    let source_file = root.join("source.txt");
+    let linked_file = root.join("linked.txt");
+    fs::write(&source_file, "linked").expect("file.link source should be writable");
+    let source = format!(
+        r#"fn main() -> i64 {{
+    print(file.link("{}", "{}"))
+    return 0
+}}
+"#,
+        source_file.display(),
+        linked_file.display()
+    );
+
+    check_source(&source).expect("file.link should typecheck");
+    let generated = compile_to_c(&source).expect("file.link should lower");
+    assert!(generated.contains("flux__fs_file_link"));
+    assert!(generated.contains("link(source, destination)"));
+
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("file.link source program should be writable");
+    let binary = root.join("file-link");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("file.link binary should build");
+    assert!(
+        built.status.success(),
+        "file.link build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("file.link binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "nil");
+    assert_eq!(
+        fs::read_to_string(&linked_file).expect("linked file should be readable"),
+        "linked"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            fs::metadata(&source_file).unwrap().ino(),
+            fs::metadata(&linked_file).unwrap().ino()
+        );
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn canonical_file_and_directory_capabilities_are_typed_native_and_tree_shaken() {
     let root = std::env::temp_dir().join(format!("flux-canonical-file-api-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
