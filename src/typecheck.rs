@@ -14571,6 +14571,27 @@ fn check_qualified_call(
                     _ => vec![Type::Error],
                 });
             }
+            "sameDirectory" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "directory.sameDirectory expects 2 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                for (arg, label) in args.iter().zip(["left", "right"]) {
+                    let actual = type_of_expr(arg, env, signatures)?;
+                    require_type(
+                        arg.span,
+                        &Type::Str,
+                        &actual,
+                        &format!("directory.sameDirectory {label}"),
+                    )?;
+                }
+                return Ok(vec![Type::Bool]);
+            }
             "rename" => {
                 if args.len() != 2 {
                     return Err(diag(

@@ -11231,6 +11231,9 @@ static inline const char *flux__path_relative(const char *base, const char *targ
         out.push_str("static inline bool flux__fs_same_file(const char *left, const char *right) { size_t left_length = 0; size_t right_length = 0; if (!flux__fs_bounded_length(left, &left_length) || !flux__fs_bounded_length(right, &right_length)) return false; struct stat left_info; struct stat right_info; if (stat(left, &left_info) != 0 || stat(right, &right_info) != 0 || !S_ISREG(left_info.st_mode) || !S_ISREG(right_info.st_mode)) return false; return left_info.st_dev == right_info.st_dev && left_info.st_ino == right_info.st_ino; }
 ");
     }
+    if runtime_usage.contains("flux__fs_same_directory(") {
+        out.push_str("static inline bool flux__fs_same_directory(const char *left, const char *right) { size_t left_length = 0; size_t right_length = 0; if (!flux__fs_bounded_length(left, &left_length) || !flux__fs_bounded_length(right, &right_length)) return false; struct stat left_info; struct stat right_info; if (stat(left, &left_info) != 0 || stat(right, &right_info) != 0 || !S_ISDIR(left_info.st_mode) || !S_ISDIR(right_info.st_mode)) return false; return left_info.st_dev == right_info.st_dev && left_info.st_ino == right_info.st_ino; }\n");
+    }
     if runtime_usage.contains("flux__fs_is_directory(") {
         out.push_str("static inline bool flux__fs_is_directory(const char *path) { size_t length = 0; if (!flux__fs_bounded_length(path, &length)) return false; struct stat info; return stat(path, &info) == 0 && S_ISDIR(info.st_mode); }\n");
     }
@@ -54578,7 +54581,13 @@ fn emit_qualified_call(
         }
         if matches!(
             name,
-            "rename" | "setPermissions" | "setModified" | "setAccessed" | "setOwner" | "setGroup"
+            "sameDirectory"
+                | "rename"
+                | "setPermissions"
+                | "setModified"
+                | "setAccessed"
+                | "setOwner"
+                | "setGroup"
         ) {
             if args.len() != 2 {
                 return Err(diag(span, "invalid directory call reached code generation"));
@@ -54586,6 +54595,7 @@ fn emit_qualified_call(
             let first = emit_expr(&args[0], env, signatures)?;
             let second = emit_expr(&args[1], env, signatures)?;
             let helper = match name {
+                "sameDirectory" => "flux__fs_same_directory",
                 "rename" => "flux__fs_directory_rename",
                 "setPermissions" => "flux__fs_directory_set_permissions",
                 "setModified" => "flux__fs_directory_set_modified_unix_millis",
@@ -54596,7 +54606,11 @@ fn emit_qualified_call(
             };
             return Ok((
                 format!("{helper}({}, {})", first.code, second.code),
-                vec![Type::Error],
+                if name == "sameDirectory" {
+                    vec![Type::Bool]
+                } else {
+                    vec![Type::Error]
+                },
                 None,
             ));
         }
@@ -60290,6 +60304,11 @@ fn emit_cfg_scalar_expr_direct(
                     ("flux__path_has_extension", vec![Type::Str], Type::Bool)
                 }
                 ("directory", "exists") => ("flux__fs_is_directory", vec![Type::Str], Type::Bool),
+                ("directory", "sameDirectory") => (
+                    "flux__fs_same_directory",
+                    vec![Type::Str, Type::Str],
+                    Type::Bool,
+                ),
                 ("directory", "rename") => (
                     "flux__fs_directory_rename",
                     vec![Type::Str, Type::Str],

@@ -17420,6 +17420,84 @@ false
 
 #[cfg(unix)]
 #[test]
+fn directory_same_directory_recognizes_aliases_and_rejects_files() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::current_dir()
+        .expect("current directory should be available")
+        .join("target")
+        .join(format!(
+            "flux-directory-same-directory-{}",
+            std::process::id()
+        ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("fixture root should be writable");
+    let directory = root.join("directory");
+    let other = root.join("other");
+    let alias = root.join("alias");
+    let file = root.join("file.txt");
+    fs::create_dir(&directory).expect("directory fixture should be writable");
+    fs::create_dir(&other).expect("other directory fixture should be writable");
+    symlink(&directory, &alias).expect("directory symlink should be writable");
+    fs::write(&file, "x").expect("file fixture should be writable");
+
+    let source = format!(
+        r#"fn main() -> i64 {{
+    print(directory.sameDirectory("{}", "{}"))
+    print(directory.sameDirectory("{}", "{}"))
+    print(directory.sameDirectory("{}", "{}"))
+    return 0
+}}
+"#,
+        directory.display(),
+        alias.display(),
+        directory.display(),
+        other.display(),
+        directory.display(),
+        file.display(),
+    );
+    check_source(&source).expect("directory.sameDirectory should typecheck");
+    let generated = compile_to_c(&source).expect("directory.sameDirectory should lower");
+    assert!(generated.contains("flux__fs_same_directory"));
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("source program should be writable");
+    let binary = root.join("directory-same-directory");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .env("TMPDIR", &root)
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("directory.sameDirectory binary should build");
+    assert!(
+        built.status.success(),
+        "directory.sameDirectory build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("directory.sameDirectory binary should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true\nfalse\nfalse\n"
+    );
+
+    let shaken = compile_to_c(
+        r#"fn main() -> i64 {
+    print(directory.exists("/tmp"))
+    return 0
+}
+"#,
+    )
+    .expect("sameDirectory-free source should compile");
+    assert!(!shaken.contains("flux__fs_same_directory"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
 fn file_read_link_lends_live_and_broken_link_targets() {
     use std::os::unix::fs::symlink;
 

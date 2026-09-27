@@ -2625,6 +2625,10 @@ fn add_qualified_namespace_completions(
         for (label, detail) in [
             ("exists", "fn directory.exists(path: str) -> bool"),
             (
+                "sameDirectory",
+                "fn directory.sameDirectory(left: str, right: str) -> bool",
+            ),
+            (
                 "list",
                 "fn directory.list(path: str, callback: fn(str) -> void) -> error",
             ),
@@ -3769,7 +3773,7 @@ fn signature_help_for_document_cached(
     {
         let (params, returns) = match member {
             "exists" | "isSymlink" => (vec!["path: str"], "bool"),
-            "sameFile" => (vec!["left: str", "right: str"], "bool"),
+            "sameFile" | "sameDirectory" => (vec!["left: str", "right: str"], "bool"),
             "isFile" | "isDirectory" => (vec!["path: str"], "bool"),
             "createDirectory" | "createDirectories" | "removeFile" | "removeDirectory"
             | "removeDirectories" => (vec!["path: str"], "error"),
@@ -5722,6 +5726,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "directory.exists",
                         &["path: str"],
+                        "bool",
+                        active_parameter,
+                    ));
+                }
+                "sameDirectory" => {
+                    return Some(signature_help_for_builtin(
+                        "directory.sameDirectory",
+                        &["left: str", "right: str"],
                         "bool",
                         active_parameter,
                     ));
@@ -9866,6 +9878,9 @@ mod tests {
         ))
         .to_json();
         assert!(directory_items.contains("fn directory.exists(path: str) -> bool"));
+        assert!(
+            directory_items.contains("fn directory.sameDirectory(left: str, right: str) -> bool")
+        );
         assert!(
             directory_items
                 .contains("fn directory.list(path: str, callback: fn(str) -> void) -> error")
