@@ -10903,6 +10903,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         || runtime_usage.contains("flux__path_component(")
         || runtime_usage.contains("flux__path_extension_or_stem(")
         || runtime_usage.contains("flux__path_normalize(")
+        || runtime_usage.contains("flux__path_relative(")
     {
         out.push_str("static inline bool flux__path_is_absolute(const char *path) { if (path == NULL) return false; size_t length = 0; while (length <= 65536 && path[length] != '\\0') length += 1; if (length > 65536 || length == 0) return false; if (path[0] == '/' || path[0] == '\\\\') return true; return length >= 3 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' && (path[2] == '/' || path[2] == '\\\\'); }\n");
     }
@@ -10917,6 +10918,129 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     }
     if runtime_usage.contains("flux__path_normalize(") {
         out.push_str("static inline const char *flux__path_normalize(const char *value, void (*callback)(const char *)) { if (value == NULL || callback == NULL) return \"invalid path.normalize arguments\"; size_t length = strnlen(value, 65537); if (length > 65536) return \"path exceeds 65536 bytes\"; char result[65537]; size_t output = 0; size_t index = 0; bool absolute = length > 0 && (value[0] == '/' || value[0] == '\\\\'); if (absolute) result[output++] = '/'; while (index < length) { while (index < length && (value[index] == '/' || value[index] == '\\\\')) index += 1; size_t begin = index; while (index < length && value[index] != '/' && value[index] != '\\\\') index += 1; size_t part_length = index - begin; if (part_length == 0 || (part_length == 1 && value[begin] == '.') ) continue; bool parent = part_length == 2 && value[begin] == '.' && value[begin + 1] == '.'; if (parent) { size_t previous = output; if (previous > (absolute ? 1u : 0u)) { if (previous > 0 && result[previous - 1] == '/') previous -= 1; size_t slash = previous; while (slash > (absolute ? 1u : 0u) && result[slash - 1] != '/') slash -= 1; if (slash < previous && !(previous - slash == 2 && result[slash] == '.' && result[slash + 1] == '.')) { output = slash; continue; } } if (!absolute) { if (output > 0 && result[output - 1] != '/') result[output++] = '/'; if (output > 65536 - 2) return \"normalized path exceeds 65536 bytes\"; result[output++] = '.'; result[output++] = '.'; } continue; } if (output > 0 && result[output - 1] != '/') { if (output == 65536) return \"normalized path exceeds 65536 bytes\"; result[output++] = '/'; } if (part_length > 65536 - output) return \"normalized path exceeds 65536 bytes\"; memcpy(result + output, value + begin, part_length); output += part_length; } if (output == 0) result[output++] = '.'; while (output > 1 && result[output - 1] == '/') output -= 1; result[output] = '\\0'; callback(result); return NULL; }\n");
+    }
+    if runtime_usage.contains("flux__path_relative(") {
+        out.push_str(
+r#"static inline const char *flux__path_relative_normalize(const char *value, char *result, size_t *result_length) {
+    if (value == NULL || result == NULL || result_length == NULL) return "invalid path.relative arguments";
+    size_t length = strnlen(value, 65537);
+    if (length > 65536) return "path exceeds 65536 bytes";
+    size_t output = 0;
+    size_t index = 0;
+    bool absolute = length > 0 && (value[0] == '/' || value[0] == '\\');
+    if (absolute) result[output++] = '/';
+    while (index < length) {
+        while (index < length && (value[index] == '/' || value[index] == '\\')) index += 1;
+        size_t begin = index;
+        while (index < length && value[index] != '/' && value[index] != '\\') index += 1;
+        size_t part_length = index - begin;
+        if (part_length == 0 || (part_length == 1 && value[begin] == '.')) continue;
+        bool parent = part_length == 2 && value[begin] == '.' && value[begin + 1] == '.';
+        if (parent) {
+            size_t previous = output;
+            if (previous > (absolute ? 1u : 0u)) {
+                if (previous > 0 && result[previous - 1] == '/') previous -= 1;
+                size_t slash = previous;
+                while (slash > (absolute ? 1u : 0u) && result[slash - 1] != '/') slash -= 1;
+                if (slash < previous && !(previous - slash == 2 && result[slash] == '.' && result[slash + 1] == '.')) {
+                    output = slash;
+                    continue;
+                }
+            }
+            if (!absolute) {
+                if (output > 0 && result[output - 1] != '/') result[output++] = '/';
+                if (output > 65534) return "relative path exceeds 65536 bytes";
+                result[output++] = '.';
+                result[output++] = '.';
+            }
+            continue;
+        }
+        if (output > 0 && result[output - 1] != '/') {
+            if (output == 65536) return "relative path exceeds 65536 bytes";
+            result[output++] = '/';
+        }
+        if (part_length > 65536 - output) return "relative path exceeds 65536 bytes";
+        memcpy(result + output, value + begin, part_length);
+        output += part_length;
+    }
+    if (output == 0) result[output++] = '.';
+    while (output > 1 && result[output - 1] == '/') output -= 1;
+    result[output] = '\0';
+    *result_length = output;
+    return NULL;
+}
+static inline const char *flux__path_relative(const char *base, const char *target, void (*callback)(const char *)) {
+    if (base == NULL || target == NULL || callback == NULL) return "invalid path.relative arguments";
+    size_t base_length = strnlen(base, 65537);
+    size_t target_length = strnlen(target, 65537);
+    if (base_length > 65536 || target_length > 65536) return "path exceeds 65536 bytes";
+    bool base_absolute = flux__path_is_absolute(base);
+    bool target_absolute = flux__path_is_absolute(target);
+    if (base_absolute != target_absolute) return "path.relative requires matching absolute or relative paths";
+    bool base_drive = base_length >= 2 && base[1] == ':' && ((base[0] >= 'A' && base[0] <= 'Z') || (base[0] >= 'a' && base[0] <= 'z'));
+    bool target_drive = target_length >= 2 && target[1] == ':' && ((target[0] >= 'A' && target[0] <= 'Z') || (target[0] >= 'a' && target[0] <= 'z'));
+    if (base_drive != target_drive) return "path.relative requires matching path roots";
+    if (base_drive) {
+        char a = (char)(base[0] >= 'a' && base[0] <= 'z' ? base[0] - ('a' - 'A') : base[0]);
+        char b = (char)(target[0] >= 'a' && target[0] <= 'z' ? target[0] - ('a' - 'A') : target[0]);
+        if (a != b) return "path.relative requires matching drive roots";
+    }
+    char base_normalized[65537];
+    char target_normalized[65537];
+    size_t base_normalized_length = 0;
+    size_t target_normalized_length = 0;
+    const char *error = flux__path_relative_normalize(base, base_normalized, &base_normalized_length);
+    if (error != NULL) return error;
+    error = flux__path_relative_normalize(target, target_normalized, &target_normalized_length);
+    if (error != NULL) return error;
+    if (base_drive) {
+        if (base_normalized[0] >= 'a' && base_normalized[0] <= 'z') base_normalized[0] = (char)(base_normalized[0] - ('a' - 'A'));
+        if (target_normalized[0] >= 'a' && target_normalized[0] <= 'z') target_normalized[0] = (char)(target_normalized[0] - ('a' - 'A'));
+    }
+    size_t base_cursor = base_normalized[0] == '/' ? 1u : 0u;
+    size_t target_cursor = target_normalized[0] == '/' ? 1u : 0u;
+    size_t common_base = base_cursor;
+    size_t common_target = target_cursor;
+    while (base_cursor < base_normalized_length && target_cursor < target_normalized_length) {
+        size_t base_end = base_cursor;
+        while (base_end < base_normalized_length && base_normalized[base_end] != '/') base_end += 1;
+        size_t target_end = target_cursor;
+        while (target_end < target_normalized_length && target_normalized[target_end] != '/') target_end += 1;
+        size_t base_part_length = base_end - base_cursor;
+        size_t target_part_length = target_end - target_cursor;
+        if (base_part_length != target_part_length || memcmp(base_normalized + base_cursor, target_normalized + target_cursor, base_part_length) != 0) break;
+        common_base = base_end < base_normalized_length ? base_end + 1 : base_end;
+        common_target = target_end < target_normalized_length ? target_end + 1 : target_end;
+        base_cursor = common_base;
+        target_cursor = common_target;
+    }
+    char result[65537];
+    size_t output = 0;
+    size_t cursor = common_base;
+    while (cursor < base_normalized_length) {
+        size_t end = cursor;
+        while (end < base_normalized_length && base_normalized[end] != '/') end += 1;
+        if (end > cursor) {
+            if (output > 0) result[output++] = '/';
+            if (output > 65533) return "relative path exceeds 65536 bytes";
+            result[output++] = '.';
+            result[output++] = '.';
+        }
+        cursor = end < base_normalized_length ? end + 1 : end;
+    }
+    if (common_target < target_normalized_length) {
+        if (output > 0) result[output++] = '/';
+        size_t remaining = target_normalized_length - common_target;
+        if (remaining > 65536 - output) return "relative path exceeds 65536 bytes";
+        memcpy(result + output, target_normalized + common_target, remaining);
+        output += remaining;
+    }
+    if (output == 0) result[output++] = '.';
+    result[output] = '\0';
+    callback(result);
+    return NULL;
+}
+"#);
     }
     if runtime_usage.contains("flux__fs_is_file(") {
         out.push_str("static inline bool flux__fs_is_file(const char *path) { size_t length = 0; if (!flux__fs_bounded_length(path, &length)) return false; struct stat info; return stat(path, &info) == 0 && S_ISREG(info.st_mode); }\n");
@@ -53830,6 +53954,25 @@ fn emit_qualified_call(
                     None,
                 ));
             }
+            "relative" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        "invalid path.relative call reached code generation",
+                    ));
+                }
+                let base = emit_expr(&args[0], env, signatures)?;
+                let target = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__path_relative({}, {}, {})",
+                        base.code, target.code, callback.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
             "dirname" | "basename" => {
                 if args.len() != 2 {
                     return Err(diag(
@@ -59403,6 +59546,26 @@ fn emit_cfg_scalar_expr_direct(
                     |rendered| {
                         format!(
                             "flux__path_join({}, {}, {callback})",
+                            rendered[0], rendered[1]
+                        )
+                    },
+                )
+            }
+            "relative" if arguments.len() == 3 => {
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[2],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                emit_cfg_ordered_call_expression_direct(
+                    &arguments[..2],
+                    &[Type::Str, Type::Str],
+                    env,
+                    signatures,
+                    |rendered| {
+                        format!(
+                            "flux__path_relative({}, {}, {callback})",
                             rendered[0], rendered[1]
                         )
                     },

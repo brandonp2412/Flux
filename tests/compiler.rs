@@ -1115,6 +1115,10 @@ fn main() -> i64 {
     let absolute: bool = path.isAbsolute("/tmp/flux")
     print(absolute)
     print(path.join("/tmp", "flux", show))
+    print(path.relative("/tmp/flux/src", "/tmp/flux/tests/unit", show))
+    print(path.relative("/tmp/flux", "/tmp/flux", show))
+    print(path.relative("C:\\alpha", "c:\\beta", show))
+    print(path.relative("/tmp", "tmp", show))
     print(path.dirname("/tmp/flux", show))
     print(path.basename("/tmp/flux", show))
     print(path.dirname("/", show))
@@ -1131,6 +1135,9 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("path capability source should compile");
     assert!(generated.contains("flux__path_is_absolute(\"/tmp/flux\")"));
     assert!(generated.contains("flux__path_join(\"/tmp\", \"flux\", flux__fn_show)"));
+    assert!(generated.contains(
+        "flux__path_relative(\"/tmp/flux/src\", \"/tmp/flux/tests/unit\", flux__fn_show)"
+    ));
     assert!(generated.contains("flux__path_component(\"/tmp/flux\", false, flux__fn_show)"));
     assert!(generated.contains("flux__path_component(\"/tmp/flux\", true, flux__fn_show)"));
     assert!(
@@ -1169,7 +1176,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "true\n/tmp/flux\nnil\n/tmp\nnil\nflux\nnil\n/\nnil\n\\\nnil\n.txt\nnil\n\nnil\n.env\nnil\nflux\nnil\n/tmp/cache/item\nnil\n../../b\nnil\n"
+        "true\n/tmp/flux\nnil\n../tests/unit\nnil\n.\nnil\n../beta\nnil\npath.relative requires matching absolute or relative paths\n/tmp\nnil\nflux\nnil\n/\nnil\n\\\nnil\n.txt\nnil\n\nnil\n.env\nnil\nflux\nnil\n/tmp/cache/item\nnil\n../../b\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 
@@ -1179,6 +1186,7 @@ fn main() -> i64 {
     assert!(!shaken.contains("flux__path_is_absolute"));
     assert!(!shaken.contains("flux__path_extension_or_stem"));
     assert!(!shaken.contains("flux__path_normalize"));
+    assert!(!shaken.contains("flux__path_relative"));
 }
 
 #[test]
@@ -64903,9 +64911,7 @@ app ContextCard
     assert!(linux.contains(
         "static void (*flux__ui_development_callback_menuSelected)(int64_t) = flux__fn_menuSelected;"
     ));
-    assert!(linux.contains(
-        "flux__ui_development_callback_menuSelected = target; return true;"
-    ));
+    assert!(linux.contains("flux__ui_development_callback_menuSelected = target; return true;"));
 
     let program =
         fluxc::parser::parse(multi_item).expect("multi-item context menu app should parse");
@@ -66385,9 +66391,10 @@ app Screen(onConfigurationChanged: configurationChanged)
     assert!(generated.contains(
         "static void (*flux__ui_development_callback_configurationChanged)(void) = flux__fn_configurationChanged;"
     ));
-    assert!(generated.contains(
-        "flux__ui_development_callback_configurationChanged = target; return true;"
-    ));
+    assert!(
+        generated
+            .contains("flux__ui_development_callback_configurationChanged = target; return true;")
+    );
     assert!(
         !generated.contains("onConfigurationChanged lifecycle callback is not supported on Linux")
     );

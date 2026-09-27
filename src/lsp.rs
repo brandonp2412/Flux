@@ -1857,6 +1857,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "relative",
+            3,
+            "fn path.relative(base: str, target: str, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
             "dirname",
             3,
             "fn path.dirname(value: str, callback: fn(str) -> void) -> error",
@@ -4420,6 +4427,12 @@ fn signature_help_for_document_cached(
                 "join" => Some(signature_help_for_builtin(
                     "path.join",
                     &["base: str", "child: str", "callback: fn(str) -> void"],
+                    "error",
+                    active_parameter,
+                )),
+                "relative" => Some(signature_help_for_builtin(
+                    "path.relative",
+                    &["base: str", "target: str", "callback: fn(str) -> void"],
                     "error",
                     active_parameter,
                 )),
@@ -9713,6 +9726,9 @@ mod tests {
             path_items
                 .contains("fn path.normalize(value: str, callback: fn(str) -> void) -> error")
         );
+        assert!(path_items.contains(
+            "fn path.relative(base: str, target: str, callback: fn(str) -> void) -> error"
+        ));
         assert!(
             path_items
                 .contains("fn path.extension(value: str, callback: fn(str) -> void) -> error")
