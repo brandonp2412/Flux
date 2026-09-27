@@ -78824,6 +78824,155 @@ fn main() -> i64 {{
 }
 
 #[test]
+fn websocket_peer_close_does_not_release_an_active_writer() {
+    let probe = TcpListener::bind("127.0.0.1:0").expect("WebSocket peer-close probe should bind");
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let payload = "x".repeat(65_535);
+    let source = format!(
+        r#"fn flood(session: i64) -> void {{
+    var count: i64 = 0
+    while count < 64:
+        let writeError: error = websocket.writeText(session, "{payload}")
+        if writeError != nil:
+            return
+        count = count + 1
+}}
+
+fn consume(_value: str) -> void {{
+}}
+
+fn readClose(session: i64) -> void {{
+    let (_received, readError) = websocket.readText(session, 64, consume)
+    if readError != nil:
+        print(readError)
+}}
+
+fn main() -> i64 {{
+    let (listener, listenError) = net.listen("127.0.0.1", {port}, 8)
+    if listenError != nil:
+        return 1
+    let (socket, acceptError) = net.accept(listener)
+    if acceptError != nil:
+        return 2
+    let (session, handshakeError) = websocket.accept(socket)
+    if handshakeError != nil:
+        return 3
+    let (floodHandle, floodError) = worker.startWith(flood, session)
+    if floodError != nil:
+        return 4
+    time.sleep(100)
+    let (readerHandle, readerError) = worker.startWith(readClose, session)
+    if readerError != nil:
+        return 5
+    let readerJoinError: error = worker.join(readerHandle)
+    if readerJoinError != nil:
+        return 6
+    let floodJoinError: error = worker.join(floodHandle)
+    if floodJoinError != nil:
+        return 7
+    let closeError: error = websocket.close(session)
+    if closeError != nil:
+        print(closeError)
+        return 8
+    let listenerCloseError: error = net.close(listener)
+    if listenerCloseError != nil:
+        return 9
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("peer close with an active writer should typecheck");
+    let generated =
+        compile_to_c(&source).expect("peer close with an active writer should lower natively");
+    assert!(generated.contains(
+        "strcmp(ack_error, \"WebSocket session already has an active writer\") == 0"
+    ));
+    assert!(generated.contains(
+        "flux__websocket_end_read(session); return flux__websocket_result(0, \"WebSocket peer closed\")"
+    ));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-websocket-peer-close-writer-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("WebSocket peer-close fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("WebSocket peer-close source should be writable");
+    let binary = root.join("websocket-peer-close-writer");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("WebSocket peer-close binary should build");
+    assert!(
+        built.status.success(),
+        "WebSocket peer-close build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        Command::new(&binary)
+            .output()
+            .expect("WebSocket peer-close server should run")
+    });
+    thread::sleep(Duration::from_millis(100));
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port))
+        .expect("WebSocket peer-close client should connect");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    client
+        .write_all(
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .unwrap();
+    let mut handshake = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !handshake.ends_with(b"\r\n\r\n") {
+        client.read_exact(&mut byte).unwrap();
+        handshake.push(byte[0]);
+    }
+    assert!(String::from_utf8_lossy(&handshake).contains("101 Switching Protocols"));
+
+    thread::sleep(Duration::from_millis(200));
+    let mask = [1_u8, 2, 3, 4];
+    let close_payload = [0x03_u8, 0xe8];
+    client
+        .write_all(&[
+            0x88,
+            0x82,
+            mask[0],
+            mask[1],
+            mask[2],
+            mask[3],
+            close_payload[0] ^ mask[0],
+            close_payload[1] ^ mask[1],
+        ])
+        .expect("masked peer close should be sent");
+
+    let mut drained = Vec::new();
+    client
+        .read_to_end(&mut drained)
+        .expect("peer-close client should drain until server cleanup");
+    let output = server
+        .join()
+        .expect("WebSocket peer-close server thread should finish");
+    assert!(
+        output.status.success(),
+        "peer close released a descriptor underneath an active writer: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "WebSocket peer closed\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn websocket_concurrent_readers_do_not_split_frames() {
     let probe = TcpListener::bind("127.0.0.1:0").expect("WebSocket reader probe should bind");
     let port = probe.local_addr().unwrap().port();
