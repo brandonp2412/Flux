@@ -60385,7 +60385,15 @@ app HelloApp
     assert!(generated.contains("gtk_button_new_with_label(\"Click me\")"));
     assert!(generated.contains("gtk_widget_set_size_request(flux__ui_action, -1, 40)"));
     assert!(generated.contains("G_CALLBACK(flux__ui_click_action)"));
-    assert!(generated.contains("flux__fn_clicked();"));
+    assert!(generated.contains(
+        "static void (*flux__ui_development_callback_clicked)(void) = flux__fn_clicked;"
+    ));
+    assert!(
+        generated
+            .contains("#define flux__ui_call_clicked() flux__ui_development_callback_clicked()")
+    );
+    assert!(generated.contains("#define flux__ui_call_clicked() flux__fn_clicked()"));
+    assert!(generated.contains("flux__ui_call_clicked();"));
     assert!(generated.contains("int main(int argc, char **argv)"));
 }
 
@@ -64216,7 +64224,7 @@ app HoverCard
     let generated = compile_to_c(source).expect("hover/leave events should lower natively");
     assert!(generated.contains("GtkEventControllerMotion *controller"));
     assert!(generated.contains("GtkGestureClick *gesture"));
-    assert!(generated.contains("flux__fn_tapped(); flux__ui_refresh();"));
+    assert!(generated.contains("flux__ui_call_tapped(); flux__ui_refresh();"));
     assert!(generated.contains("gtk_button_new()"));
     assert!(
         generated.contains("gtk_button_set_has_frame(GTK_BUTTON(flux__ui_action_title), FALSE)")
@@ -64227,7 +64235,9 @@ app HoverCard
     );
     assert!(generated.contains("g_signal_connect(flux__ui_action_title, \"clicked\", G_CALLBACK(flux__ui_activate_title), NULL)"));
     assert!(generated.contains("flux__ui_double_tap_title"));
-    assert!(generated.contains("if (n_press != 2) return; flux__fn_tapped(); flux__ui_refresh();"));
+    assert!(
+        generated.contains("if (n_press != 2) return; flux__ui_call_tapped(); flux__ui_refresh();")
+    );
     assert!(generated.contains("\"released\", G_CALLBACK(flux__ui_double_tap_title)"));
     assert!(
         generated
@@ -64261,7 +64271,7 @@ app HoverCard
     );
     assert!(generated.contains("flux__ui_state_hovered = true; flux__ui_refresh_changed(0);"));
     assert!(generated.contains("flux__ui_state_hovered = false; flux__ui_refresh_changed(0);"));
-    assert!(generated.contains("flux__fn_leave_notice(); flux__ui_refresh();"));
+    assert!(generated.contains("flux__ui_call_leave_notice(); flux__ui_refresh();"));
     assert!(generated.contains("gtk_widget_set_tooltip_text(flux__ui_action_title, \"Hover me\")"));
     assert!(generated.contains("GTK_ACCESSIBLE(flux__ui_action_title), GTK_ACCESSIBLE_PROPERTY_LABEL, \"Hover state title\", -1"));
     assert!(

@@ -20463,6 +20463,14 @@ fn emit_linux_gtk_application(
             )
         })?;
     let _ = view_layout_transition_duration(view, signatures)?;
+    for function in linux_ui_zero_arg_callback_functions(view) {
+        let slot = linux_ui_development_callback_slot_c_name(&function);
+        let call = linux_ui_callback_call_c_name(&function);
+        let target = function_c_name(&function);
+        out.push_str(&format!(
+            "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic void (*{slot})(void) = {target};\n#define {call}() {slot}()\n#else\n#define {call}() {target}()\n#endif\n"
+        ));
+    }
     let has_size_constraints = view.elements.iter().any(|element| {
         view_property(element, "max_width").is_some()
             || view_property(element, "max_height").is_some()
@@ -22321,7 +22329,7 @@ fn emit_linux_gtk_application(
         out.push_str(&format!(
             "static void flux__ui_click_{}(GtkWidget *widget, gpointer data) {{{active_guard} (void)widget; (void)data; {}(); flux__ui_refresh(); }}\n",
             element.name,
-            function_c_name(function),
+            linux_ui_callback_call_c_name(function),
         ));
     }
     for element in &view.elements {
@@ -26003,6 +26011,54 @@ fn android_ui_zero_arg_event_body(
     Ok(format!("{}(); {refresh}", function_c_name(function)))
 }
 
+fn linux_ui_zero_arg_callback_functions(view: &crate::ast::ViewDef) -> Vec<String> {
+    let mut functions = HashSet::new();
+    for element in &view.elements {
+        let click_action = match element.kind.as_str() {
+            "Button" => view_property(element, "on_press"),
+            "Toggle" => view_property(element, "on_change"),
+            "Radio" => view_property(element, "on_select"),
+            _ => None,
+        };
+        let mut collect = |action: Option<&crate::ast::ViewProperty>| {
+            let Some(action) = action else {
+                return;
+            };
+            if action.transition.is_some() {
+                return;
+            }
+            if let ExprKind::Var(function) = &action.value.kind {
+                functions.insert(function.clone());
+            }
+        };
+        collect(click_action);
+        for property in [
+            "on_tap",
+            "on_double_tap",
+            "on_long_press",
+            "on_context_menu",
+            "on_context_menu_select",
+            "on_hover",
+            "on_leave",
+            "on_focus",
+            "on_blur",
+        ] {
+            collect(view_property(element, property));
+        }
+    }
+    let mut functions = functions.into_iter().collect::<Vec<_>>();
+    functions.sort();
+    functions
+}
+
+fn linux_ui_development_callback_slot_c_name(function: &str) -> String {
+    format!("flux__ui_development_callback_{}", function)
+}
+
+fn linux_ui_callback_call_c_name(function: &str) -> String {
+    format!("flux__ui_call_{}", function)
+}
+
 fn ui_zero_arg_event_body(
     action: &crate::ast::ViewProperty,
     view: &crate::ast::ViewDef,
@@ -26024,7 +26080,7 @@ fn ui_zero_arg_event_body(
     };
     Ok(format!(
         "{}(); flux__ui_refresh();",
-        function_c_name(function)
+        linux_ui_callback_call_c_name(function)
     ))
 }
 
