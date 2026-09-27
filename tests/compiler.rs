@@ -17572,6 +17572,80 @@ fn directory_is_empty_reports_cardinality_and_errors() {
     let _ = fs::remove_dir_all(&root);
 }
 
+#[test]
+fn directory_count_reports_entries_and_errors() {
+    let root = std::env::current_dir()
+        .expect("current directory should be available")
+        .join("target")
+        .join(format!("flux-directory-count-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("fixture root should be writable");
+    let empty = root.join("empty");
+    let populated = root.join("populated");
+    let file = root.join("file.txt");
+    fs::create_dir(&empty).expect("empty directory fixture should be writable");
+    fs::create_dir(&populated).expect("populated directory fixture should be writable");
+    fs::write(populated.join("one.txt"), "1").expect("first entry should be writable");
+    fs::create_dir(populated.join("two")).expect("second entry should be writable");
+    fs::write(&file, "x").expect("file fixture should be writable");
+
+    let source = format!(
+        r#"fn main() -> i64 {{
+    let (emptyCount, emptyError) = directory.count("{}")
+    print(emptyCount)
+    print(emptyError == nil)
+    let (populatedCount, populatedError) = directory.count("{}")
+    print(populatedCount)
+    print(populatedError == nil)
+    let (_fileCount, fileError) = directory.count("{}")
+    print(fileError != nil)
+    return 0
+}}
+"#,
+        empty.display(),
+        populated.display(),
+        file.display(),
+    );
+    check_source(&source).expect("directory.count should typecheck");
+    let generated = compile_to_c(&source).expect("directory.count should lower");
+    assert!(generated.contains("flux__fs_directory_count"));
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("source program should be writable");
+    let binary = root.join("directory-count");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .env("TMPDIR", &root)
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("directory.count binary should build");
+    assert!(
+        built.status.success(),
+        "directory.count build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("directory.count binary should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "0\ntrue\n2\ntrue\ntrue\n"
+    );
+
+    let shaken = compile_to_c(
+        r#"fn main() -> i64 {
+    print(directory.exists("/tmp"))
+    return 0
+}
+"#,
+    )
+    .expect("count-free source should compile");
+    assert!(!shaken.contains("flux__fs_directory_count"));
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[cfg(unix)]
 #[test]
 fn file_read_link_lends_live_and_broken_link_targets() {
