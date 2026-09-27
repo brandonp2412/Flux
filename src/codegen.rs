@@ -11083,8 +11083,18 @@ r#"static inline const char *flux__path_relative_normalize(const char *value, ch
     if (length > 65536) return "path exceeds 65536 bytes";
     size_t output = 0;
     size_t index = 0;
-    bool absolute = length > 0 && (value[0] == '/' || value[0] == '\\');
-    if (absolute) result[output++] = '/';
+    bool drive = length >= 3 && value[1] == ':' && (value[2] == '/' || value[2] == '\\') && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z'));
+    bool absolute = flux__path_is_absolute(value);
+    if (drive) {
+        result[output++] = value[0];
+        result[output++] = ':';
+        result[output++] = '/';
+        index = 3;
+    } else if (absolute) {
+        result[output++] = '/';
+        index = 1;
+    }
+    size_t root = output;
     while (index < length) {
         while (index < length && (value[index] == '/' || value[index] == '\\')) index += 1;
         size_t begin = index;
@@ -11094,10 +11104,10 @@ r#"static inline const char *flux__path_relative_normalize(const char *value, ch
         bool parent = part_length == 2 && value[begin] == '.' && value[begin + 1] == '.';
         if (parent) {
             size_t previous = output;
-            if (previous > (absolute ? 1u : 0u)) {
-                if (previous > 0 && result[previous - 1] == '/') previous -= 1;
+            if (previous > root) {
+                if (result[previous - 1] == '/') previous -= 1;
                 size_t slash = previous;
-                while (slash > (absolute ? 1u : 0u) && result[slash - 1] != '/') slash -= 1;
+                while (slash > root && result[slash - 1] != '/') slash -= 1;
                 if (slash < previous && !(previous - slash == 2 && result[slash] == '.' && result[slash + 1] == '.')) {
                     output = slash;
                     continue;
@@ -11120,7 +11130,7 @@ r#"static inline const char *flux__path_relative_normalize(const char *value, ch
         output += part_length;
     }
     if (output == 0) result[output++] = '.';
-    while (output > 1 && result[output - 1] == '/') output -= 1;
+    while (output > root && output > 1 && result[output - 1] == '/') output -= 1;
     result[output] = '\0';
     *result_length = output;
     return NULL;
