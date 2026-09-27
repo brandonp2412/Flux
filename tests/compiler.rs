@@ -3330,7 +3330,7 @@ fn windows_rejects_unimplemented_portable_styles_instead_of_silently_dropping_th
         ("paddingEnd: 4", "paddingEnd"),
     ] {
         let source = format!(
-            "view Screen {{\n    grid columns: 1fr\n    grid rows: auto\n    Button action at 1,1\n        text: \"Styled\"\n        {property}\n}}\napp Screen\n"
+            "view Screen {{\n    grid columns: 1fr\n    grid rows: auto\n    TextInput field at 1,1\n        placeholder: \"Styled\"\n        {property}\n}}\napp Screen\n"
         );
         let program =
             fluxc::parser::parse(&source).expect("unsupported Windows padding source should parse");
@@ -3342,15 +3342,74 @@ fn windows_rejects_unimplemented_portable_styles_instead_of_silently_dropping_th
             &std::collections::HashMap::new(),
             fluxc::codegen::NativeTarget::Windows,
         )
-        .expect_err("non-Text Windows padding must fail target lowering");
+        .expect_err("unsupported Windows TextInput padding must fail target lowering");
         assert!(
             error.message.contains(&format!(
                 "bootstrap Windows {source_name} is not yet supported by the native Win32 backend"
             )),
-            "{source_name} should remain explicit for non-Text controls, got: {}",
+            "{source_name} should remain explicit for unsupported non-Text controls, got: {}",
             error.message
         );
     }
+}
+
+#[test]
+fn windows_button_padding_uses_native_text_margins_and_dynamic_relayout() {
+    let source = r#"
+view Screen {
+    state inset: i64 = 6
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Padded"
+        padding: inset
+        paddingTop: 2
+        paddingEnd: 10
+        alignX: "start"
+        alignY: "start"
+}
+app Screen(layoutDirection: "rtl")
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows Button padding source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows Button padding source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows Button padding should lower through native button text margins");
+
+    assert!(windows.contains("#define BCM_SETTEXTMARGIN (BCM_FIRST + 0x0004)"));
+    assert!(windows.contains("RECT flux__win_button_text_margin_action"));
+    assert!(windows.contains(
+        "flux__win_scale(INT64_C(10)), flux__win_scale(INT64_C(2)), flux__win_scale(flux__win_checked_margin((flux__ui_state_inset), \"padding\"))"
+    ));
+    assert!(windows.contains(
+        "SendMessageW(flux__ui_action, BCM_SETTEXTMARGIN, 0, (LPARAM)&flux__win_button_text_margin_action)"
+    ));
+    assert!(windows.contains(
+        "flux__win_layout(flux__win_refresh_client.right - flux__win_refresh_client.left, flux__win_refresh_client.bottom - flux__win_refresh_client.top)"
+    ));
+
+    let invalid = source.replace("padding: inset", "padding: -1");
+    let invalid_program =
+        fluxc::parser::parse(&invalid).expect("invalid Windows Button padding source should parse");
+    let invalid_signatures = fluxc::typecheck::check(&invalid_program)
+        .expect("invalid Windows Button padding source should typecheck before target validation");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &invalid_program,
+        &invalid_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("negative Windows Button padding must fail target lowering");
+    assert!(
+        error
+            .message
+            .contains("padding must be non-negative and fit within a 32-bit signed integer")
+    );
 }
 
 #[test]
@@ -4131,9 +4190,11 @@ app Screen
     assert!(selectable_dynamic_wrap_windows.contains(
         "flux__ui_label = CreateWindowExW(0, L\"EDIT\", L\"\", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY"
     ));
-    assert!(selectable_dynamic_wrap_windows.contains(
-        "flux__win_set_selectable_text_wrap(flux__ui_label, flux__win_next_wrap_label)"
-    ));
+    assert!(
+        selectable_dynamic_wrap_windows.contains(
+            "flux__win_set_selectable_text_wrap(flux__ui_label, flux__win_next_wrap_label)"
+        )
+    );
 
     for (property, message) in [
         (
@@ -5050,6 +5111,9 @@ view Screen {
         text: "Run"
         primary: true
         size: 18
+        padding: inset
+        paddingTop: 3
+        paddingEnd: 11
         shortcut: "Ctrl+Shift+Enter"
         onPress: count => count + 1
         onLongPress: count => count + 1
