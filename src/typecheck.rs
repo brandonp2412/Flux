@@ -9242,7 +9242,7 @@ fn check_qualified_call(
                     &code,
                     "websocket.closeWithCode code",
                 )?;
-                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if value < 1000 || value >= 5000 || (1004..=1006).contains(&value) || value == 1015)
+                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if value < 1000 || value >= 5000 || (1004..=1006).contains(&value) || (1015..=2999).contains(&value))
                 {
                     return Err(diag(
                         args[1].span,

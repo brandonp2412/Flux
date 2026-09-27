@@ -78265,18 +78265,37 @@ fn main() -> i64 {
 
 #[test]
 fn websocket_close_codes_and_reasons_are_checked() {
-    let source = r#"
-fn main() -> i64 {
-    let closeError: error = websocket.closeWithCode(3, 1006, "going away")
+    for code in [1006, 1015, 1016, 1999, 2000, 2999] {
+        let source = format!(
+            r#"
+fn main() -> i64 {{
+    let _closeError: error = websocket.closeWithCode(3, {code}, "going away")
     return 0
-}
-"#;
-    let error = check_source(source).expect_err("reserved WebSocket close code should fail");
-    assert!(
-        error
-            .message
-            .contains("websocket.closeWithCode code is invalid")
-    );
+}}
+"#
+        );
+        let error =
+            check_source(&source).expect_err("reserved WebSocket close code should fail");
+        assert!(
+            error
+                .message
+                .contains("websocket.closeWithCode code is invalid"),
+            "{code}: {}",
+            error.message
+        );
+    }
+
+    for code in [1000, 1014, 3000, 4999] {
+        let source = format!(
+            r#"
+fn main() -> i64 {{
+    let _closeError: error = websocket.closeWithCode(3, {code}, "going away")
+    return 0
+}}
+"#
+        );
+        check_source(&source).expect("valid WebSocket close code should typecheck");
+    }
 }
 
 #[test]
