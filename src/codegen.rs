@@ -20491,7 +20491,15 @@ fn emit_linux_gtk_application(
         }
         out.push_str(" return false; }\n#endif\n");
     }
-    let development_string_callbacks = linux_ui_string_callback_functions(view);
+    let mut development_string_callbacks = linux_ui_string_callback_functions(view);
+    for metadata in ["on_restore_state", "on_open_url"] {
+        if let Some(function) = application_metadata_function(application, metadata)
+            && !development_string_callbacks.contains(&function.to_string())
+        {
+            development_string_callbacks.push(function.to_string());
+        }
+    }
+    development_string_callbacks.sort();
     for function in &development_string_callbacks {
         let slot = linux_ui_development_callback_slot_c_name(function);
         let call = linux_ui_callback_call_c_name(function);
@@ -20846,7 +20854,7 @@ fn emit_linux_gtk_application(
         if let Some(function) = on_restore_state {
             out.push_str(&format!(
                 "static void flux__restore_app_state(void) {{ const char *path = flux__ui_app_state_path(); if (path == NULL) return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint64_t size = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXA\", 4) != 0 || fread(&size, sizeof(size), 1, file) != 1 || size > (uint64_t)16 * 1024 * 1024) {{ fclose(file); remove(path); return; }} char *state = malloc((size_t)size + 1); if (state == NULL || (size != 0 && fread(state, 1, (size_t)size, file) != (size_t)size)) {{ free(state); fclose(file); remove(path); return; }} state[size] = '\\0'; fclose(file); {}(state); free(state); remove(path); }}\n",
-                function_c_name(function)
+                linux_ui_callback_call_c_name(function)
             ));
         }
     }
@@ -24170,7 +24178,10 @@ fn emit_linux_gtk_application(
     let on_open_url = application_metadata_function(application, "on_open_url");
     if let Some(function) = on_open_url {
         out.push_str("static void flux__ui_open(GApplication *application, GFile **files, gint file_count, const gchar *hint, gpointer data) {\n    (void)hint;\n    (void)data;\n    if (gtk_application_get_windows(GTK_APPLICATION(application)) == NULL) flux__ui_activate(GTK_APPLICATION(application), NULL);\n    for (gint index = 0; index < file_count; index++) {\n        char *uri = g_file_get_uri(files[index]);\n        if (uri == NULL) continue;\n");
-        out.push_str(&format!("        {}(uri);\n", function_c_name(function)));
+        out.push_str(&format!(
+            "        {}(uri);\n",
+            linux_ui_callback_call_c_name(function)
+        ));
         out.push_str("        g_free(uri);\n    }\n}\n\n");
     }
     let application_flags = if on_open_url.is_some() {

@@ -65797,7 +65797,11 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
         generated.contains("gtk_application_get_windows(GTK_APPLICATION(application)) == NULL")
     );
     assert!(generated.contains("g_file_get_uri(files[index])"));
-    assert!(generated.contains("flux__fn_openUrl(uri);"));
+    assert!(generated.contains("flux__ui_call_openUrl(uri);"));
+    assert!(generated.contains(
+        "static void (*flux__ui_development_callback_openUrl)(const char *) = flux__fn_openUrl;"
+    ));
+    assert!(generated.contains("flux__ui_development_callback_openUrl = target; return true;"));
     assert!(
         generated
             .contains("gtk_application_new(\"app.flux.bootstrap\", G_APPLICATION_HANDLES_OPEN)")
@@ -66191,7 +66195,13 @@ app Screen(onSaveState: saveState, onRestoreState: restoreState)
     assert!(generated.contains("FLUX_APP_STATE_PATH"));
     assert!(generated.contains("FLXA"));
     assert!(generated.contains("flux__fn_saveState()"));
-    assert!(generated.contains("flux__fn_restoreState(state)"));
+    assert!(generated.contains("flux__ui_call_restoreState(state)"));
+    assert!(generated.contains(
+        "static void (*flux__ui_development_callback_restoreState)(const char *) = flux__fn_restoreState;"
+    ));
+    assert!(
+        generated.contains("flux__ui_development_callback_restoreState = target; return true;")
+    );
     assert!(generated.contains("rename(temporary, path)"));
     assert!(generated.contains("size > (uint64_t)16 * 1024 * 1024"));
     assert!(
