@@ -4420,6 +4420,62 @@ app Screen
 }
 
 #[test]
+fn windows_selectable_text_line_height_uses_native_richedit_selection() {
+    let source = r#"
+view Screen {
+    state leading: i64 = 135
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Copy me"
+        selectable: true
+        lineHeightPercent: leading
+}
+app Screen
+"#;
+    let program =
+        fluxc::parser::parse(source).expect("selectable line-height Windows Text should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("selectable line-height Windows Text should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("selectable line-height Windows Text should lower natively");
+
+    assert!(windows.contains(r#"LoadLibraryW(L"Msftedit.dll")"#));
+    assert!(windows.contains(
+        r#"flux__ui_label = CreateWindowExW(0, L"RICHEDIT50W", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY"#
+    ));
+    assert!(windows.contains("PFM_LINESPACING"));
+    assert!(windows.contains(
+        "flux__win_apply_rich_text_line_height(flux__ui_label, flux__win_text_layout_label.line_height_percent)"
+    ));
+    assert!(!windows.contains("SetWindowSubclass(flux__ui_label, flux__win_text_layout_proc"));
+    assert!(!windows.contains("flux__win_rich_text_nonselectable_proc, (UINT_PTR)10001"));
+
+    let invalid = source.replace("lineHeightPercent: leading", "letterSpacing: leading");
+    let program = fluxc::parser::parse(&invalid)
+        .expect("selectable letter-spacing Windows Text should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("selectable letter-spacing Windows Text should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("selectable Windows Text letter spacing must remain explicit");
+    assert!(
+        error
+            .message
+            .contains("selectable Text does not yet support letterSpacing")
+    );
+}
+
+#[test]
 fn windows_backend_keeps_ui_text_on_unicode_win32_path() {
     let source = r#"
 view Screen {

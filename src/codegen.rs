@@ -16647,10 +16647,18 @@ fn emit_windows_native_application(
     let uses_alignment = view.elements.iter().any(|element| {
         view_property(element, "align_x").is_some() || view_property(element, "align_y").is_some()
     });
-    let uses_rich_text = view
-        .elements
-        .iter()
-        .any(|element| element.kind == "Text" && view_property(element, "rich_text").is_some());
+    let uses_richedit_text = view.elements.iter().any(|element| {
+        if element.kind != "Text" {
+            return false;
+        }
+        if view_property(element, "rich_text").is_some() {
+            return true;
+        }
+        view_property(element, "selectable")
+            .and_then(|property| static_expr_bool(&property.value, signatures))
+            == Some(true)
+            && view_property(element, "line_height_percent").is_some()
+    });
     if uses_input_scopes {
         for element in view
             .elements
@@ -16769,13 +16777,13 @@ fn emit_windows_native_application(
         }
         let uses_custom_text_layout = view_property(element, "letter_spacing").is_some()
             || view_property(element, "line_height_percent").is_some();
-        if selectable && rich_text.is_none() && uses_custom_text_layout {
-            let property = view_property(element, "letter_spacing")
-                .or_else(|| view_property(element, "line_height_percent"))
-                .expect("custom Text layout property exists");
+        if selectable
+            && rich_text.is_none()
+            && let Some(property) = view_property(element, "letter_spacing")
+        {
             return Err(diag(
                 property.value.span,
-                "bootstrap Windows selectable Text does not yet support letterSpacing or lineHeightPercent",
+                "bootstrap Windows selectable Text does not yet support letterSpacing",
             ));
         }
         if selectable && rich_text.is_none() && windows_text_has_padding(element) {
@@ -17737,7 +17745,7 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
 "#,
         );
     }
-    if uses_rich_text {
+    if uses_richedit_text {
         out.push_str(
             r#"typedef struct {
     LONG cp_min;
@@ -20264,7 +20272,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             }
         }
     }
-    if uses_rich_text {
+    if uses_richedit_text {
         for element in view.elements.iter().filter(|element| {
             element.kind == "Text" && view_property(element, "rich_text").is_some()
         }) {
@@ -20289,6 +20297,22 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     element.name
                 ));
             }
+        }
+    }
+    if uses_richedit_text {
+        for element in view.elements.iter().filter(|element| {
+            element.kind == "Text"
+                && view_property(element, "rich_text").is_none()
+                && view_property(element, "selectable")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    == Some(true)
+                && view_property(element, "line_height_percent").is_some()
+        }) {
+            let variable = ui_widget_c_name(&element.name);
+            out.push_str(&format!(
+                "flux__win_apply_rich_text_line_height({variable}, flux__win_text_layout_{}.line_height_percent);\n",
+                element.name
+            ));
         }
     }
     out.push_str("flux__win_refreshing = previous_refreshing; }\n");
@@ -20518,7 +20542,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     } else {
         ""
     };
-    let rich_text_init = if uses_rich_text {
+    let rich_text_init = if uses_richedit_text {
         " if (!flux__win_rich_text_init()) return 1;"
     } else {
         ""
@@ -20631,7 +20655,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 let nowrap = view_property(element, "wrap")
                     .and_then(|property| static_expr_bool(&property.value, signatures))
                     .is_some_and(|wrap| !wrap);
-                if rich_text_markup.is_some() {
+                let selectable_line_height =
+                    selectable && view_property(element, "line_height_percent").is_some();
+                if rich_text_markup.is_some() || selectable_line_height {
                     let style = match alignment.as_str() {
                         "left" | "fill" if nowrap && selectable => {
                             "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
@@ -21045,7 +21071,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     if uses_text_drag_drop {
         out.push_str(" flux__win_ole_shutdown();");
     }
-    if uses_rich_text {
+    if uses_richedit_text {
         out.push_str(" flux__win_rich_text_shutdown();");
     }
     if uses_accessibility {
