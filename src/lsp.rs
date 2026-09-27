@@ -1273,6 +1273,28 @@ fn member_receiver_at_cursor(
     while start > 0 && (is_identifier_byte(bytes[start - 1]) || bytes[start - 1] == b'.') {
         start -= 1;
     }
+    if start > 0 && bytes[start - 1] == b')' {
+        let mut call_depth = 0usize;
+        let mut call_open = None;
+        for index in (0..start).rev() {
+            match bytes[index] {
+                b')' => call_depth += 1,
+                b'(' => {
+                    call_depth = call_depth.checked_sub(1)?;
+                    if call_depth == 0 {
+                        call_open = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let call_open = call_open?;
+        start = call_open;
+        while start > 0 && is_identifier_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+    }
     (start < bytes.len()).then(|| receiver_prefix[start..].to_string())
 }
 
@@ -2915,6 +2937,37 @@ fn member_receiver_type_name(
     receiver: &str,
     program: &crate::ast::Program,
 ) -> Option<String> {
+    fn project_member(
+        ty: crate::ast::Type,
+        member: &str,
+        program: &crate::ast::Program,
+    ) -> Option<crate::ast::Type> {
+        let concrete_name = named_type_name(&ty, program)?;
+        let concrete = crate::ast::Type::parse(&concrete_name)?;
+        match concrete {
+            crate::ast::Type::List(element) => match crate::builtin_names::list_member_impl(member)
+            {
+                "length" => Some(crate::ast::Type::I64),
+                "isEmpty" | "isNotEmpty" => Some(crate::ast::Type::Bool),
+                "first" | "last" | "single" => Some(*element),
+                _ => None,
+            },
+            crate::ast::Type::Set(_) | crate::ast::Type::Map(_, _) => match member {
+                "count" => Some(crate::ast::Type::I64),
+                "empty" | "nonempty" => Some(crate::ast::Type::Bool),
+                _ => None,
+            },
+            _ => {
+                let definition = struct_definition_for_type(&concrete_name, program)?;
+                definition
+                    .fields
+                    .iter()
+                    .find(|field| field.name == member)
+                    .map(|field| field.ty.clone())
+            }
+        }
+    }
+
     if receiver.ends_with(']') {
         let bytes = receiver.as_bytes();
         let mut depth = 0usize;
@@ -2960,43 +3013,37 @@ fn member_receiver_type_name(
         return named_type_name(return_type, program);
     }
 
-    let mut parts = receiver.split('.');
-    let root = parts.next()?;
-    if !is_valid_identifier(root) {
-        return None;
+    let bytes = receiver.as_bytes();
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut split = None;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        match byte {
+            b'(' => paren_depth += 1,
+            b')' if paren_depth > 0 => paren_depth -= 1,
+            b'[' => bracket_depth += 1,
+            b']' if bracket_depth > 0 => bracket_depth -= 1,
+            b'.' if paren_depth == 0 && bracket_depth == 0 => split = Some(index),
+            _ => {}
+        }
     }
-    let mut current = crate::ast::Type::parse(&visible_value_type_name(source, line_index, root)?)?;
-    for member in parts {
+    if let Some(index) = split {
+        let base = receiver[..index].trim_end();
+        let member = receiver[index + 1..].trim();
         if !is_valid_identifier(member) {
             return None;
         }
-        let concrete_name = named_type_name(&current, program)?;
-        let concrete = crate::ast::Type::parse(&concrete_name)?;
-        current = match concrete {
-            crate::ast::Type::List(element) => match crate::builtin_names::list_member_impl(member)
-            {
-                "length" => crate::ast::Type::I64,
-                "isEmpty" | "isNotEmpty" => crate::ast::Type::Bool,
-                "first" | "last" | "single" => *element,
-                _ => return None,
-            },
-            crate::ast::Type::Set(_) | crate::ast::Type::Map(_, _) => match member {
-                "count" => crate::ast::Type::I64,
-                "empty" | "nonempty" => crate::ast::Type::Bool,
-                _ => return None,
-            },
-            _ => {
-                let definition = struct_definition_for_type(&concrete_name, program)?;
-                definition
-                    .fields
-                    .iter()
-                    .find(|field| field.name == member)?
-                    .ty
-                    .clone()
-            }
-        };
+        let base_type = crate::ast::Type::parse(&member_receiver_type_name(
+            source, line_index, base, program,
+        )?)?;
+        return named_type_name(&project_member(base_type, member, program)?, program);
     }
-    named_type_name(&current, program)
+
+    if !is_valid_identifier(receiver) {
+        return None;
+    }
+    let ty = crate::ast::Type::parse(&visible_value_type_name(source, line_index, receiver)?)?;
+    named_type_name(&ty, program)
 }
 
 fn named_type_name(ty: &crate::ast::Type, program: &crate::ast::Program) -> Option<String> {
@@ -9844,7 +9891,23 @@ mod tests {
     #[test]
     fn struct_field_completion_follows_nested_fields_and_function_results() {
         let uri = "file:///tmp/expression-member-completion.flux";
-        let source = "struct Profile {\n    display_name: str\n    score: i64\n}\nstruct User {\n    profile: Profile\n}\nfn load_user() -> User {\n    return User { profile: Profile { display_name: \"Ada\", score: 42 } }\n}\nfn describe(user: User) -> i64 {\n    user.profile.\n    load_user().\n    return 0\n}\n";
+        let source = r#"struct Profile {
+    display_name: str
+    score: i64
+}
+struct User {
+    profile: Profile
+}
+fn load_user() -> User {
+    return User { profile: Profile { display_name: "Ada", score: 42 } }
+}
+fn describe(user: User) -> i64 {
+    user.profile.
+    load_user().
+    load_user().profile.
+    return 0
+}
+"#;
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
 
         let nested_line = source
@@ -9861,9 +9924,9 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        assert!(nested.contains("\"label\":\"display_name\""));
+        assert!(nested.contains(r#""label":"display_name""#));
         assert!(nested.contains("field Profile.display_name: str"));
-        assert!(nested.contains("\"label\":\"score\""));
+        assert!(nested.contains(r#""label":"score""#));
 
         let call_line = source
             .lines()
@@ -9879,8 +9942,26 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        assert!(call.contains("\"label\":\"profile\""));
+        assert!(call.contains(r#""label":"profile""#));
         assert!(call.contains("field User.profile: Profile"));
+
+        let chained_line = source
+            .lines()
+            .position(|line| line.trim() == "load_user().profile.")
+            .expect("chained call-result member line should exist");
+        let chained_source = source.lines().nth(chained_line).unwrap();
+        let chained = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(chained_line),
+            Some(chained_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(chained.contains(r#""label":"display_name""#));
+        assert!(chained.contains("field Profile.display_name: str"));
+        assert!(chained.contains(r#""label":"score""#));
     }
 
     #[test]
