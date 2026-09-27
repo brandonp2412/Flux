@@ -4164,11 +4164,16 @@ fn windows_rich_text_uses_native_richedit_runs_and_preserves_selection_semantics
     let source = r#"
 view Screen {
     state emphasized: bool = false
+    state inset: i64 = 4
     grid columns: 1fr
     grid rows: auto
     Text label at 1,1
         richText: "<b>A😀</b><i>&amp;</i><u>Flux</u>"
         selectable: true
+        padding: inset
+        paddingTop: 2
+        paddingStart: 6
+        paddingEnd: 8
         bold: emphasized
         color: "accent"
         onTap: emphasized => true
@@ -4200,14 +4205,17 @@ app Screen
     assert!(windows.contains("{ 3, 4, FLUX__WIN_RICH_CFE_ITALIC }"));
     assert!(windows.contains("{ 4, 8, FLUX__WIN_RICH_CFE_UNDERLINE }"));
     assert!(windows.contains("flux__win_apply_rich_text(flux__ui_label"));
+    assert!(windows.contains("EM_SETRECTNP"));
+    assert!(windows.contains("flux__win_next_padding_top_label"));
+    assert!(windows.contains("flux__win_text_layout_label.padding_top"));
     assert!(windows.contains("flux__win_selectable_tap_proc_0"));
     assert!(windows.contains("flux__win_rich_text_shutdown();"));
     assert!(!windows.contains("flux__win_rich_text_nonselectable_proc, (UINT_PTR)10001"));
 
     for (property, message) in [
         (
-            "padding: 4",
-            "rich Text does not yet support letterSpacing, lineHeightPercent, or padding",
+            "letterSpacing: 1",
+            "rich Text does not yet support letterSpacing or lineHeightPercent",
         ),
         (
             r#"wrapMode: "char""#,
@@ -4257,6 +4265,8 @@ view Screen {
     grid rows: auto
     Text label at 1,1
         richText: "<b>Native</b>"
+        padding: 5
+        paddingBottom: 3
         onTap: tapped => true
 }
 app Screen
@@ -4274,6 +4284,8 @@ app Screen
     .expect("nonselectable Windows rich Text should lower");
 
     assert!(windows.contains(r#"L"RICHEDIT50W""#));
+    assert!(windows.contains("EM_SETRECTNP"));
+    assert!(windows.contains("flux__win_text_layout_label.padding_bottom"));
     assert!(!windows.contains("WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY"));
     assert!(windows.contains(
         "SetWindowSubclass(flux__ui_label, flux__win_rich_text_nonselectable_proc, (UINT_PTR)10001, 0)"
