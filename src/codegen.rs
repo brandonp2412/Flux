@@ -22520,7 +22520,7 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "static void flux__ui_context_menu_item_select_{}(GtkButton *button, gpointer data) {{ int item_index = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), \"flux-menu-index\")); {}((int64_t)item_index); flux__ui_refresh(); gtk_popover_popdown(GTK_POPOVER(data)); }}\n",
                 element.name,
-                function_c_name(function),
+                linux_ui_callback_call_c_name(function),
             ));
         }
         if view_property(element, "on_context_menu").is_some()
@@ -26199,10 +26199,12 @@ fn linux_ui_string_callback_functions(view: &crate::ast::ViewDef) -> Vec<String>
 fn linux_ui_i64_callback_functions(view: &crate::ast::ViewDef) -> Vec<String> {
     let mut functions = HashSet::new();
     for element in &view.elements {
-        if let Some(action) = view_property(element, "on_scale")
-            && let ExprKind::Var(function) = &action.value.kind
-        {
-            functions.insert(function.clone());
+        for property in ["on_scale", "on_context_menu_item_select"] {
+            if let Some(action) = view_property(element, property)
+                && let ExprKind::Var(function) = &action.value.kind
+            {
+                functions.insert(function.clone());
+            }
         }
     }
     let mut functions = functions.into_iter().collect::<Vec<_>>();
