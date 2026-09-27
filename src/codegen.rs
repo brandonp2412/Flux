@@ -16947,22 +16947,6 @@ fn emit_windows_native_application(
                 ));
             }
         }
-        if element.kind == "TextInput" {
-            for (property_name, source_name) in [
-                ("padding", "padding"),
-                ("padding_top", "paddingTop"),
-                ("padding_bottom", "paddingBottom"),
-            ] {
-                if let Some(property) = view_property(element, property_name) {
-                    return Err(diag(
-                        property.value.span,
-                        &format!(
-                            "bootstrap Windows {source_name} is not yet supported by the native Win32 backend"
-                        ),
-                    ));
-                }
-            }
-        }
         if !matches!(
             element.kind.as_str(),
             "Text"
@@ -19634,6 +19618,27 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         let button_padding_end_value = button_padding_end
             .as_deref()
             .unwrap_or(button_padding_value);
+        let text_input_padding = if element.kind == "TextInput" {
+            windows_layout_margin_value(element, "padding", "padding", view, signatures)?
+        } else {
+            None
+        };
+        let text_input_padding_top = if element.kind == "TextInput" {
+            windows_layout_margin_value(element, "padding_top", "paddingTop", view, signatures)?
+        } else {
+            None
+        };
+        let text_input_padding_bottom = if element.kind == "TextInput" {
+            windows_layout_margin_value(
+                element,
+                "padding_bottom",
+                "paddingBottom",
+                view,
+                signatures,
+            )?
+        } else {
+            None
+        };
         let text_input_padding_start = if element.kind == "TextInput" {
             windows_layout_margin_value(element, "padding_start", "paddingStart", view, signatures)?
         } else {
@@ -19644,10 +19649,19 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         } else {
             None
         };
-        let text_input_padding_start_value =
-            text_input_padding_start.as_deref().unwrap_or("INT64_C(0)");
-        let text_input_padding_end_value =
-            text_input_padding_end.as_deref().unwrap_or("INT64_C(0)");
+        let text_input_padding_value = text_input_padding.as_deref().unwrap_or("INT64_C(0)");
+        let text_input_padding_top_value = text_input_padding_top
+            .as_deref()
+            .unwrap_or(text_input_padding_value);
+        let text_input_padding_bottom_value = text_input_padding_bottom
+            .as_deref()
+            .unwrap_or(text_input_padding_value);
+        let text_input_padding_start_value = text_input_padding_start
+            .as_deref()
+            .unwrap_or(text_input_padding_value);
+        let text_input_padding_end_value = text_input_padding_end
+            .as_deref()
+            .unwrap_or(text_input_padding_value);
         let alignment_value = |property_name: &str,
                                source_name: &str|
          -> Result<(String, String), Diagnostic> {
@@ -19705,13 +19719,19 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     ),
                 )
             } else if element.kind == "TextInput"
-                && (text_input_padding_start.is_some() || text_input_padding_end.is_some())
+                && (text_input_padding.is_some()
+                    || text_input_padding_top.is_some()
+                    || text_input_padding_bottom.is_some()
+                    || text_input_padding_start.is_some()
+                    || text_input_padding_end.is_some())
             {
                 (
                     format!(
                         "(flux__win_scale({text_input_padding_start_value}) + flux__win_scale({text_input_padding_end_value}))"
                     ),
-                    "flux__win_scale(INT64_C(12))".to_string(),
+                    format!(
+                        "(flux__win_scale({text_input_padding_top_value}) + flux__win_scale({text_input_padding_bottom_value}))"
+                    ),
                 )
             } else {
                 let (horizontal, vertical) = match element.kind.as_str() {
@@ -19958,7 +19978,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             String::new()
         };
         let text_input_horizontal_margin = if element.kind == "TextInput"
-            && (text_input_padding_start.is_some() || text_input_padding_end.is_some())
+            && (text_input_padding.is_some()
+                || text_input_padding_start.is_some()
+                || text_input_padding_end.is_some())
         {
             let (text_input_padding_left_value, text_input_padding_right_value) =
                 if layout_direction == "rtl" {
@@ -19968,6 +19990,24 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 };
             format!(
                 "int flux__win_text_input_margin_left_{0} = flux__win_scale({text_input_padding_left_value}); int flux__win_text_input_margin_right_{0} = flux__win_scale({text_input_padding_right_value}); if (flux__win_text_input_margin_left_{0} < 0 || flux__win_text_input_margin_left_{0} > UINT16_MAX || flux__win_text_input_margin_right_{0} < 0 || flux__win_text_input_margin_right_{0} > UINT16_MAX) {{ fputs(\"Flux runtime error: TextInput horizontal padding exceeds the native EDIT margin range\\n\", stderr); abort(); }} SendMessageW({variable}, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM((WORD)flux__win_text_input_margin_left_{0}, (WORD)flux__win_text_input_margin_right_{0})); ",
+                element.name
+            )
+        } else {
+            String::new()
+        };
+        let text_input_format_rect = if element.kind == "TextInput"
+            && (text_input_padding.is_some()
+                || text_input_padding_top.is_some()
+                || text_input_padding_bottom.is_some())
+        {
+            let (text_input_padding_left_value, text_input_padding_right_value) =
+                if layout_direction == "rtl" {
+                    (text_input_padding_end_value, text_input_padding_start_value)
+                } else {
+                    (text_input_padding_start_value, text_input_padding_end_value)
+                };
+            format!(
+                "int flux__win_text_input_padding_left_{0} = flux__win_scale({text_input_padding_left_value}); int flux__win_text_input_padding_right_{0} = flux__win_scale({text_input_padding_right_value}); int flux__win_text_input_padding_top_{0} = flux__win_scale({text_input_padding_top_value}); int flux__win_text_input_padding_bottom_{0} = flux__win_scale({text_input_padding_bottom_value}); RECT flux__win_text_input_format_rect_{0} = {{ flux__win_text_input_padding_left_{0}, flux__win_text_input_padding_top_{0}, control_width - flux__win_text_input_padding_right_{0}, control_height - flux__win_text_input_padding_bottom_{0} }}; if (flux__win_text_input_format_rect_{0}.right < flux__win_text_input_format_rect_{0}.left) flux__win_text_input_format_rect_{0}.right = flux__win_text_input_format_rect_{0}.left; if (flux__win_text_input_format_rect_{0}.bottom < flux__win_text_input_format_rect_{0}.top) flux__win_text_input_format_rect_{0}.bottom = flux__win_text_input_format_rect_{0}.top; SendMessageW({variable}, EM_SETRECTNP, 0, (LPARAM)&flux__win_text_input_format_rect_{0}); ",
                 element.name
             )
         } else {
@@ -19987,7 +20027,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         } else {
             String::new()
         };
-        out.push_str(&format!("if ({variable} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; {alignment_setup}int64_t requested_margin_top = {margin_top_value}; int64_t requested_margin_bottom = {margin_bottom_value}; int64_t requested_margin_start = {margin_start_value}; int64_t requested_margin_end = {margin_end_value}; int64_t requested_translate_x = {translate_x_value}; int64_t requested_translate_y = {translate_y_value}; int64_t requested_radius = {radius_value}; {radius_corner_values}if (requested_translate_x < INT32_MIN || requested_translate_x > INT32_MAX) {{ fputs(\"Flux runtime error: translateX must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_translate_y < INT32_MIN || requested_translate_y > INT32_MAX) {{ fputs(\"Flux runtime error: translateY must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_radius < 0 || requested_radius > INT32_MAX) {{ fputs(\"Flux runtime error: radius must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }} int physical_margin_top = flux__win_scale(requested_margin_top); int physical_margin_bottom = flux__win_scale(requested_margin_bottom); int physical_margin_start = flux__win_scale(requested_margin_start); int physical_margin_end = flux__win_scale(requested_margin_end); int physical_translate_x = flux__win_scale(requested_translate_x); int physical_translate_y = flux__win_scale(requested_translate_y); int64_t adjusted_x = (int64_t)x + physical_margin_start + physical_translate_x; int64_t adjusted_y = (int64_t)y + physical_margin_top + physical_translate_y; x = adjusted_x < INT32_MIN ? INT32_MIN : (adjusted_x > INT32_MAX ? INT32_MAX : (int)adjusted_x); y = adjusted_y < INT32_MIN ? INT32_MIN : (adjusted_y > INT32_MAX ? INT32_MAX : (int)adjusted_y); int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end; int64_t margin_height = (int64_t)control_height - physical_margin_top - physical_margin_bottom; control_width = margin_width < 1 ? 1 : (margin_width > INT32_MAX ? INT32_MAX : (int)margin_width); control_height = margin_height < 1 ? 1 : (margin_height > INT32_MAX ? INT32_MAX : (int)margin_height); int available_width = control_width; int available_height = control_height; int64_t requested_min_width = {min_width_value}; int64_t requested_min_height = {min_height_value}; int64_t requested_max_width = {max_width_value}; int64_t requested_max_height = {max_height_value}; {width_relationship}{height_relationship}{preferred_size}{text_width_limit}{text_height_limit}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} {alignment_position}MoveWindow({variable}, x, y, control_width, control_height, TRUE); {button_text_margin}{text_input_horizontal_margin}{edit_backed_text_format_rect}{apply_radius}}}\n"));
+        out.push_str(&format!("if ({variable} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; {alignment_setup}int64_t requested_margin_top = {margin_top_value}; int64_t requested_margin_bottom = {margin_bottom_value}; int64_t requested_margin_start = {margin_start_value}; int64_t requested_margin_end = {margin_end_value}; int64_t requested_translate_x = {translate_x_value}; int64_t requested_translate_y = {translate_y_value}; int64_t requested_radius = {radius_value}; {radius_corner_values}if (requested_translate_x < INT32_MIN || requested_translate_x > INT32_MAX) {{ fputs(\"Flux runtime error: translateX must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_translate_y < INT32_MIN || requested_translate_y > INT32_MAX) {{ fputs(\"Flux runtime error: translateY must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_radius < 0 || requested_radius > INT32_MAX) {{ fputs(\"Flux runtime error: radius must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }} int physical_margin_top = flux__win_scale(requested_margin_top); int physical_margin_bottom = flux__win_scale(requested_margin_bottom); int physical_margin_start = flux__win_scale(requested_margin_start); int physical_margin_end = flux__win_scale(requested_margin_end); int physical_translate_x = flux__win_scale(requested_translate_x); int physical_translate_y = flux__win_scale(requested_translate_y); int64_t adjusted_x = (int64_t)x + physical_margin_start + physical_translate_x; int64_t adjusted_y = (int64_t)y + physical_margin_top + physical_translate_y; x = adjusted_x < INT32_MIN ? INT32_MIN : (adjusted_x > INT32_MAX ? INT32_MAX : (int)adjusted_x); y = adjusted_y < INT32_MIN ? INT32_MIN : (adjusted_y > INT32_MAX ? INT32_MAX : (int)adjusted_y); int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end; int64_t margin_height = (int64_t)control_height - physical_margin_top - physical_margin_bottom; control_width = margin_width < 1 ? 1 : (margin_width > INT32_MAX ? INT32_MAX : (int)margin_width); control_height = margin_height < 1 ? 1 : (margin_height > INT32_MAX ? INT32_MAX : (int)margin_height); int available_width = control_width; int available_height = control_height; int64_t requested_min_width = {min_width_value}; int64_t requested_min_height = {min_height_value}; int64_t requested_max_width = {max_width_value}; int64_t requested_max_height = {max_height_value}; {width_relationship}{height_relationship}{preferred_size}{text_width_limit}{text_height_limit}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} {alignment_position}MoveWindow({variable}, x, y, control_width, control_height, TRUE); {button_text_margin}{text_input_horizontal_margin}{text_input_format_rect}{edit_backed_text_format_rect}{apply_radius}}}\n"));
     }
     out.push_str("}\nstatic void flux__win_refresh(void) { bool previous_refreshing = flux__win_refreshing; flux__win_refreshing = true;\n");
     for derived in &view.derived {

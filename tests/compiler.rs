@@ -3321,34 +3321,6 @@ fn windows_rejects_unimplemented_portable_styles_instead_of_silently_dropping_th
             error.message
         );
     }
-
-    for (property, source_name) in [
-        ("padding: 4", "padding"),
-        ("paddingTop: 4", "paddingTop"),
-        ("paddingBottom: 4", "paddingBottom"),
-    ] {
-        let source = format!(
-            "view Screen {{\n    grid columns: 1fr\n    grid rows: auto\n    TextInput field at 1,1\n        placeholder: \"Styled\"\n        {property}\n}}\napp Screen\n"
-        );
-        let program =
-            fluxc::parser::parse(&source).expect("unsupported Windows padding source should parse");
-        let signatures = fluxc::typecheck::check(&program)
-            .expect("unsupported Windows padding source should remain portable and typecheck");
-        let error = fluxc::codegen::emit_c_for_target_with_source_paths(
-            &program,
-            &signatures,
-            &std::collections::HashMap::new(),
-            fluxc::codegen::NativeTarget::Windows,
-        )
-        .expect_err("unsupported Windows TextInput padding must fail target lowering");
-        assert!(
-            error.message.contains(&format!(
-                "bootstrap Windows {source_name} is not yet supported by the native Win32 backend"
-            )),
-            "{source_name} should remain explicit for unsupported non-Text controls, got: {}",
-            error.message
-        );
-    }
 }
 
 #[test]
@@ -3482,6 +3454,75 @@ app Screen(layoutDirection: "rtl")
         error
             .message
             .contains("padding must be non-negative and fit within a 32-bit signed integer")
+    );
+}
+
+#[test]
+fn windows_text_input_padding_uses_native_edit_format_rect() {
+    let source = r#"
+view Screen {
+    state inset: i64 = 6
+    grid columns: 1fr
+    grid rows: auto
+    TextInput field at 1,1
+        placeholder: "Styled"
+        padding: inset
+        paddingTop: 3
+        paddingEnd: 10
+        alignX: "start"
+        alignY: "start"
+}
+app Screen(layoutDirection: "rtl")
+"#;
+    let program =
+        fluxc::parser::parse(source).expect("Windows TextInput padding source should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("Windows TextInput padding source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows TextInput padding should lower through the native EDIT format rectangle");
+
+    assert!(windows.contains("EM_SETRECTNP"));
+    assert!(
+        windows.contains("flux__win_text_input_padding_left_field = flux__win_scale(INT64_C(10))")
+    );
+    assert!(windows.contains(
+        "flux__win_text_input_padding_right_field = flux__win_scale(flux__win_checked_margin((flux__ui_state_inset), \"padding\"))"
+    ));
+    assert!(
+        windows.contains("flux__win_text_input_padding_top_field = flux__win_scale(INT64_C(3))")
+    );
+    assert!(windows.contains(
+        "flux__win_text_input_padding_bottom_field = flux__win_scale(flux__win_checked_margin((flux__ui_state_inset), \"padding\"))"
+    ));
+    assert!(windows.contains(
+        "SendMessageW(flux__ui_field, EM_SETRECTNP, 0, (LPARAM)&flux__win_text_input_format_rect_field)"
+    ));
+    assert!(windows.contains(
+        "flux__win_preferred_size(flux__ui_field, false, (flux__win_scale(flux__win_checked_margin((flux__ui_state_inset), \"padding\")) + flux__win_scale(INT64_C(10))), (flux__win_scale(INT64_C(3)) + flux__win_scale(flux__win_checked_margin((flux__ui_state_inset), \"padding\")))"
+    ));
+
+    let invalid = source.replace("paddingTop: 3", "paddingTop: -1");
+    let invalid_program = fluxc::parser::parse(&invalid)
+        .expect("invalid Windows TextInput padding source should parse");
+    let invalid_signatures = fluxc::typecheck::check(&invalid_program).expect(
+        "invalid Windows TextInput padding source should typecheck before target validation",
+    );
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &invalid_program,
+        &invalid_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("negative Windows TextInput padding must fail target lowering");
+    assert!(
+        error
+            .message
+            .contains("paddingTop must be non-negative and fit within a 32-bit signed integer")
     );
 }
 
