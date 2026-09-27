@@ -1210,7 +1210,7 @@ fn member_receiver_at_cursor(
             start -= 1;
         }
         if start == open {
-            return None;
+            return (open == 0).then(|| receiver_prefix.to_string());
         }
         return Some(receiver_prefix[start..].to_string());
     }
@@ -2965,6 +2965,35 @@ fn member_receiver_type_name(
                     .find(|field| field.name == member)
                     .map(|field| field.ty.clone())
             }
+        }
+    }
+
+    if receiver.starts_with('(') && receiver.ends_with(')') {
+        let bytes = receiver.as_bytes();
+        let mut depth = 0usize;
+        let mut closes_at_end = false;
+        for (index, byte) in bytes.iter().copied().enumerate() {
+            match byte {
+                b'(' => depth += 1,
+                b')' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        closes_at_end = index + 1 == bytes.len();
+                        if !closes_at_end {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if closes_at_end && depth == 0 {
+            return member_receiver_type_name(
+                source,
+                line_index,
+                receiver[1..receiver.len() - 1].trim(),
+                program,
+            );
         }
     }
 
@@ -9962,6 +9991,46 @@ fn describe(user: User) -> i64 {
         assert!(chained.contains(r#""label":"display_name""#));
         assert!(chained.contains("field Profile.display_name: str"));
         assert!(chained.contains(r#""label":"score""#));
+    }
+
+    #[test]
+    fn struct_field_completion_follows_parenthesized_receivers() {
+        let uri = "file:///tmp/parenthesized-member-completion.flux";
+        let source = r#"struct Profile {
+    display_name: str
+}
+struct User {
+    profile: Profile
+}
+fn load_user() -> User {
+    return User { profile: Profile { display_name: "Ada" } }
+}
+fn describe(users: User[]) -> i64 {
+    (load_user()).profile.
+    (users.first).profile.
+    return 0
+}
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+
+        for target in ["(load_user()).profile.", "(users.first).profile."] {
+            let line_index = source
+                .lines()
+                .position(|line| line.trim() == target)
+                .expect("parenthesized member line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let items = JsonValue::Array(completion_items_at_cursor(
+                uri,
+                source,
+                &documents,
+                Some(line_index),
+                Some(line.len()),
+                PositionEncoding::Utf8,
+            ))
+            .to_json();
+            assert!(items.contains(r#""label":"display_name""#));
+            assert!(items.contains("field Profile.display_name: str"));
+        }
     }
 
     #[test]
