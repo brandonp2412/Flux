@@ -66108,6 +66108,37 @@ app Screen(onConfigurationChanged: configurationChanged)
 }
 
 #[test]
+fn windows_low_memory_lifecycle_dispatches_native_compacting_message() {
+    let source = r#"
+fn lowMemory() -> void {
+    print("low memory")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+
+app Screen(onLowMemory: lowMemory)
+"#;
+    check_source(source).expect("Windows low-memory callback should typecheck");
+    let program = fluxc::parser::parse(source).expect("Windows low-memory source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows low-memory source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows low-memory callback should lower");
+    assert!(generated.contains("case WM_COMPACTING:"));
+    assert!(generated.contains("flux__fn_lowMemory();"));
+}
+
+#[test]
 fn linux_secure_storage_uses_application_scoped_secret_service_values() {
     let source = r#"
 fn secureValue(value: str) -> void {
