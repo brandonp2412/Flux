@@ -1857,6 +1857,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "isRoot",
+            3,
+            "fn path.isRoot(value: str) -> bool",
+        );
+        push_completion_item(
+            items,
+            seen,
             "hasExtension",
             3,
             "fn path.hasExtension(value: str) -> bool",
@@ -1881,6 +1888,13 @@ fn add_qualified_namespace_completions(
             "resolve",
             3,
             "fn path.resolve(base: str, target: str, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "root",
+            3,
+            "fn path.root(value: str, callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,
@@ -4446,12 +4460,14 @@ fn signature_help_for_document_cached(
         }
         if namespace == "path" {
             return match implementation_member {
-                "isAbsolute" | "isRelative" | "hasExtension" => Some(signature_help_for_builtin(
-                    &format!("path.{implementation_member}"),
-                    &["value: str"],
-                    "bool",
-                    active_parameter,
-                )),
+                "isAbsolute" | "isRelative" | "isRoot" | "hasExtension" => {
+                    Some(signature_help_for_builtin(
+                        &format!("path.{implementation_member}"),
+                        &["value: str"],
+                        "bool",
+                        active_parameter,
+                    ))
+                }
                 "join" => Some(signature_help_for_builtin(
                     "path.join",
                     &["base: str", "child: str", "callback: fn(str) -> void"],
@@ -4476,7 +4492,7 @@ fn signature_help_for_document_cached(
                     "error",
                     active_parameter,
                 )),
-                "dirname" | "basename" | "extension" | "stem" | "normalize" => {
+                "dirname" | "basename" | "extension" | "stem" | "normalize" | "root" => {
                     Some(signature_help_for_builtin(
                         &format!("path.{implementation_member}"),
                         &["value: str", "callback: fn(str) -> void"],
@@ -9758,6 +9774,7 @@ mod tests {
         .to_json();
         assert!(path_items.contains("fn path.isAbsolute(value: str) -> bool"));
         assert!(path_items.contains("fn path.isRelative(value: str) -> bool"));
+        assert!(path_items.contains("fn path.isRoot(value: str) -> bool"));
         assert!(path_items.contains("fn path.hasExtension(value: str) -> bool"));
         assert!(
             path_items.contains(
@@ -9774,6 +9791,9 @@ mod tests {
         assert!(path_items.contains(
             "fn path.resolve(base: str, target: str, callback: fn(str) -> void) -> error"
         ));
+        assert!(
+            path_items.contains("fn path.root(value: str, callback: fn(str) -> void) -> error")
+        );
         assert!(
             path_items
                 .contains("fn path.extension(value: str, callback: fn(str) -> void) -> error")
@@ -11799,6 +11819,38 @@ fn main() -> i64 {
         assert!(help.contains(
             "fn path.resolve(base: str, target: str, callback: fn(str) -> void) -> error"
         ));
+    }
+
+    #[test]
+    fn path_root_completion_and_signature_help_are_builtin() {
+        let uri = "file:///tmp/path-root-signature.flux";
+        let source = "fn rooted(_value: str) -> void {\n}\nfn main() -> i64 {\n    print(path.root(\"/tmp/base\", rooted))\n    print(path.isRoot(\"/\"))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "path.root(",
+                "fn path.root(value: str, callback: fn(str) -> void) -> error",
+            ),
+            ("path.isRoot(", "fn path.isRoot(value: str) -> bool"),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("path root call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("path root call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
     }
 
     #[test]

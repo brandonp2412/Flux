@@ -14393,7 +14393,7 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "isAbsolute" | "isRelative" | "hasExtension" => {
+            "isAbsolute" | "isRelative" | "isRoot" | "hasExtension" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -14410,7 +14410,7 @@ fn check_qualified_call(
                 return Ok(vec![Type::Bool]);
             }
             "join" | "relative" | "resolve" | "withExtension" | "dirname" | "basename"
-            | "extension" | "stem" | "normalize" => {
+            | "extension" | "stem" | "normalize" | "root" => {
                 let expected_args = if matches!(
                     name.as_str(),
                     "join" | "relative" | "resolve" | "withExtension"

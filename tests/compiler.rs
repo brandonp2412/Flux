@@ -1216,12 +1216,66 @@ fn main() -> i64 {
     assert!(!shaken.contains("flux__path_join"));
     assert!(!shaken.contains("flux__path_is_absolute"));
     assert!(!shaken.contains("flux__path_is_relative"));
+    assert!(!shaken.contains("flux__path_is_root"));
+    assert!(!shaken.contains("flux__path_root"));
     assert!(!shaken.contains("flux__path_has_extension"));
     assert!(!shaken.contains("flux__path_extension_or_stem"));
     assert!(!shaken.contains("flux__path_with_extension"));
     assert!(!shaken.contains("flux__path_normalize"));
     assert!(!shaken.contains("flux__path_relative"));
     assert!(!shaken.contains("flux__path_resolve"));
+}
+
+#[test]
+fn path_root_queries_preserve_cross_platform_root_spelling() {
+    let source = r#"
+fn show(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    print(path.isRoot("/"))
+    print(path.isRoot("///"))
+    print(path.isRoot("/tmp"))
+    print(path.isRoot("C:\\"))
+    print(path.isRoot("C:\\tmp"))
+    print(path.isRoot("relative"))
+    print(path.root("/tmp/flux", show))
+    print(path.root("C:\\tmp\\flux", show))
+    print(path.root("relative/path", show))
+    return 0
+}
+"#;
+    let generated = compile_to_c(source).expect("path root source should compile");
+    assert!(generated.contains("flux__path_is_root"));
+    assert!(generated.contains("flux__path_root"));
+    let root = std::env::temp_dir().join(format!("flux-path-root-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("path root test directory should be writable");
+    let c_path = root.join("path-root.c");
+    let exe_path = root.join("path-root");
+    fs::write(&c_path, generated).expect("path root C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-D_GNU_SOURCE", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile path root C");
+    assert!(
+        compile.status.success(),
+        "path root C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("path root program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true\ntrue\nfalse\ntrue\nfalse\nfalse\n/\nnil\nC:\\\nnil\n\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]

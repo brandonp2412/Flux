@@ -10908,11 +10908,19 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         || runtime_usage.contains("flux__path_resolve(")
         || runtime_usage.contains("flux__path_is_relative(")
         || runtime_usage.contains("flux__path_has_extension(")
+        || runtime_usage.contains("flux__path_is_root(")
+        || runtime_usage.contains("flux__path_root(")
     {
         out.push_str("static inline bool flux__path_is_absolute(const char *path) { if (path == NULL) return false; size_t length = 0; while (length <= 65536 && path[length] != '\\0') length += 1; if (length > 65536 || length == 0) return false; if (path[0] == '/' || path[0] == '\\\\') return true; return length >= 3 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' && (path[2] == '/' || path[2] == '\\\\'); }\n");
     }
     if runtime_usage.contains("flux__path_is_relative(") {
         out.push_str("static inline bool flux__path_is_relative(const char *path) { return !flux__path_is_absolute(path); }\n");
+    }
+    if runtime_usage.contains("flux__path_is_root(") {
+        out.push_str("static inline bool flux__path_is_root(const char *path) { if (path == NULL) return false; size_t length = strnlen(path, 65537); if (length == 0 || length > 65536) return false; size_t root_length = 0; if (path[0] == '/' || path[0] == 92) root_length = 1; else if (length >= 3 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' && (path[2] == '/' || path[2] == 92)) root_length = 3; else return false; for (size_t index = root_length; index < length; index += 1) if (path[index] != '/' && path[index] != 92) return false; return true; }\n");
+    }
+    if runtime_usage.contains("flux__path_root(") {
+        out.push_str("static inline const char *flux__path_root(const char *value, void (*callback)(const char *)) { if (value == NULL || callback == NULL) return \"invalid path.root arguments\"; size_t length = strnlen(value, 65537); if (length > 65536) return \"path exceeds 65536 bytes\"; if (length == 0) { callback(\"\"); return NULL; } if (value[0] == '/' || value[0] == 92) { char result[2] = {value[0], 0}; callback(result); return NULL; } if (length >= 3 && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) && value[1] == ':' && (value[2] == '/' || value[2] == 92)) { char result[4] = {value[0], ':', value[2], 0}; callback(result); return NULL; } callback(\"\"); return NULL; }\n");
     }
     if runtime_usage.contains("flux__path_has_extension(") {
         out.push_str("static inline bool flux__path_has_extension(const char *value) { if (value == NULL) return false; size_t length = strnlen(value, 65537); if (length == 0 || length > 65536) return false; size_t end = length; while (end > 1 && (value[end - 1] == '/' || value[end - 1] == '\\\\')) end -= 1; size_t slash = end; while (slash > 0 && value[slash - 1] != '/' && value[slash - 1] != '\\\\') slash -= 1; size_t dot = end; while (dot > slash && value[dot - 1] != '.') dot -= 1; return dot > slash && dot < end && !(dot == slash + 1 && value[slash] == '.'); }\n");
@@ -54343,7 +54351,7 @@ fn emit_qualified_call(
             return Err(diag(span, "invalid path call reached code generation"));
         }
         match name {
-            "isAbsolute" | "isRelative" | "hasExtension" => {
+            "isAbsolute" | "isRelative" | "isRoot" | "hasExtension" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -54355,6 +54363,7 @@ fn emit_qualified_call(
                     match name {
                         "isRelative" => format!("flux__path_is_relative({})", value.code),
                         "hasExtension" => format!("flux__path_has_extension({})", value.code),
+                        "isRoot" => format!("flux__path_is_root({})", value.code),
                         _ => format!("flux__path_is_absolute({})", value.code),
                     },
                     vec![Type::Bool],
@@ -54411,6 +54420,18 @@ fn emit_qualified_call(
                         "flux__path_relative({}, {}, {})",
                         base.code, target.code, callback.code
                     ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "root" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid path.root call reached code generation"));
+                }
+                let value = emit_expr(&args[0], env, signatures)?;
+                let callback = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__path_root({}, {})", value.code, callback.code),
                     vec![Type::Error],
                     None,
                 ));
@@ -60052,6 +60073,21 @@ fn emit_cfg_scalar_expr_direct(
                     },
                 )
             }
+            "root" if arguments.len() == 2 => {
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::Str,
+                    env,
+                    signatures,
+                )?;
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[1],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                Some(format!("flux__path_root({value}, {callback})"))
+            }
             "dirname" | "basename" if arguments.len() == 2 => {
                 let value = emit_cfg_ordinary_call_argument_direct(
                     &arguments[0],
@@ -60187,6 +60223,7 @@ fn emit_cfg_scalar_expr_direct(
                 ),
                 ("path", "isAbsolute") => ("flux__path_is_absolute", vec![Type::Str], Type::Bool),
                 ("path", "isRelative") => ("flux__path_is_relative", vec![Type::Str], Type::Bool),
+                ("path", "isRoot") => ("flux__path_is_root", vec![Type::Str], Type::Bool),
                 ("path", "hasExtension") => {
                     ("flux__path_has_extension", vec![Type::Str], Type::Bool)
                 }
