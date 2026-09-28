@@ -2766,7 +2766,11 @@ fn emit_runtime_prelude(
         || uses_file_dialog_save_file
         || uses_file_dialog_select_directory;
     if uses_windows {
-        out.push_str("static HWND flux__windows_active_window = NULL;\n");
+        out.push_str("enum { FLUX_WINDOWS_MAX_WINDOWS = 16 }; typedef struct { HWND hwnd; bool primary; } FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {0}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n");
+        out.push_str("static FluxWindowsWindowContext *flux__windows_context_for(HWND hwnd) { if (hwnd == NULL) return NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd == hwnd) return &flux__windows_contexts[index]; return NULL; }\n");
+        out.push_str("static bool flux__windows_register_context(HWND hwnd, bool primary) { if (hwnd == NULL || flux__windows_context_for(hwnd) != NULL) return false; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) { if (flux__windows_contexts[index].hwnd != NULL) continue; flux__windows_contexts[index].hwnd = hwnd; flux__windows_contexts[index].primary = primary; if (flux__windows_active_context == NULL || primary) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = hwnd; } return true; } return false; }\n");
+        out.push_str("static void flux__windows_activate_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return; flux__windows_active_context = context; flux__windows_active_window = hwnd; }\n");
+        out.push_str("static bool flux__windows_unregister_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return false; bool primary = context->primary; bool was_active = context == flux__windows_active_context; context->hwnd = NULL; context->primary = false; if (was_active) { flux__windows_active_context = NULL; flux__windows_active_window = NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = flux__windows_contexts[index].hwnd; break; } } return primary; }\n");
     }
     let uses_focus_next = runtime_usage.contains("flux__focus_next(");
     let uses_focus_previous = runtime_usage.contains("flux__focus_previous(");
@@ -20687,13 +20691,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     let pause_callback = on_pause
         .map(|function| format!("{}();", function_c_name(function)))
         .unwrap_or_default();
-    let activation_messages = if on_resume.is_some() || on_pause.is_some() {
-        format!(
-            " case WM_ACTIVATE: {{ if (LOWORD(wparam) == WA_INACTIVE) {{ {pause_callback} }} else {{ {resume_callback} }} }} break;"
-        )
-    } else {
-        String::new()
-    };
+    let activation_messages = format!(
+        " case WM_ACTIVATE: {{ if (LOWORD(wparam) == WA_INACTIVE) {{ {pause_callback} }} else {{ flux__windows_activate_context(hwnd); {resume_callback} }} }} break;"
+    );
     let configuration_callback = on_configuration_changed
         .map(|function| format!("{}();", function_c_name(function)))
         .unwrap_or_default();
@@ -20741,7 +20741,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     } else {
         String::new()
     };
-    out.push_str(&format!("default: break; }} break;{context_menu_messages}{input_scope_close}{activation_messages} case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER);{dpi_font_refresh} RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }} flux__win_refresh(); }}{configuration_messages}{low_memory_messages} return 0; case WM_DESTROY: {save} {stop_callback} {exit} flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcW(hwnd, message, wparam, lparam); }}\n",
+    out.push_str(&format!("default: break; }} break;{context_menu_messages}{input_scope_close}{activation_messages} case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER);{dpi_font_refresh} RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }} flux__win_refresh(); }}{configuration_messages}{low_memory_messages} return 0; case WM_DESTROY: {save} {stop_callback} {exit} if (flux__windows_unregister_context(hwnd)) PostQuitMessage(0); return 0; default: break; }} return DefWindowProcW(hwnd, message, wparam, lparam); }}\n",
         save = save_callback,
         exit = exit_callback,
     ));
@@ -20771,7 +20771,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         ""
     };
     out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness(); flux__win_set_application_id({});{accessibility_init}{tooltip_init}{input_scope_init}{ole_init}{rich_text_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleW(NULL); WNDCLASSW wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = L\"FluxNativeWindow\"; wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512)); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n", c_string(&application_id)));
-    out.push_str(&format!("flux__windows_active_window = CreateWindowExW({window_ex_style}, wc.lpszClassName, L\"\", {window_style}, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1; flux__win_set_text_if_changed(flux__windows_active_window, {});\n", width, height, c_string(&title)));
+    out.push_str(&format!("flux__windows_active_window = CreateWindowExW({window_ex_style}, wc.lpszClassName, L\"\", {window_style}, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1; if (!flux__windows_register_context(flux__windows_active_window, true)) {{ DestroyWindow(flux__windows_active_window); return 1; }} flux__win_set_text_if_changed(flux__windows_active_window, {});\n", width, height, c_string(&title)));
     if uses_tooltips {
         out.push_str("flux__win_tooltips = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, flux__windows_active_window, NULL, instance, NULL); if (flux__win_tooltips == NULL) return 1; SetWindowPos(flux__win_tooltips, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);\n");
     }

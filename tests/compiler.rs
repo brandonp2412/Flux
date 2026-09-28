@@ -69952,6 +69952,36 @@ fn main() -> i64 {
 }
 
 #[test]
+fn windows_window_runtime_tracks_primary_context_for_multi_window_foundation() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Primary"
+}
+app Screen
+"#;
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("Windows application should analyze");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows application should lower with window contexts");
+
+    assert!(windows.contains("FLUX_WINDOWS_MAX_WINDOWS = 16"));
+    assert!(windows.contains("FluxWindowsWindowContext"));
+    assert!(windows.contains("flux__windows_register_context(flux__windows_active_window, true)"));
+    assert!(windows.contains("flux__windows_activate_context(hwnd)"));
+    assert!(windows.contains("if (flux__windows_unregister_context(hwnd)) PostQuitMessage(0)"));
+    assert!(!windows.contains("flux__windows_active_window = NULL; PostQuitMessage(0)"));
+}
+
+#[test]
 fn portable_focus_navigation_lowers_to_native_application_backends() {
     let source = r#"
 fn started() -> void {
