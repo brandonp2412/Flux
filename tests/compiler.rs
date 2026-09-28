@@ -6045,8 +6045,8 @@ app Screen(title: "Accessible Windows")
     assert!(generated.contains("ClearHwndProps"));
     assert!(generated.contains("ROLE_SYSTEM_STATICTEXT"));
     assert!(generated.contains("flux__win_heading_level_property"));
-    assert!(generated.contains("value.lVal = 80051"));
-    assert!(generated.contains("flux__win_accessibility_set_heading_level_one(flux__ui_title)"));
+    assert!(generated.contains("value.lVal = 80050 + level"));
+    assert!(generated.contains("flux__win_accessibility_set_heading_level(flux__ui_title, 2)"));
     assert!(generated.contains("ROLE_SYSTEM_PUSHBUTTON"));
     assert!(generated.contains("flux__ui_state_accessibleName"));
     assert!(generated.contains("flux__ui_state_accessibleValue"));
