@@ -23187,6 +23187,59 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_map_binding_preserves_root_borrow_provenance() {
+    let live = r#"
+fn main() -> i64 {
+    let entries: map<str, i64>? = {"answer": 42}
+    if let present = borrow entries:
+        let alias: map<str, i64> = borrow present
+        let destination: map<str, i64>? = entries
+        print(alias.count)
+        if let moved = borrow destination:
+            print(moved.count)
+    return 0
+}
+"#;
+    let errors = check_source_all(live)
+        .expect_err("a live optional-map binding must keep its root owner borrowed");
+    assert!(
+        errors.iter().any(|error| {
+            error.message.contains(
+                "cannot move non-copy binding 'entries' while borrowed view 'alias' is still live",
+            )
+        }),
+        "optional map binding errors: {errors:?}"
+    );
+
+    let dead = r#"
+fn main() -> i64 {
+    let entries: map<str, i64>? = {"answer": 42}
+    if let present = borrow entries:
+        let alias: map<str, i64> = borrow present
+        print(alias.count)
+        let destination: map<str, i64>? = entries
+        if let moved = borrow destination:
+            print(moved.count)
+    return 0
+}
+"#;
+    check_source(dead)
+        .expect("the optional-map owner move should be valid after the nested borrow dies");
+    let database = fluxc::semantic::SemanticDatabase::analyze(dead, SourceId::new(1220))
+        .expect("optional map binding lifetimes should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    assert!(
+        graph
+            .borrow_lifetimes()
+            .iter()
+            .any(|lifetime| lifetime.borrower == "alias" && lifetime.source == "entries"),
+        "nested optional-map alias should retain the original owner lifetime"
+    );
+}
+
+#[test]
 fn explicit_collection_borrow_supports_set_and_map_storage() {
     let source = r#"
 fn main() -> i64 {
