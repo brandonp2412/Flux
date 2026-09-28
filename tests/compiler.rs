@@ -69831,13 +69831,16 @@ app Screen(onStart: started)
     )
     .expect("menu bar APIs should lower to native Windows menus");
     assert!(windows.contains("FLUX_WINDOWS_MENU_MAX_TOP_LEVEL = 8"));
-    assert!(windows.contains("flux__windows_menu_callbacks[menu_index]"));
+    assert!(windows.contains("void (*menu_callbacks[8])(int64_t);"));
+    assert!(windows.contains("context->menu_callbacks[menu_index]"));
     assert!(
         windows.contains(
             "command_base = FLUX_WINDOWS_MENU_BASE + menu_index * FLUX_WINDOWS_MENU_STRIDE"
         )
     );
-    assert!(windows.contains("AppendMenuW(flux__windows_menu_bar, MF_POPUP"));
+    assert!(windows.contains("AppendMenuW(context->menu_bar, MF_POPUP"));
+    assert!(windows.contains("context->menu_count += 1"));
+    assert!(!windows.contains("static HMENU flux__windows_menu_bar"));
     assert!(windows.contains("WNDPROC runtime_previous_proc;"));
     assert!(windows.contains("context->runtime_previous_proc"));
     assert!(!windows.contains("static WNDPROC flux__windows_runtime_previous_proc"));
