@@ -70298,6 +70298,8 @@ app Screen
         "return flux__win_create_view_window_failure(flux__win_created_window, primary);"
     ));
     assert!(windows.contains("HWND flux__win_created_window = CreateWindowExW("));
+    assert!(windows.contains("static const uint32_t flux__win_view_count = UINT32_C(1);"));
+    assert!(windows.contains("if (view_identity >= flux__win_view_count) return NULL;"));
     assert!(windows.contains(
         "flux__windows_register_context(flux__win_created_window, primary, view_identity)"
     ));
@@ -70383,10 +70385,10 @@ app Screen
 
     assert!(windows.contains("static bool flux__window_open(void);"));
     assert!(windows.contains(
-        "static bool flux__window_open(void) { HWND previous = flux__windows_active_window;"
+        "static bool flux__win_open_view(uint32_t view_identity) { HWND previous = flux__windows_active_window;"
     ));
     assert!(windows.contains(
-        "uint32_t view_identity = flux__windows_active_context != NULL ? flux__windows_active_context->view_identity : flux__win_root_view_identity;"
+        "static bool flux__window_open(void) { uint32_t view_identity = flux__windows_active_context != NULL ? flux__windows_active_context->view_identity : flux__win_root_view_identity; return flux__win_open_view(view_identity); }"
     ));
     assert!(windows.contains(
         "flux__win_create_view_window(instance, L\"FluxNativeWindow\", false, view_identity)"
