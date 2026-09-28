@@ -16952,17 +16952,8 @@ fn emit_windows_native_application(
                 .expect("wrap exists when explicitly disabled")
                 .value
                 .span;
-            if selectable {
-                let alignment = view_property(element, "text_align")
-                    .and_then(|alignment| static_expr_str(&alignment.value, signatures))
-                    .unwrap_or_else(|| "left".to_string());
-                if matches!(alignment.as_str(), "center" | "right") {
-                    return Err(diag(
-                        wrap_span,
-                        "bootstrap Windows selectable Text.wrap: false currently supports only left/fill alignment",
-                    ));
-                }
-            } else if !text_uses_custom_painter
+            if !selectable
+                && !text_uses_custom_painter
                 && matches!(ellipsize.as_deref(), None | Some("none"))
                 && let Some(alignment) = view_property(element, "text_align")
             {
@@ -21537,11 +21528,23 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         "left" | "fill" => {
                             "WS_CHILD | WS_VISIBLE | ES_LEFT | ES_MULTILINE | ES_READONLY"
                         }
+                        "center" if nowrap && selectable => {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_CENTER | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                        }
+                        "center" if nowrap => {
+                            "WS_CHILD | WS_VISIBLE | ES_CENTER | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                        }
                         "center" if selectable => {
                             "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_CENTER | ES_MULTILINE | ES_READONLY"
                         }
                         "center" => {
                             "WS_CHILD | WS_VISIBLE | ES_CENTER | ES_MULTILINE | ES_READONLY"
+                        }
+                        "right" if nowrap && selectable => {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                        }
+                        "right" if nowrap => {
+                            "WS_CHILD | WS_VISIBLE | ES_RIGHT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
                         }
                         "right" if selectable => {
                             "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_MULTILINE | ES_READONLY"
@@ -21566,8 +21569,14 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         "left" | "fill" => {
                             "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY"
                         }
+                        "center" if nowrap => {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_CENTER | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                        }
                         "center" => {
                             "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_CENTER | ES_MULTILINE | ES_READONLY"
+                        }
+                        "right" if nowrap => {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
                         }
                         "right" => {
                             "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_MULTILINE | ES_READONLY"

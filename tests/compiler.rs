@@ -4313,6 +4313,27 @@ app Screen
         "flux__ui_label = CreateWindowExW(0, L\"EDIT\", L\"\", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
     ));
 
+    let selectable_centered_nowrap_source = selectable_nowrap_source.replace(
+        "wrapMode: \"word\"",
+        "textAlign: \"center\"\n        wrapMode: \"word\"",
+    );
+    let selectable_centered_nowrap_program =
+        fluxc::parser::parse(&selectable_centered_nowrap_source)
+            .expect("centered selectable Windows no-wrap Text source should parse");
+    let selectable_centered_nowrap_signatures =
+        fluxc::typecheck::check(&selectable_centered_nowrap_program)
+            .expect("centered selectable Windows no-wrap Text source should typecheck");
+    let selectable_centered_nowrap_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &selectable_centered_nowrap_program,
+        &selectable_centered_nowrap_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("centered selectable Windows no-wrap Text should lower natively");
+    assert!(selectable_centered_nowrap_windows.contains(
+        "flux__ui_label = CreateWindowExW(0, L\"EDIT\", L\"\", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_CENTER | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+    ));
+
     let centered_ellipsized_nowrap_source = nowrap_source.replace(
         "wrapMode: \"word\"",
         "textAlign: \"center\"\n        wrapMode: \"word\"",
