@@ -69984,8 +69984,14 @@ app Screen
     assert!(windows.contains(
         "int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi;"
     ));
-    assert!(windows.contains("flux__windows_store_metrics(hwnd, flux__ui_window_width, flux__ui_window_height, flux__win_dpi)"));
+    assert!(windows.contains("flux__windows_store_metrics(flux__windows_active_window, flux__ui_window_width, flux__ui_window_height, flux__win_dpi)"));
     assert!(windows.contains("flux__windows_restore_metrics(hwnd)"));
+    assert!(windows.contains("flux__win_unscale_for_dpi(physical_width, message_dpi)"));
+    assert!(windows.contains("context != NULL && context == flux__windows_active_context"));
+    assert!(
+        windows
+            .contains("flux__windows_store_metrics(hwnd, logical_width, logical_height, next_dpi)")
+    );
     assert!(windows.contains("flux__windows_message_window(const MSG *message)"));
     assert!(windows.contains("HWND dialog_window = flux__windows_message_window(&message)"));
     assert!(windows.contains("if (flux__windows_unregister_context(hwnd)) PostQuitMessage(0)"));
