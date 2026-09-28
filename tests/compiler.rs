@@ -70385,9 +70385,12 @@ app Screen
     assert!(windows.contains(
         "static bool flux__window_open(void) { HWND previous = flux__windows_active_window;"
     ));
-    assert!(
-        windows.contains("flux__win_create_view_window(instance, L\"FluxNativeWindow\", false, flux__win_root_view_identity)")
-    );
+    assert!(windows.contains(
+        "uint32_t view_identity = flux__windows_active_context != NULL ? flux__windows_active_context->view_identity : flux__win_root_view_identity;"
+    ));
+    assert!(windows.contains(
+        "flux__win_create_view_window(instance, L\"FluxNativeWindow\", false, view_identity)"
+    ));
     assert!(windows.contains("ShowWindow(window, SW_SHOW); UpdateWindow(window);"));
     assert!(windows.contains(
         "if (previous != NULL && IsWindow(previous)) flux__windows_activate_context(previous); return true;"
