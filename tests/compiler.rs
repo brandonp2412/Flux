@@ -3314,13 +3314,8 @@ fn windows_rejects_unimplemented_portable_styles_instead_of_silently_dropping_th
         ("shadowOffsetX: 2", "shadowOffsetX"),
         ("shadowOffsetY: 2", "shadowOffsetY"),
         ("rotateDegrees: 5", "rotateDegrees"),
-        ("scalePercent: 110", "scalePercent"),
-        ("scaleXPercent: 110", "scaleXPercent"),
-        ("scaleYPercent: 110", "scaleYPercent"),
         ("skewXDegrees: 5", "skewXDegrees"),
         ("skewYDegrees: 5", "skewYDegrees"),
-        ("transformOriginXPercent: 50", "transformOriginXPercent"),
-        ("transformOriginYPercent: 50", "transformOriginYPercent"),
         ("transitionMs: 120", "transitionMs"),
         ("transitionDelayMs: 20", "transitionDelayMs"),
         ("transitionEasing: \"ease\"", "transitionEasing"),
@@ -4004,6 +3999,82 @@ app Screen
         error
             .message
             .contains("translateX must fit within a 32-bit signed integer")
+    );
+}
+
+#[test]
+fn windows_scale_transforms_resize_native_controls_around_the_declared_origin() {
+    let source = r#"
+view Screen {
+    state zoom: i64 = 120
+    state origin: i64 = 25
+    grid columns: 1fr
+    grid rows: auto auto
+    Text label at 1,1
+        text: "Scale"
+        scalePercent: zoom
+        scaleYPercent: 80
+        transformOriginXPercent: origin
+        transformOriginYPercent: 75
+    Button action at 2,1
+        text: "Grow"
+        onPress: zoom => zoom + 10
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows scale source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows scale source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows scale transforms should lower into native layout");
+
+    assert!(windows.contains("int64_t requested_scale_x = flux__ui_state_zoom;"));
+    assert!(windows.contains("int64_t requested_scale_y = INT64_C(80);"));
+    assert!(windows.contains("int64_t requested_transform_origin_x = flux__ui_state_origin;"));
+    assert!(windows.contains("int64_t requested_transform_origin_y = INT64_C(75);"));
+    assert!(windows.contains(
+        "scaled_control_width = ((int64_t)previous_control_width * requested_scale_x) / INT64_C(100)"
+    ));
+    assert!(windows.contains(
+        "scale_origin_delta_x = ((int64_t)previous_control_width - control_width) * requested_transform_origin_x / INT64_C(100)"
+    ));
+    assert!(windows.contains(
+        "Flux runtime error: scaleXPercent must be non-negative and fit within a 32-bit signed integer"
+    ));
+    assert!(windows.contains(
+        "Flux runtime error: transformOriginXPercent must fit within a 32-bit signed integer"
+    ));
+
+    let negative = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Mirror"
+        scaleXPercent: -1
+}
+app Screen
+"#;
+    let program =
+        fluxc::parser::parse(negative).expect("negative Windows scale source should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("negative Windows scale source should typecheck before target lowering");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("negative Windows scale must fail honestly until native mirroring exists");
+    assert!(
+        error
+            .message
+            .contains("scaleXPercent must be non-negative and fit within a 32-bit signed integer")
     );
 }
 

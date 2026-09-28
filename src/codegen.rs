@@ -17007,13 +17007,8 @@ fn emit_windows_native_application(
             ("shadow_offset_x", "shadowOffsetX"),
             ("shadow_offset_y", "shadowOffsetY"),
             ("rotate_degrees", "rotateDegrees"),
-            ("scale_percent", "scalePercent"),
-            ("scale_x_percent", "scaleXPercent"),
-            ("scale_y_percent", "scaleYPercent"),
             ("skew_x_degrees", "skewXDegrees"),
             ("skew_y_degrees", "skewYDegrees"),
-            ("transform_origin_x_percent", "transformOriginXPercent"),
-            ("transform_origin_y_percent", "transformOriginYPercent"),
             ("transition_ms", "transitionMs"),
             ("transition_delay_ms", "transitionDelayMs"),
             ("transition_easing", "transitionEasing"),
@@ -20323,6 +20318,66 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 ui_gesture_translate_y_c_name(&element.name)
             );
         }
+        let scale_value = |property_name: &str,
+                           source_name: &str,
+                           fallback: String|
+         -> Result<String, Diagnostic> {
+            let Some(property) = view_property(element, property_name) else {
+                return Ok(fallback);
+            };
+            if let Some(value) = static_expr_i64(&property.value, signatures) {
+                if !(0..=i64::from(i32::MAX)).contains(&value) {
+                    return Err(diag(
+                        property.value.span,
+                        &format!(
+                            "{source_name} must be non-negative and fit within a 32-bit signed integer"
+                        ),
+                    ));
+                }
+                return Ok(format!("INT64_C({value})"));
+            }
+            ui_expr_c(&property.value, view, signatures)
+        };
+        let origin_value = |property_name: &str, source_name: &str| -> Result<String, Diagnostic> {
+            let Some(property) = view_property(element, property_name) else {
+                return Ok("INT64_C(50)".to_string());
+            };
+            if let Some(value) = static_expr_i64(&property.value, signatures) {
+                if !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&value) {
+                    return Err(diag(
+                        property.value.span,
+                        &format!("{source_name} must fit within a 32-bit signed integer"),
+                    ));
+                }
+                return Ok(format!("INT64_C({value})"));
+            }
+            ui_expr_c(&property.value, view, signatures)
+        };
+        let scale_percent_value =
+            scale_value("scale_percent", "scalePercent", "INT64_C(100)".to_string())?;
+        let scale_x_percent_value = scale_value(
+            "scale_x_percent",
+            "scaleXPercent",
+            scale_percent_value.clone(),
+        )?;
+        let scale_y_percent_value =
+            scale_value("scale_y_percent", "scaleYPercent", scale_percent_value)?;
+        let transform_origin_x_percent_value =
+            origin_value("transform_origin_x_percent", "transformOriginXPercent")?;
+        let transform_origin_y_percent_value =
+            origin_value("transform_origin_y_percent", "transformOriginYPercent")?;
+        let scale_transform = if view_property(element, "scale_percent").is_some()
+            || view_property(element, "scale_x_percent").is_some()
+            || view_property(element, "scale_y_percent").is_some()
+            || view_property(element, "transform_origin_x_percent").is_some()
+            || view_property(element, "transform_origin_y_percent").is_some()
+        {
+            format!(
+                "int64_t requested_scale_x = {scale_x_percent_value}; int64_t requested_scale_y = {scale_y_percent_value}; int64_t requested_transform_origin_x = {transform_origin_x_percent_value}; int64_t requested_transform_origin_y = {transform_origin_y_percent_value}; if (requested_scale_x < 0 || requested_scale_x > INT32_MAX) {{ fputs(\"Flux runtime error: scaleXPercent must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_scale_y < 0 || requested_scale_y > INT32_MAX) {{ fputs(\"Flux runtime error: scaleYPercent must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_transform_origin_x < INT32_MIN || requested_transform_origin_x > INT32_MAX) {{ fputs(\"Flux runtime error: transformOriginXPercent must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_transform_origin_y < INT32_MIN || requested_transform_origin_y > INT32_MAX) {{ fputs(\"Flux runtime error: transformOriginYPercent must fit within a 32-bit signed integer\\n\", stderr); abort(); }} int previous_control_width = control_width; int previous_control_height = control_height; int64_t scaled_control_width = ((int64_t)previous_control_width * requested_scale_x) / INT64_C(100); int64_t scaled_control_height = ((int64_t)previous_control_height * requested_scale_y) / INT64_C(100); if (scaled_control_width > INT32_MAX) scaled_control_width = INT32_MAX; if (scaled_control_height > INT32_MAX) scaled_control_height = INT32_MAX; control_width = (int)scaled_control_width; control_height = (int)scaled_control_height; int64_t scale_origin_delta_x = ((int64_t)previous_control_width - control_width) * requested_transform_origin_x / INT64_C(100); int64_t scale_origin_delta_y = ((int64_t)previous_control_height - control_height) * requested_transform_origin_y / INT64_C(100); int64_t transformed_x = (int64_t)x + scale_origin_delta_x; int64_t transformed_y = (int64_t)y + scale_origin_delta_y; x = transformed_x < INT32_MIN ? INT32_MIN : (transformed_x > INT32_MAX ? INT32_MAX : (int)transformed_x); y = transformed_y < INT32_MIN ? INT32_MIN : (transformed_y > INT32_MAX ? INT32_MAX : (int)transformed_y); "
+            )
+        } else {
+            String::new()
+        };
         let radius_value = match view_property(element, "radius") {
             Some(property) => match static_expr_i64(&property.value, signatures) {
                 Some(value) => format!("INT64_C({value})"),
@@ -20558,7 +20613,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         } else {
             String::new()
         };
-        out.push_str(&format!("if ({variable} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; {alignment_setup}int64_t requested_margin_top = {margin_top_value}; int64_t requested_margin_bottom = {margin_bottom_value}; int64_t requested_margin_start = {margin_start_value}; int64_t requested_margin_end = {margin_end_value}; int64_t requested_translate_x = {translate_x_value}; int64_t requested_translate_y = {translate_y_value}; int64_t requested_radius = {radius_value}; {radius_corner_values}if (requested_translate_x < INT32_MIN || requested_translate_x > INT32_MAX) {{ fputs(\"Flux runtime error: translateX must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_translate_y < INT32_MIN || requested_translate_y > INT32_MAX) {{ fputs(\"Flux runtime error: translateY must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_radius < 0 || requested_radius > INT32_MAX) {{ fputs(\"Flux runtime error: radius must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }} int physical_margin_top = flux__win_scale(requested_margin_top); int physical_margin_bottom = flux__win_scale(requested_margin_bottom); int physical_margin_start = flux__win_scale(requested_margin_start); int physical_margin_end = flux__win_scale(requested_margin_end); int physical_translate_x = flux__win_scale(requested_translate_x); int physical_translate_y = flux__win_scale(requested_translate_y); int64_t adjusted_x = (int64_t)x + physical_margin_start + physical_translate_x; int64_t adjusted_y = (int64_t)y + physical_margin_top + physical_translate_y; x = adjusted_x < INT32_MIN ? INT32_MIN : (adjusted_x > INT32_MAX ? INT32_MAX : (int)adjusted_x); y = adjusted_y < INT32_MIN ? INT32_MIN : (adjusted_y > INT32_MAX ? INT32_MAX : (int)adjusted_y); int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end; int64_t margin_height = (int64_t)control_height - physical_margin_top - physical_margin_bottom; control_width = margin_width < 1 ? 1 : (margin_width > INT32_MAX ? INT32_MAX : (int)margin_width); control_height = margin_height < 1 ? 1 : (margin_height > INT32_MAX ? INT32_MAX : (int)margin_height); int available_width = control_width; int available_height = control_height; int64_t requested_min_width = {min_width_value}; int64_t requested_min_height = {min_height_value}; int64_t requested_max_width = {max_width_value}; int64_t requested_max_height = {max_height_value}; {width_relationship}{height_relationship}{preferred_size}{text_width_limit}{text_height_limit}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} {alignment_position}MoveWindow({variable}, x, y, control_width, control_height, TRUE); {button_text_margin}{text_input_horizontal_margin}{text_input_format_rect}{edit_backed_text_format_rect}{apply_radius}}}\n"));
+        out.push_str(&format!("if ({variable} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; {alignment_setup}int64_t requested_margin_top = {margin_top_value}; int64_t requested_margin_bottom = {margin_bottom_value}; int64_t requested_margin_start = {margin_start_value}; int64_t requested_margin_end = {margin_end_value}; int64_t requested_translate_x = {translate_x_value}; int64_t requested_translate_y = {translate_y_value}; int64_t requested_radius = {radius_value}; {radius_corner_values}if (requested_translate_x < INT32_MIN || requested_translate_x > INT32_MAX) {{ fputs(\"Flux runtime error: translateX must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_translate_y < INT32_MIN || requested_translate_y > INT32_MAX) {{ fputs(\"Flux runtime error: translateY must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_radius < 0 || requested_radius > INT32_MAX) {{ fputs(\"Flux runtime error: radius must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }} int physical_margin_top = flux__win_scale(requested_margin_top); int physical_margin_bottom = flux__win_scale(requested_margin_bottom); int physical_margin_start = flux__win_scale(requested_margin_start); int physical_margin_end = flux__win_scale(requested_margin_end); int physical_translate_x = flux__win_scale(requested_translate_x); int physical_translate_y = flux__win_scale(requested_translate_y); int64_t adjusted_x = (int64_t)x + physical_margin_start + physical_translate_x; int64_t adjusted_y = (int64_t)y + physical_margin_top + physical_translate_y; x = adjusted_x < INT32_MIN ? INT32_MIN : (adjusted_x > INT32_MAX ? INT32_MAX : (int)adjusted_x); y = adjusted_y < INT32_MIN ? INT32_MIN : (adjusted_y > INT32_MAX ? INT32_MAX : (int)adjusted_y); int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end; int64_t margin_height = (int64_t)control_height - physical_margin_top - physical_margin_bottom; control_width = margin_width < 1 ? 1 : (margin_width > INT32_MAX ? INT32_MAX : (int)margin_width); control_height = margin_height < 1 ? 1 : (margin_height > INT32_MAX ? INT32_MAX : (int)margin_height); int available_width = control_width; int available_height = control_height; int64_t requested_min_width = {min_width_value}; int64_t requested_min_height = {min_height_value}; int64_t requested_max_width = {max_width_value}; int64_t requested_max_height = {max_height_value}; {width_relationship}{height_relationship}{preferred_size}{text_width_limit}{text_height_limit}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} {alignment_position}{scale_transform}MoveWindow({variable}, x, y, control_width, control_height, TRUE); {button_text_margin}{text_input_horizontal_margin}{text_input_format_rect}{edit_backed_text_format_rect}{apply_radius}}}\n"));
     }
     out.push_str("}\nstatic void flux__win_refresh(void) { bool previous_refreshing = flux__win_is_refreshing(); flux__win_set_refreshing(true);\n");
     for derived in &view.derived {
