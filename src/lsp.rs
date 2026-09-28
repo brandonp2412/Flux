@@ -1067,12 +1067,17 @@ fn add_window_route_completions(
     if call_name != "window.open" || active_parameter != 0 {
         return;
     }
-    let Some(application) = &program.application else {
+    let application_view_name = program
+        .application
+        .as_ref()
+        .map(|application| application.view_name.clone())
+        .or_else(|| recover_application_view_name(source, source_id_for_uri(uri)));
+    let Some(application_view_name) = application_view_name else {
         return;
     };
     let current_id = source_id_for_uri(uri);
     for route in &program.routes {
-        if route.name_span.source_id != current_id || route.view_name != application.view_name {
+        if route.name_span.source_id != current_id || route.view_name != application_view_name {
             continue;
         }
         let Some(view) = program
@@ -1093,6 +1098,23 @@ fn add_window_route_completions(
             &format!("route {} = {}", route.name, route.view_name),
         );
     }
+}
+
+fn recover_application_view_name(source: &str, source_id: SourceId) -> Option<String> {
+    source.lines().find_map(|line| {
+        if leading_spaces(line) != 0 || !line.trim_start().starts_with("app ") {
+            return None;
+        }
+        let snippet = format!(
+            "{}
+",
+            line.trim_end()
+        );
+        crate::parser::parse_all_with_source(&snippet, source_id)
+            .ok()?
+            .application
+            .map(|application| application.view_name)
+    })
 }
 
 fn completion_items_at_position(
@@ -10419,6 +10441,43 @@ app Screen
         assert!(items.contains(r#""label":"home""#));
         assert!(items.contains("route home = Screen"));
         assert!(!items.contains(r#""label":"detail""#));
+    }
+
+    #[test]
+    fn completion_recovers_window_route_identity_during_incomplete_call() {
+        let uri = "file:///tmp/window-route-incomplete-completion.flux";
+        let source = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+
+route home = Screen
+
+fn openSecondary() -> void {
+    window.open(
+}
+
+app Screen
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("window.open("))
+            .expect("incomplete window route completion line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find("window.open(").unwrap() + "window.open(".len();
+        let items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(line_index),
+            Some(cursor),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+
+        assert!(items.contains(r#""label":"home""#));
+        assert!(items.contains("route home = Screen"));
     }
 
     #[test]
