@@ -21000,6 +21000,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
     }
     out.push_str("flux__win_set_refreshing(previous_refreshing); }\n");
+    out.push_str("static bool flux__windows_app_foreground = false;\n");
     out.push_str("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { switch (message) { case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT: { HDC dc = (HDC)wparam; HWND control = (HWND)lparam;\n");
     for (index, element) in view.elements.iter().enumerate().filter(|(_, element)| {
         let presentation_text_color = element.kind != "Image"
@@ -21148,7 +21149,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         .map(|function| format!("{}();", function_c_name(function)))
         .unwrap_or_default();
     let activation_messages = format!(
-        " case WM_ACTIVATE: {{ bool flux__windows_internal_activation = flux__windows_registered_window_for((HWND)lparam) != NULL; if (LOWORD(wparam) == WA_INACTIVE) {{ if (!flux__windows_internal_activation) {{ {pause_callback} }} }} else {{ flux__windows_activate_context(hwnd); if (!flux__windows_internal_activation) {{ {resume_callback} }} flux__win_refresh(); }} }} break;"
+        " case WM_ACTIVATE: {{ bool flux__windows_internal_activation = flux__windows_registered_window_for((HWND)lparam) != NULL || flux__windows_registered_window_for(GetForegroundWindow()) != NULL; if (LOWORD(wparam) == WA_INACTIVE) {{ if (!flux__windows_internal_activation && flux__windows_app_foreground) {{ flux__windows_app_foreground = false; {pause_callback} }} }} else {{ flux__windows_activate_context(hwnd); if (!flux__windows_app_foreground) {{ flux__windows_app_foreground = true; {resume_callback} }} flux__win_refresh(); }} }} break;"
     );
     let configuration_callback = on_configuration_changed
         .map(|function| format!("{}();", function_c_name(function)))
