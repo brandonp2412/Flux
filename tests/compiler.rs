@@ -5313,7 +5313,12 @@ fn dropped(value: str) -> void {
     print(value)
 }
 
+fn confirmed() -> void {
+    print("confirmed")
+}
+
 fn stopAfterStart() -> void {
+    dialog.confirm("Windows", "Continue?", confirmed, cancelLabel: "Keep", confirmLabel: "Continue")
     print(windows.secureStore("session", "secret"))
     print(windows.secureRead("session", secureValue))
     print(windows.secureRemove("session"))
@@ -69383,16 +69388,12 @@ fn main() -> i64 {
 }
 
 #[test]
-fn windows_rejects_unimplemented_confirm_and_choice_dialogs_before_native_compile() {
+fn windows_rejects_unimplemented_choice_dialogs_before_native_compile() {
     let source = r#"
-fn confirmed() -> void {
-    print("confirmed")
-}
 fn selected(index: i64) -> void {
     print(index)
 }
 fn started() -> void {
-    dialog.confirm("Confirm", "Continue?", confirmed)
     dialog.choose("Pick", "Choose one", ["One", "Two"], selected)
 }
 view Screen {
@@ -69412,9 +69413,11 @@ app Screen(onStart: started)
     .expect_err(
         "Windows must reject unsupported confirm/choice dialogs before emitting undefined helpers",
     );
-    assert!(error.message.contains(
-        "dialog.confirm and dialog.choose are not yet supported by the native Windows backend"
-    ));
+    assert!(
+        error
+            .message
+            .contains("dialog.choose is not yet supported by the native Windows backend")
+    );
 }
 
 #[test]
@@ -69471,6 +69474,26 @@ app Screen(onStart: started)
         )
     );
     assert!(!android.contains("gtk_message_dialog_new"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("portable confirm dialog should lower on Windows");
+    assert!(windows.contains("static void flux__dialog_confirm("));
+    assert!(windows.contains("L\"FluxConfirmDialog\""));
+    assert!(windows.contains("CreateWindowExW(WS_EX_DLGMODALFRAME"));
+    assert!(windows.contains("wide_cancel"));
+    assert!(windows.contains("wide_confirm"));
+    assert!(windows.contains("if (accepted && callback != NULL) callback()"));
+    assert!(
+        windows.contains(
+            "flux__dialog_confirm(\"Delete\", \"Remove this item?\", \"Keep\", \"Delete\","
+        )
+    );
+    assert!(!windows.contains("gtk_message_dialog_new"));
 
     let unused = r#"
 fn confirmed() -> void {
