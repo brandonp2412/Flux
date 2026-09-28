@@ -70299,7 +70299,7 @@ app Screen
     ));
     assert!(windows.contains("HWND flux__win_created_window = CreateWindowExW("));
     assert!(windows.contains("static const uint32_t flux__win_view_count = UINT32_C(1);"));
-    assert!(windows.contains("if (view_identity >= flux__win_view_count) return NULL;"));
+    assert!(windows.contains("if (view_identity >= flux__win_view_count || view_identity != flux__win_root_view_identity) return NULL;"));
     assert!(windows.contains(
         "flux__windows_register_context(flux__win_created_window, primary, view_identity)"
     ));
