@@ -69587,6 +69587,13 @@ app Screen(onStart: started)
     )
     .expect("portable choice dialog should lower on Windows");
     assert!(windows.contains("static void flux__dialog_choose("));
+    assert!(windows.contains("bool choose_done; int64_t choose_selection; HWND choose_list;"));
+    assert!(windows.contains("dialog_context->choose_done"));
+    assert!(windows.contains("dialog_context->choose_selection"));
+    assert!(windows.contains("dialog_context->choose_list"));
+    assert!(!windows.contains("static bool flux__windows_choose_done"));
+    assert!(!windows.contains("static int64_t flux__windows_choose_selection"));
+    assert!(!windows.contains("static HWND flux__windows_choose_list"));
     assert!(windows.contains("L\"FluxChooseDialog\""));
     assert!(windows.contains("L\"LISTBOX\""));
     assert!(windows.contains("LB_ADDSTRING"));
