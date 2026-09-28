@@ -70573,9 +70573,14 @@ app Screen
         "flux__win_create_view_window(instance, L\"FluxNativeWindow\", false, view_identity)"
     ));
     assert!(windows.contains("ShowWindow(window, SW_SHOW); UpdateWindow(window);"));
-    assert!(windows.contains(
-        "if (previous != NULL && IsWindow(previous)) flux__windows_activate_context(previous); return true;"
-    ));
+    assert_eq!(
+        windows
+            .matches(
+                "if (previous != NULL && IsWindow(previous)) { flux__windows_activate_context(previous); flux__win_refresh(); }"
+            )
+            .count(),
+        2
+    );
     assert!(windows.contains(
         "static bool flux__window_close(void) { HWND window = flux__windows_active_window; return window != NULL && PostMessageW(window, WM_CLOSE, 0, 0) != 0; }"
     ));
