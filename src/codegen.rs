@@ -1731,6 +1731,15 @@ fn emit_c_for_target_with_source_metadata_impl(
             "dialog.* APIs require an application target",
         ));
     }
+    if target == NativeTarget::Windows
+        && (runtime_usage.contains("flux__dialog_confirm(")
+            || runtime_usage.contains("flux__dialog_choose("))
+    {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "dialog.confirm and dialog.choose are not yet supported by the native Windows backend",
+        ));
+    }
     if runtime_usage.contains("flux__file_dialog_") && program.application.is_none() {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
@@ -4047,6 +4056,12 @@ fn emit_runtime_prelude(
     if uses_windows {
         out.push_str("static wchar_t *flux__windows_utf8_to_wide(const char *value) { if (value == NULL) return NULL; int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, NULL, 0); if (length <= 0) return NULL; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return NULL; if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, wide, length) <= 0) { free(wide); return NULL; } return wide; }\n");
         out.push_str("static char *flux__windows_wide_to_utf8(const wchar_t *value) { if (value == NULL) return NULL; int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, NULL, 0, NULL, NULL); if (length <= 0) return NULL; char *utf8 = (char *)malloc((size_t)length); if (utf8 == NULL) return NULL; if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, utf8, length, NULL, NULL) <= 0) { free(utf8); return NULL; } return utf8; }\n");
+    }
+    if uses_dialog_alert && uses_windows {
+        out.push_str("static void flux__dialog_alert(const char *title, const char *message) { wchar_t *wide_title = flux__windows_utf8_to_wide(title == NULL ? \"\" : title); wchar_t *wide_message = flux__windows_utf8_to_wide(message == NULL ? \"\" : message); if (wide_title == NULL || wide_message == NULL) { free(wide_title); free(wide_message); return; } (void)MessageBoxW(flux__windows_active_window, wide_message, wide_title, MB_OK | MB_ICONINFORMATION | MB_TASKMODAL); free(wide_title); free(wide_message); }\n");
+    }
+    if uses_dialog_sheet && uses_windows {
+        out.push_str("static void flux__dialog_sheet(const char *title, const char *message) { wchar_t *wide_title = flux__windows_utf8_to_wide(title == NULL ? \"\" : title); wchar_t *wide_message = flux__windows_utf8_to_wide(message == NULL ? \"\" : message); if (wide_title == NULL || wide_message == NULL) { free(wide_title); free(wide_message); return; } (void)MessageBoxW(flux__windows_active_window, wide_message, wide_title, MB_OK | MB_TASKMODAL); free(wide_title); free(wide_message); }\n");
     }
     if uses_linux_secure_storage && uses_gtk {
         out.push_str("const char *flux__linux_application_identity(void);\nstatic const SecretSchema flux__linux_secure_schema = { .name = \"app.flux.secure\", .flags = SECRET_SCHEMA_NONE, .attributes = { { \"application\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { \"key\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { NULL, 0 } } };\nstatic bool flux__linux_secure_text(const char *value, size_t maximum, bool require_nonempty) { if (value == NULL || (require_nonempty && value[0] == '\\0')) return false; size_t length = 0; while (length <= maximum && value[length] != '\\0') length += 1; return length <= maximum && g_utf8_validate(value, (gssize)length, NULL); }\nstatic bool flux__linux_secure_inputs(const char *key, const char **identity) { if (identity == NULL || !flux__linux_secure_text(key, 1024, true)) return false; *identity = flux__linux_application_identity(); return flux__linux_secure_text(*identity, 1024, true); }\n");

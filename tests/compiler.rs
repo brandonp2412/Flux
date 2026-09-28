@@ -69216,6 +69216,21 @@ app Screen(onStart: started)
     assert!(android.contains("flux__dialog_alert(\"Flux\", \"Native alert\")"));
     assert!(!android.contains("gtk_message_dialog_new"));
 
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("portable alert dialog should lower on Windows");
+    assert!(
+        windows.contains("static void flux__dialog_alert(const char *title, const char *message)")
+    );
+    assert!(windows.contains("MessageBoxW(flux__windows_active_window"));
+    assert!(windows.contains("MB_OK | MB_ICONINFORMATION | MB_TASKMODAL"));
+    assert!(windows.contains("flux__dialog_alert(\"Flux\", \"Native alert\")"));
+    assert!(!windows.contains("gtk_message_dialog_new"));
+
     let unused = r#"
 fn unused() -> void {
     dialog.alert("Unused", "Hidden")
@@ -69303,6 +69318,21 @@ app Screen(onStart: started)
     assert!(android.contains("(*env)->CallVoidMethod(env, window, set_gravity, (jint)80)"));
     assert!(!android.contains("gtk_message_dialog_new"));
 
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("portable sheet should lower on Windows");
+    assert!(
+        windows.contains("static void flux__dialog_sheet(const char *title, const char *message)")
+    );
+    assert!(windows.contains("MessageBoxW(flux__windows_active_window"));
+    assert!(windows.contains("MB_OK | MB_TASKMODAL"));
+    assert!(windows.contains("flux__dialog_sheet(\"Details\", \"Native sheet\")"));
+    assert!(!windows.contains("gtk_message_dialog_new"));
+
     let unused = r#"
 fn unused() -> void {
     dialog.sheet("Unused", "Hidden")
@@ -69350,6 +69380,41 @@ fn main() -> i64 {
             .message
             .contains("dialog.sheet expects 2 arguments, got 1")
     }));
+}
+
+#[test]
+fn windows_rejects_unimplemented_confirm_and_choice_dialogs_before_native_compile() {
+    let source = r#"
+fn confirmed() -> void {
+    print("confirmed")
+}
+fn selected(index: i64) -> void {
+    print(index)
+}
+fn started() -> void {
+    dialog.confirm("Confirm", "Continue?", confirmed)
+    dialog.choose("Pick", "Choose one", ["One", "Two"], selected)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onStart: started)
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("portable confirm/choice source should analyze");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err(
+        "Windows must reject unsupported confirm/choice dialogs before emitting undefined helpers",
+    );
+    assert!(error.message.contains(
+        "dialog.confirm and dialog.choose are not yet supported by the native Windows backend"
+    ));
 }
 
 #[test]
