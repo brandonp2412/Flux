@@ -2843,7 +2843,9 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     ));
     assert!(generated.contains("case WM_CTLCOLORSTATIC"));
     assert!(generated.contains("SetTextColor(dc, flux__win_color_title_color)"));
-    assert!(generated.contains("CreateSolidBrush(flux__win_color_title_background_color)"));
+    assert!(
+        generated.contains("flux__win_static_brush(0, flux__win_color_title_background_color)")
+    );
     assert!(!generated.contains("#include <gtk/gtk.h>"));
     assert!(!generated.contains("android/native_activity.h"));
 }
@@ -5032,7 +5034,10 @@ app Screen(title: "Image")
         fluxc::codegen::NativeTarget::Windows,
     )
     .expect("Windows image source should lower to native Win32 C");
-    assert!(generated.contains("static HBITMAP flux__win_bitmap_logo = NULL;"));
+    assert!(generated.contains("static HBITMAP *flux__windows_image_bitmap_storage(FluxWindowsWindowContext *context, size_t slot)"));
+    assert!(
+        generated.contains("flux__windows_image_bitmap_storage(flux__windows_active_context, 0)")
+    );
     assert!(generated.contains("LoadImageA(NULL, path, IMAGE_BITMAP"));
     assert!(generated.contains("GetModuleFileNameA"));
     assert!(generated.contains("size_t source_length = 0; while (source_length <= 65536"));
@@ -5125,15 +5130,10 @@ app Screen(title: "Tooltips")
     assert!(generated.contains("TOOLTIPS_CLASSW"));
     assert!(generated.contains("TTM_ADDTOOLW"));
     assert!(generated.contains("TTM_UPDATETIPTEXTW"));
-    assert!(generated.contains("static wchar_t *flux__win_tooltip_text_query = NULL;"));
-    assert!(generated.contains(
-        "flux__win_set_tooltip(flux__ui_query, &flux__win_tooltip_text_query, flux__ui_state_help)"
-    ));
+    assert!(generated.contains("static wchar_t **flux__windows_tooltip_storage(FluxWindowsWindowContext *context, size_t slot)"));
+    assert!(generated.contains("flux__win_set_tooltip(flux__ui_query, 0, flux__ui_state_help)"));
     assert!(generated.contains("tooltip exceeds 65536 bytes"));
-    assert!(
-        generated
-            .contains("free(flux__win_tooltip_text_query); flux__win_tooltip_text_query = NULL;")
-    );
+    assert!(generated.contains("flux__windows_release_tooltip_texts(context)"));
 }
 
 #[test]
@@ -5760,9 +5760,23 @@ app Screen
     assert!(generated.contains("while (length <= 9 && value[length] != '\\0') length += 1;"));
     assert!(generated.contains("flux__win_set_dynamic_background"));
     assert!(generated.contains("flux__win_set_dynamic_text_color"));
-    assert!(generated.contains("&flux__win_dynamic_brush_title_background_color"));
-    assert!(generated.contains("&flux__win_dynamic_color_title_color"));
-    assert!(generated.contains("&flux__win_dynamic_brush_input_background_color"));
+    assert!(
+        generated.contains("HBRUSH *style_brushes; COLORREF *style_colors; bool *style_has_colors")
+    );
+    assert!(
+        generated
+            .contains("flux__win_set_dynamic_background(flux__ui_title, 0, flux__ui_state_tint)")
+    );
+    assert!(
+        generated
+            .contains("flux__win_set_dynamic_text_color(flux__ui_title, 1, flux__ui_state_tint)")
+    );
+    assert!(
+        generated
+            .contains("flux__win_set_dynamic_background(flux__ui_input, 2, flux__ui_state_tint)")
+    );
+    assert!(generated.contains("flux__windows_release_style_state(context)"));
+    assert!(!generated.contains("flux__win_dynamic_brush_title_background_color"));
     assert!(
         generated.contains("case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT:")
     );
@@ -64210,9 +64224,11 @@ app Form
         "flux__win_accessibility_set_description(flux__ui_email, flux__ui_state_validation)"
     ));
     assert!(windows.contains("flux__win_set_tooltip(flux__ui_email"));
-    assert!(windows.contains(
-        "flux__win_set_validation_state(flux__ui_email, &flux__win_validation_color_email, &flux__win_validation_active_email, flux__ui_state_validation)"
-    ));
+    assert!(
+        windows.contains(
+            "flux__win_set_validation_state(flux__ui_email, 0, flux__ui_state_validation)"
+        )
+    );
 
     let invalid = r#"
 view Form {
