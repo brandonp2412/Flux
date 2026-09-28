@@ -69838,6 +69838,9 @@ app Screen(onStart: started)
         )
     );
     assert!(windows.contains("AppendMenuW(flux__windows_menu_bar, MF_POPUP"));
+    assert!(windows.contains("WNDPROC runtime_previous_proc;"));
+    assert!(windows.contains("context->runtime_previous_proc"));
+    assert!(!windows.contains("static WNDPROC flux__windows_runtime_previous_proc"));
     assert!(!linux.contains("method channel"));
     assert!(!linux.contains("plugin registry"));
 
