@@ -70055,6 +70055,8 @@ fn main() -> i64 {
 fn windows_window_runtime_tracks_primary_context_for_multi_window_foundation() {
     let source = r#"
 view Screen {
+    state active: bool = false
+    state count: i64 = 7
     grid columns: 1fr
     grid rows: auto auto auto
     Text label at 1,1
@@ -70085,6 +70087,17 @@ app Screen
     assert!(windows.contains("WNDPROC runtime_previous_proc; bool refreshing;"));
     assert!(windows.contains("flux__windows_active_context->refreshing"));
     assert!(!windows.contains("static bool flux__win_refreshing"));
+    assert!(windows.contains("void *scalar_view_state;"));
+    assert!(windows.contains("FluxWindowsScalarViewState"));
+    assert!(windows.contains("state->value_0 = flux__ui_state_active;"));
+    assert!(windows.contains("state->value_1 = flux__ui_state_count;"));
+    assert!(windows.contains("flux__ui_state_active = state != NULL ? state->value_0 : false;"));
+    assert!(
+        windows.contains("flux__ui_state_count = state != NULL ? state->value_1 : INT64_C(7);")
+    );
+    assert!(windows.contains("flux__windows_save_scalar_view_state(flux__windows_active_context)"));
+    assert!(windows.contains("flux__windows_restore_scalar_view_state(context)"));
+    assert!(windows.contains("flux__windows_release_scalar_view_state(context)"));
     assert!(windows.contains("HWND *control_windows;"));
     assert!(windows.contains("context->control_windows[0] = flux__ui_label;"));
     assert!(windows.contains("flux__ui_label = context != NULL && context->control_windows != NULL ? context->control_windows[0] : NULL;"));
