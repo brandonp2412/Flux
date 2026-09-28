@@ -69546,6 +69546,7 @@ app Screen(onStart: started)
     assert!(windows.contains("CreateWindowExW(WS_EX_DLGMODALFRAME"));
     assert!(windows.contains("wide_cancel"));
     assert!(windows.contains("wide_confirm"));
+    assert!(windows.contains("flux__windows_activate_context(parent); free(wide_title);"));
     assert!(windows.contains("if (accepted && callback != NULL) callback()"));
     assert!(
         windows.contains(
@@ -69675,6 +69676,9 @@ app Screen(onStart: started)
     assert!(!windows.contains("static bool flux__windows_choose_done"));
     assert!(!windows.contains("static int64_t flux__windows_choose_selection"));
     assert!(!windows.contains("static HWND flux__windows_choose_list"));
+    assert!(!windows.contains("flux__windows_choose_list = NULL"));
+    assert!(windows.contains("dialog_context->choose_list = NULL"));
+    assert!(windows.contains("flux__windows_activate_context(parent); if (selected >= 0"));
     assert!(windows.contains("L\"FluxChooseDialog\""));
     assert!(windows.contains("L\"LISTBOX\""));
     assert!(windows.contains("LB_ADDSTRING"));
