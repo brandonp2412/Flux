@@ -6382,7 +6382,7 @@ app Screen(onStart: started)
         .find("flux__fn_started();")
         .expect("onStart should be invoked");
     let shown = generated
-        .find("ShowWindow(flux__windows_active_window")
+        .find("ShowWindow(flux__win_primary_window")
         .expect("Windows root window should be shown");
     assert!(window < startup && startup < shown);
     assert!(!generated.contains("#include <gtk/gtk.h>"));
@@ -68891,7 +68891,7 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
         .find("flux__fn_started();")
         .expect("onStart should run before presentation");
     let show = generated
-        .find("ShowWindow(flux__windows_active_window, SW_SHOW)")
+        .find("ShowWindow(flux__win_primary_window, SW_SHOW)")
         .expect("Windows application should present its window");
     assert!(start < show, "onStart must run before the window is shown");
 }
@@ -70179,9 +70179,9 @@ app Screen
     assert!(!windows.contains("static HWND flux__win_tooltips"));
     assert!(!windows.contains("SendMessageW(flux__win_tooltips"));
     assert!(windows.contains("SendMessageW(flux__tooltip_context->tooltip_window, TTM_ADDTOOLW"));
-    assert!(windows.contains("static int flux__win_create_view_window_failure(HWND window, bool primary) { if (!primary && window != NULL && IsWindow(window)) DestroyWindow(window); return 1; }"));
+    assert!(windows.contains("static HWND flux__win_create_view_window_failure(HWND window, bool primary) { if (!primary && window != NULL && IsWindow(window)) DestroyWindow(window); return NULL; }"));
     let creation_start = windows
-        .find("static int flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary)")
+        .find("static HWND flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary)")
         .expect("Windows view creation helper should exist");
     let creation_end = windows[creation_start..]
         .find("static int flux__win_run(void)")
@@ -70197,7 +70197,11 @@ app Screen
     assert!(windows.contains("flux__windows_activate_context(flux__win_created_window);"));
     assert!(windows.contains("if (flux__windows_active_window != flux__win_created_window)"));
     assert!(windows.contains(
-        "if (flux__win_create_view_window(instance, wc.lpszClassName, true) != 0) return 1;"
+        "HWND flux__win_primary_window = flux__win_create_view_window(instance, wc.lpszClassName, true); if (flux__win_primary_window == NULL) return 1;"
+    ));
+    assert!(creation.contains("return flux__win_created_window;"));
+    assert!(windows.contains(
+        "flux__windows_activate_context(flux__win_primary_window); ShowWindow(flux__win_primary_window, SW_SHOW); UpdateWindow(flux__win_primary_window);"
     ));
     assert!(windows.contains("flux__windows_activate_context(hwnd)"));
     assert!(windows.contains("flux__windows_save_view_state(flux__windows_active_context);"));

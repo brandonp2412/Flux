@@ -21229,9 +21229,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     } else {
         ""
     };
-    out.push_str("static int flux__win_create_view_window_failure(HWND window, bool primary) { if (!primary && window != NULL && IsWindow(window)) DestroyWindow(window); return 1; }\n");
+    out.push_str("static HWND flux__win_create_view_window_failure(HWND window, bool primary) { if (!primary && window != NULL && IsWindow(window)) DestroyWindow(window); return NULL; }\n");
     let window_creation_start = out.len();
-    out.push_str("static int flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary) {\n");
+    out.push_str("static HWND flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary) {\n");
     out.push_str(&format!("HWND flux__win_created_window = CreateWindowExW({window_ex_style}, class_name, L\"\", {window_style}, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__win_created_window == NULL) return 1; if (!flux__windows_register_context(flux__win_created_window, primary)) {{ DestroyWindow(flux__win_created_window); return 1; }} flux__windows_activate_context(flux__win_created_window); if (flux__windows_active_window != flux__win_created_window) {{ DestroyWindow(flux__win_created_window); return 1; }} flux__win_set_text_if_changed(flux__windows_active_window, {});\n", width, height, c_string(&title)));
     if uses_tooltips {
         out.push_str("FluxWindowsWindowContext *flux__tooltip_context = flux__windows_context_for(flux__windows_active_window); if (flux__tooltip_context == NULL) return 1; flux__tooltip_context->tooltip_window = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, flux__tooltip_context->hwnd, NULL, instance, NULL); if (flux__tooltip_context->tooltip_window == NULL) return 1; SetWindowPos(flux__tooltip_context->tooltip_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);\n");
@@ -21698,21 +21698,21 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
     }
     out.push_str("flux__win_dpi = flux__win_query_dpi(flux__windows_active_window); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT flux__win_client = {0}; if (GetClientRect(flux__windows_active_window, &flux__win_client)) { int physical_width = flux__win_client.right - flux__win_client.left; int physical_height = flux__win_client.bottom - flux__win_client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); } flux__windows_store_metrics(flux__windows_active_window, flux__ui_window_width, flux__ui_window_height, flux__win_dpi);");
-    out.push_str(" flux__win_refresh(); if (GetClientRect(flux__windows_active_window, &flux__win_client)) flux__win_layout(flux__win_client.right - flux__win_client.left, flux__win_client.bottom - flux__win_client.top); return 0; }\n");
+    out.push_str(" flux__win_refresh(); if (GetClientRect(flux__windows_active_window, &flux__win_client)) flux__win_layout(flux__win_client.right - flux__win_client.left, flux__win_client.bottom - flux__win_client.top); return flux__win_created_window; }\n");
     let window_creation = out[window_creation_start..].replace(
         "return 1;",
         "return flux__win_create_view_window_failure(flux__win_created_window, primary);",
     );
     out.truncate(window_creation_start);
     out.push_str(&window_creation);
-    out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness(); flux__win_set_application_id({});{accessibility_init}{tooltip_init}{input_scope_init}{ole_init}{rich_text_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleW(NULL); WNDCLASSW wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = L\"FluxNativeWindow\"; wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512)); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1; if (flux__win_create_view_window(instance, wc.lpszClassName, true) != 0) return 1;\n", c_string(&application_id)));
+    out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness(); flux__win_set_application_id({});{accessibility_init}{tooltip_init}{input_scope_init}{ole_init}{rich_text_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleW(NULL); WNDCLASSW wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = L\"FluxNativeWindow\"; wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512)); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1; HWND flux__win_primary_window = flux__win_create_view_window(instance, wc.lpszClassName, true); if (flux__win_primary_window == NULL) return 1;\n", c_string(&application_id)));
     if on_restore_state.is_some() {
         out.push_str("flux__win_restore_app_state();\n");
     }
     if let Some(function) = application_metadata_function(application, "on_start") {
         out.push_str(&format!("{}();\n", function_c_name(function)));
     }
-    out.push_str("ShowWindow(flux__windows_active_window, SW_SHOW); UpdateWindow(flux__windows_active_window);");
+    out.push_str("flux__windows_activate_context(flux__win_primary_window); ShowWindow(flux__win_primary_window, SW_SHOW); UpdateWindow(flux__win_primary_window);");
     if let Some(element) = view.elements.iter().find(|element| {
         view_property(element, "autofocus")
             .and_then(|property| static_expr_bool(&property.value, signatures))
