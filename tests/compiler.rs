@@ -45457,6 +45457,108 @@ fn native_module_object_cache_reuses_linux_ui_runtime_for_root_function_edit() {
 }
 
 #[test]
+fn native_single_source_ui_edit_reuses_unchanged_function_object() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-single-source-ui-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("single-source UI cache fixture should be writable");
+    let main = root.join("main.flux");
+    let initial = r#"fn startup() -> void {
+    print("started")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+
+    Text label at 1,1
+        text: "before"
+}
+
+app Screen(title: "Single source cache", onStart: startup)
+"#;
+    fs::write(&main, initial).expect("single-source UI entry should be writable");
+
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first single-source UI object build should run");
+    assert!(
+        built.status.success(),
+        "first single-source UI object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("single-source UI object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert_eq!(
+        first_objects.len(),
+        2,
+        "the unchanged startup function and root UI runtime should compile independently"
+    );
+
+    fs::write(
+        &main,
+        initial.replace("text: \"before\"", "text: \"after\""),
+    )
+    .expect("changed single-source UI entry should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed single-source UI object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed single-source UI object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        first_objects.len() + 1,
+        "a root-view-only edit should compile one new application runtime object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "the unchanged function object and previous runtime object should remain cached"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_build_cache_reuses_valid_entries_and_rebuilds_corrupt_entries() {
     let root = std::env::temp_dir().join(format!("flux-native-cache-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
