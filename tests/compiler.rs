@@ -2897,7 +2897,8 @@ app Screen
         generated
             .contains("HFONT *button_fonts; int64_t *button_font_sizes; UINT *button_font_dpis;")
     );
-    assert!(generated.contains("flux__windows_save_button_fonts(flux__windows_active_context)"));
+    assert!(generated.contains("flux__windows_save_view_state(flux__windows_active_context);"));
+    assert!(generated.contains("flux__windows_save_button_fonts(context);"));
     assert!(generated.contains("flux__windows_restore_button_fonts(context)"));
     assert!(generated.contains("flux__windows_release_button_fonts(context)"));
     assert!(!generated.contains("static void flux__win_delete_button_fonts(void)"));
@@ -3107,7 +3108,8 @@ app Screen
         windows.contains("COLORREF *border_colors; int64_t *border_widths; int *border_styles;")
     );
     assert!(windows.contains("static const COLORREF flux__win_border_initial_color_label"));
-    assert!(windows.contains("flux__windows_save_borders(flux__windows_active_context)"));
+    assert!(windows.contains("flux__windows_save_view_state(flux__windows_active_context);"));
+    assert!(windows.contains("flux__windows_save_borders(context);"));
     assert!(windows.contains("flux__windows_restore_borders(context)"));
     assert!(windows.contains("flux__windows_release_borders(context)"));
     assert!(windows.contains("GetWindowRgn(control, region)"));
@@ -3119,9 +3121,8 @@ app Screen
         )
     );
     assert!(windows.contains("context->control_subclass_originals[0] = flux__win_border_orig_0"));
-    assert!(
-        windows.contains("flux__windows_save_control_subclasses(flux__windows_active_context)")
-    );
+    assert!(windows.contains("flux__windows_save_view_state(flux__windows_active_context);"));
+    assert!(windows.contains("flux__windows_save_control_subclasses(context);"));
     assert!(windows.contains("flux__windows_restore_control_subclasses(context)"));
     assert!(windows.contains("flux__windows_release_control_subclasses(context)"));
     assert!(windows.contains("flux__win_set_border_color(flux__ui_label, &flux__win_border_color_label, flux__ui_state_strokeColor);"));
@@ -4051,7 +4052,8 @@ app Screen
     assert!(
         windows.contains("state->flux__gesture_translate_x_card = flux__gesture_translate_x_card")
     );
-    assert!(windows.contains("flux__windows_save_control_gestures(flux__windows_active_context)"));
+    assert!(windows.contains("flux__windows_save_view_state(flux__windows_active_context);"));
+    assert!(windows.contains("flux__windows_save_control_gestures(context);"));
     assert!(windows.contains("flux__windows_restore_control_gestures(context)"));
     assert!(windows.contains("flux__windows_release_control_gestures(context)"));
 
@@ -4357,8 +4359,9 @@ app Screen
     );
     assert!(
         dynamic_overflow_windows
-            .contains("flux__windows_save_text_layouts(flux__windows_active_context)")
+            .contains("flux__windows_save_view_state(flux__windows_active_context);")
     );
+    assert!(dynamic_overflow_windows.contains("flux__windows_save_text_layouts(context);"));
     assert!(dynamic_overflow_windows.contains("flux__windows_restore_text_layouts(context)"));
     assert!(dynamic_overflow_windows.contains("flux__windows_release_text_layouts(context)"));
     assert!(dynamic_overflow_windows.contains(
@@ -5270,7 +5273,8 @@ flux__win_apply_fonts();"
         generated
             .contains("HFONT *text_fonts; char **text_font_families; int64_t *text_font_sizes;")
     );
-    assert!(generated.contains("flux__windows_save_text_fonts(flux__windows_active_context)"));
+    assert!(generated.contains("flux__windows_save_view_state(flux__windows_active_context);"));
+    assert!(generated.contains("flux__windows_save_text_fonts(context);"));
     assert!(generated.contains("flux__windows_restore_text_fonts(context)"));
     assert!(generated.contains("flux__windows_release_text_fonts(context)"));
     assert!(!generated.contains("static void flux__win_delete_fonts(void)"));
@@ -70115,8 +70119,16 @@ app Screen
     assert!(
         windows.contains("flux__ui_state_count = state != NULL ? state->value_1 : INT64_C(7);")
     );
-    assert!(windows.contains("flux__windows_save_scalar_view_state(flux__windows_active_context)"));
-    assert!(windows.contains("flux__windows_restore_scalar_view_state(context)"));
+    assert!(
+        windows.contains(
+            "static void flux__windows_save_view_state(FluxWindowsWindowContext *context)"
+        )
+    );
+    assert!(windows.contains("flux__windows_save_scalar_view_state(context); flux__windows_save_string_view_state(context); flux__windows_save_control_windows(context);"));
+    assert!(windows.contains(
+        "static void flux__windows_restore_view_state(FluxWindowsWindowContext *context, HWND hwnd)"
+    ));
+    assert!(windows.contains("flux__windows_restore_scalar_view_state(context); flux__windows_restore_string_view_state(context); flux__windows_restore_control_windows(context);"));
     assert!(windows.contains("flux__windows_release_scalar_view_state(context)"));
     assert!(windows.contains("char **string_view_state; size_t string_view_state_count;"));
     assert!(windows.contains("context->string_view_state[0] = flux__ui_state_owned_query;"));
@@ -70124,16 +70136,12 @@ app Screen
     assert!(windows.contains(
         "flux__ui_state_query = flux__ui_state_owned_query != NULL ? flux__ui_state_owned_query : \"initial\";"
     ));
-    assert!(windows.contains("flux__windows_save_string_view_state(flux__windows_active_context)"));
-    assert!(windows.contains("flux__windows_restore_string_view_state(context)"));
     assert!(windows.contains("flux__windows_release_string_view_state(context)"));
     assert!(windows.contains("HWND *control_windows;"));
     assert!(windows.contains("context->control_windows[0] = flux__ui_label;"));
     assert!(windows.contains("flux__ui_label = context != NULL && context->control_windows != NULL ? context->control_windows[0] : NULL;"));
     assert!(windows.contains("context->control_windows = (HWND *)calloc(3, sizeof(HWND))"));
     assert!(windows.contains("free(context->control_windows); context->control_windows = NULL;"));
-    assert!(windows.contains("flux__windows_save_control_windows(flux__windows_active_context)"));
-    assert!(windows.contains("flux__windows_restore_control_windows(context)"));
     assert!(windows.contains("context->tooltip_window"));
     assert!(windows.contains("wchar_t **tooltip_texts; size_t tooltip_text_count;"));
     assert!(windows.contains(
@@ -70192,9 +70200,9 @@ app Screen
         "if (flux__win_create_view_window(instance, wc.lpszClassName, true) != 0) return 1;"
     ));
     assert!(windows.contains("flux__windows_activate_context(hwnd)"));
-    assert!(windows.contains(
-        "flux__windows_restore_control_gestures(context); flux__windows_restore_metrics(hwnd);"
-    ));
+    assert!(windows.contains("flux__windows_save_view_state(flux__windows_active_context);"));
+    assert!(windows.contains("flux__windows_restore_view_state(context, hwnd);"));
+    assert!(windows.contains("flux__windows_restore_view_state(flux__windows_active_context, flux__windows_active_window);"));
     assert!(
         !windows
             .contains("flux__windows_activate_context(hwnd); flux__windows_restore_metrics(hwnd);")
