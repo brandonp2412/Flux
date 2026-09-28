@@ -70239,6 +70239,60 @@ app Screen
 }
 
 #[test]
+fn windows_window_open_instantiates_an_independent_root_view() {
+    let source = r#"
+fn openSecondary() -> void {
+    if window.open():
+        return
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+app Screen
+"#;
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("window.open should typecheck in an application");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("window.open should lower for Windows");
+
+    assert!(windows.contains("static bool flux__window_open(void);"));
+    assert!(windows.contains(
+        "static bool flux__window_open(void) { HWND previous = flux__windows_active_window;"
+    ));
+    assert!(
+        windows.contains("flux__win_create_view_window(instance, L\"FluxNativeWindow\", false)")
+    );
+    assert!(windows.contains("ShowWindow(window, SW_SHOW); UpdateWindow(window);"));
+    assert!(windows.contains(
+        "if (previous != NULL && IsWindow(previous)) flux__windows_activate_context(previous); return true;"
+    ));
+
+    let linux_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Linux,
+    )
+    .expect_err("window.open is not yet portable beyond Windows");
+    assert!(
+        linux_error
+            .message
+            .contains("window.open currently requires the Windows target")
+    );
+}
+
+#[test]
 fn portable_focus_navigation_lowers_to_native_application_backends() {
     let source = r#"
 fn started() -> void {

@@ -15418,6 +15418,31 @@ fn check_qualified_call_fallback(
             }
         }
     }
+    if namespace == "window" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("window.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "open" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!("window.open expects 0 arguments, got {}", args.len()),
+                    ));
+                }
+                return Ok(vec![Type::Bool]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("window module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "focus" {
         if !named_args.is_empty() {
             return Err(diag(

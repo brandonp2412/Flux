@@ -2839,6 +2839,10 @@ fn add_qualified_namespace_completions(
         }
         return true;
     }
+    if namespace == "window" {
+        push_completion_item(items, seen, "open", 3, "fn window.open() -> bool");
+        return true;
+    }
     if namespace == "focus" {
         for (label, detail) in [
             ("next", "fn focus.next(wrap: bool = false) -> void"),
@@ -6059,6 +6063,14 @@ fn signature_help_for_document_cached(
                 }
                 _ => {}
             }
+        }
+        if namespace == "window" && implementation_member == "open" {
+            return Some(signature_help_for_builtin(
+                "window.open",
+                &[],
+                "bool",
+                active_parameter,
+            ));
         }
         if namespace == "focus" {
             match implementation_member {
@@ -10230,6 +10242,28 @@ mod tests {
     }
 
     #[test]
+    fn completion_exposes_window_root_instance_open() {
+        let uri = "file:///tmp/window-completion.flux";
+        let source = "fn main() -> i64 {\n    window.\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.trim() == "window.")
+            .expect("window completion line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(line_index),
+            Some(line.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(items.contains("fn window.open() -> bool"));
+    }
+
+    #[test]
     fn struct_field_completion_uses_visible_typed_values_during_incomplete_edit() {
         let uri = "file:///tmp/struct-field-completion.flux";
         let source = "struct User {\n    name: str\n    age: i64\n}\ntype Person = User\nfn describe(user: User) -> i64 {\n    let person: Person = user\n    user.\n    person.\n    return 0\n}\n";
@@ -13977,6 +14011,30 @@ fn main() -> i64 {
             .to_json();
             assert!(help.contains(expected));
         }
+    }
+
+    #[test]
+    fn signature_help_supports_window_root_instance_open() {
+        let uri = "file:///tmp/window-signatures.flux";
+        let source = "fn main() -> i64 {\n    print(window.open())\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("window.open("))
+            .expect("window.open call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find("window.open(").unwrap() + "window.open(".len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("window.open should have signature help")
+        .to_json();
+        assert!(help.contains("fn window.open() -> bool"));
     }
 
     #[test]

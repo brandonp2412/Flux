@@ -1586,9 +1586,13 @@ fn emit_c_for_target_with_source_metadata_impl(
         }
     }
     let mut application_body = String::new();
+    let uses_window_open = generated_body.contains("flux__window_open(");
     if program.application.is_some() {
         let cache_key = FunctionCodegenCacheKey {
-            identity: application_codegen_cache_identity(program, target, source_paths),
+            identity: format!(
+                "{}|window_open={uses_window_open}",
+                application_codegen_cache_identity(program, target, source_paths)
+            ),
             incoming_temp_counter: 0,
         };
         if let Some(cached) = function_cache
@@ -1606,9 +1610,12 @@ fn emit_c_for_target_with_source_metadata_impl(
                 NativeTarget::Android => {
                     emit_android_native_application(&mut application_body, program, signatures)?
                 }
-                NativeTarget::Windows => {
-                    emit_windows_native_application(&mut application_body, program, signatures)?
-                }
+                NativeTarget::Windows => emit_windows_native_application(
+                    &mut application_body,
+                    program,
+                    signatures,
+                    uses_window_open,
+                )?,
             }
             codegen_stats.regenerated_application_fragments += 1;
             if let Some(cache) = function_cache.as_deref_mut() {
@@ -1695,6 +1702,18 @@ fn emit_c_for_target_with_source_metadata_impl(
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
             "preferences.* requires the Linux, Windows, or Android application target",
+        ));
+    }
+    if runtime_usage.contains("flux__window_open(") && program.application.is_none() {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "window.open requires an application target",
+        ));
+    }
+    if runtime_usage.contains("flux__window_open(") && target != NativeTarget::Windows {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "window.open currently requires the Windows target",
         ));
     }
     if runtime_usage.contains("flux__clipboard_") && program.application.is_none() {
@@ -2750,6 +2769,7 @@ fn emit_runtime_prelude(
     let uses_windows_secure_remove = runtime_usage.contains("flux__windows_secure_remove(");
     let uses_windows_secure_storage =
         uses_windows_secure_store || uses_windows_secure_read || uses_windows_secure_remove;
+    let uses_window_open = runtime_usage.contains("flux__window_open(");
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
     let uses_menu_show = runtime_usage.contains("flux__menu_show(");
@@ -2778,6 +2798,9 @@ fn emit_runtime_prelude(
         };
         out.push_str(&format!("enum {{ FLUX_WINDOWS_MAX_WINDOWS = 16 }}; typedef struct {{ HWND hwnd; HWND tooltip_window; bool confirm_done; bool confirm_accept; bool choose_done; int64_t choose_selection; HWND choose_list; bool primary; int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi; WNDPROC runtime_previous_proc; bool refreshing; void *scalar_view_state; char **string_view_state; size_t string_view_state_count; HWND *control_windows; wchar_t **tooltip_texts; size_t tooltip_text_count; COLORREF *validation_colors; bool *validation_active; size_t validation_count; HBITMAP *image_bitmaps; size_t image_bitmap_count; HBRUSH *style_brushes; COLORREF *style_colors; bool *style_has_colors; size_t style_count; HFONT *text_fonts; char **text_font_families; int64_t *text_font_sizes; bool *text_font_bold; bool *text_font_italic; bool *text_font_underline; bool *text_font_strikethrough; UINT *text_font_dpis; bool *text_font_initialized; size_t text_font_count; HFONT *button_fonts; int64_t *button_font_sizes; UINT *button_font_dpis; size_t button_font_count; void *text_layout_states; size_t text_layout_count; COLORREF *border_colors; int64_t *border_widths; int *border_styles; size_t border_count; WNDPROC *control_subclass_originals; size_t control_subclass_original_count; void *control_gesture_state; void *drop_targets; size_t drop_target_count;{menu_context_fields}{tray_context_fields} }} FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {{0}}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n"));
         out.push_str("static void flux__windows_restore_metrics(HWND hwnd); static void flux__windows_save_scalar_view_state(FluxWindowsWindowContext *context); static void flux__windows_restore_scalar_view_state(FluxWindowsWindowContext *context); static void flux__windows_release_scalar_view_state(FluxWindowsWindowContext *context); static void flux__windows_save_string_view_state(FluxWindowsWindowContext *context); static void flux__windows_restore_string_view_state(FluxWindowsWindowContext *context); static void flux__windows_release_string_view_state(FluxWindowsWindowContext *context); static void flux__windows_save_control_windows(FluxWindowsWindowContext *context); static void flux__windows_restore_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context); static void flux__windows_release_validation_state(FluxWindowsWindowContext *context); static void flux__windows_release_image_bitmaps(FluxWindowsWindowContext *context); static void flux__windows_release_style_state(FluxWindowsWindowContext *context); static void flux__windows_save_text_fonts(FluxWindowsWindowContext *context); static void flux__windows_restore_text_fonts(FluxWindowsWindowContext *context); static void flux__windows_release_text_fonts(FluxWindowsWindowContext *context); static void flux__windows_save_button_fonts(FluxWindowsWindowContext *context); static void flux__windows_restore_button_fonts(FluxWindowsWindowContext *context); static void flux__windows_release_button_fonts(FluxWindowsWindowContext *context); static void flux__windows_save_text_layouts(FluxWindowsWindowContext *context); static void flux__windows_restore_text_layouts(FluxWindowsWindowContext *context); static void flux__windows_release_text_layouts(FluxWindowsWindowContext *context); static void flux__windows_save_borders(FluxWindowsWindowContext *context); static void flux__windows_restore_borders(FluxWindowsWindowContext *context); static void flux__windows_release_borders(FluxWindowsWindowContext *context); static void flux__windows_save_control_subclasses(FluxWindowsWindowContext *context); static void flux__windows_restore_control_subclasses(FluxWindowsWindowContext *context); static void flux__windows_release_control_subclasses(FluxWindowsWindowContext *context); static void flux__windows_save_control_gestures(FluxWindowsWindowContext *context); static void flux__windows_restore_control_gestures(FluxWindowsWindowContext *context); static void flux__windows_release_control_gestures(FluxWindowsWindowContext *context); static void flux__windows_release_drop_targets(FluxWindowsWindowContext *context);\n");
+        if uses_window_open {
+            out.push_str("static bool flux__window_open(void);\n");
+        }
         out.push_str("static FluxWindowsWindowContext *flux__windows_context_for(HWND hwnd) { if (hwnd == NULL) return NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd == hwnd) return &flux__windows_contexts[index]; return NULL; }\n");
         out.push_str("static void flux__windows_save_view_state(FluxWindowsWindowContext *context) { if (context == NULL) return; flux__windows_save_scalar_view_state(context); flux__windows_save_string_view_state(context); flux__windows_save_control_windows(context); flux__windows_save_text_fonts(context); flux__windows_save_button_fonts(context); flux__windows_save_text_layouts(context); flux__windows_save_borders(context); flux__windows_save_control_subclasses(context); flux__windows_save_control_gestures(context); }\n");
         out.push_str("static void flux__windows_restore_view_state(FluxWindowsWindowContext *context, HWND hwnd) { flux__windows_restore_scalar_view_state(context); flux__windows_restore_string_view_state(context); flux__windows_restore_control_windows(context); flux__windows_restore_text_fonts(context); flux__windows_restore_button_fonts(context); flux__windows_restore_text_layouts(context); flux__windows_restore_borders(context); flux__windows_restore_control_subclasses(context); flux__windows_restore_control_gestures(context); if (hwnd != NULL) flux__windows_restore_metrics(hwnd); }\n");
@@ -16625,6 +16648,7 @@ fn emit_windows_native_application(
     out: &mut String,
     program: &Program,
     signatures: &Signatures,
+    uses_window_open: bool,
 ) -> Result<(), Diagnostic> {
     let application = program
         .application
@@ -21705,6 +21729,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     );
     out.truncate(window_creation_start);
     out.push_str(&window_creation);
+    if uses_window_open {
+        out.push_str("static bool flux__window_open(void) { HWND previous = flux__windows_active_window; HINSTANCE instance = GetModuleHandleW(NULL); if (instance == NULL) return false; HWND window = flux__win_create_view_window(instance, L\"FluxNativeWindow\", false); if (window == NULL) { if (previous != NULL && IsWindow(previous)) flux__windows_activate_context(previous); return false; } ShowWindow(window, SW_SHOW); UpdateWindow(window); if (previous != NULL && IsWindow(previous)) flux__windows_activate_context(previous); return true; }\n");
+    }
     out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness(); flux__win_set_application_id({});{accessibility_init}{tooltip_init}{input_scope_init}{ole_init}{rich_text_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleW(NULL); WNDCLASSW wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = L\"FluxNativeWindow\"; wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512)); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1; HWND flux__win_primary_window = flux__win_create_view_window(instance, wc.lpszClassName, true); if (flux__win_primary_window == NULL) return 1;\n", c_string(&application_id)));
     if on_restore_state.is_some() {
         out.push_str("flux__win_restore_app_state();\n");
@@ -56010,6 +56037,12 @@ fn emit_qualified_call(
         };
         return Ok((format!("{helper}({})", callback.code), Vec::new(), None));
     }
+    if namespace == "window" {
+        if !named_args.is_empty() || name != "open" || !args.is_empty() {
+            return Err(diag(span, "invalid window call reached code generation"));
+        }
+        return Ok(("flux__window_open()".to_string(), Vec::new(), None));
+    }
     if namespace == "focus" {
         if !named_args.is_empty() {
             return Err(diag(span, "invalid focus call reached code generation"));
@@ -61975,6 +62008,17 @@ fn emit_cfg_scalar_expr_direct(
             }
             _ => None,
         },
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "window"
+            && name == "open"
+            && arguments.is_empty()
+            && ty == Type::Bool =>
+        {
+            Some("flux__window_open()".to_string())
+        }
         CfgScalarExprKind::QualifiedCall {
             namespace,
             name,
