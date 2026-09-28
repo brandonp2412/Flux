@@ -70642,6 +70642,18 @@ app Screen
     assert!(windows.contains(
         "static bool flux__window_open_view(uint32_t view_identity) { return flux__win_open_view(view_identity); }"
     ));
+    let linux_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Linux,
+    )
+    .expect_err("typed window routes must retain Windows target gating");
+    assert!(
+        linux_error
+            .message
+            .contains("window.* APIs currently require the Windows target")
+    );
 
     let distinct_source = r#"
 fn openSecondary() -> void {
