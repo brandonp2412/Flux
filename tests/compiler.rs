@@ -69981,10 +69981,13 @@ fn windows_window_runtime_tracks_primary_context_for_multi_window_foundation() {
     let source = r#"
 view Screen {
     grid columns: 1fr
-    grid rows: auto
+    grid rows: auto auto
     Text label at 1,1
         text: "Primary"
         tooltip: "Primary tooltip"
+    TextInput field at 2,1
+        text: ""
+        validationState: "error"
 }
 app Screen
 "#;
@@ -70005,15 +70008,28 @@ app Screen
     assert!(windows.contains("HWND *control_windows;"));
     assert!(windows.contains("context->control_windows[0] = flux__ui_label;"));
     assert!(windows.contains("flux__ui_label = context != NULL && context->control_windows != NULL ? context->control_windows[0] : NULL;"));
-    assert!(windows.contains("context->control_windows = (HWND *)calloc(1, sizeof(HWND))"));
+    assert!(windows.contains("context->control_windows = (HWND *)calloc(2, sizeof(HWND))"));
     assert!(windows.contains("free(context->control_windows); context->control_windows = NULL;"));
     assert!(windows.contains("flux__windows_save_control_windows(flux__windows_active_context)"));
     assert!(windows.contains("flux__windows_restore_control_windows(context)"));
     assert!(windows.contains("context->tooltip_window"));
     assert!(windows.contains("wchar_t **tooltip_texts; size_t tooltip_text_count;"));
+    assert!(windows.contains(
+        "COLORREF *validation_colors; bool *validation_active; size_t validation_count;"
+    ));
     assert!(windows.contains("flux__windows_tooltip_storage(context, slot)"));
     assert!(windows.contains("flux__win_set_tooltip(flux__ui_label, 0,"));
     assert!(windows.contains("free(context->tooltip_texts[index])"));
+    assert!(
+        windows.contains("flux__windows_validation_storage(flux__windows_active_context, slot")
+    );
+    assert!(windows.contains("flux__win_set_validation_state(flux__ui_field, 1,"));
+    assert!(windows.contains("validation_context->validation_active[1]"));
+    assert!(
+        windows.contains("free(context->validation_colors); free(context->validation_active);")
+    );
+    assert!(!windows.contains("flux__win_validation_color_field"));
+    assert!(!windows.contains("flux__win_validation_active_field"));
     assert!(!windows.contains("flux__win_tooltip_text_label"));
     assert!(windows.contains("flux__tooltip_context->tooltip_window = CreateWindowExW"));
     assert!(!windows.contains("static HWND flux__win_tooltips"));

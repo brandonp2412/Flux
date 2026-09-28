@@ -2776,12 +2776,12 @@ fn emit_runtime_prelude(
         } else {
             ""
         };
-        out.push_str(&format!("enum {{ FLUX_WINDOWS_MAX_WINDOWS = 16 }}; typedef struct {{ HWND hwnd; HWND tooltip_window; bool confirm_done; bool confirm_accept; bool choose_done; int64_t choose_selection; HWND choose_list; bool primary; int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi; WNDPROC runtime_previous_proc; HWND *control_windows; wchar_t **tooltip_texts; size_t tooltip_text_count;{menu_context_fields}{tray_context_fields} }} FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {{0}}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n"));
-        out.push_str("static void flux__windows_save_control_windows(FluxWindowsWindowContext *context); static void flux__windows_restore_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context);\n");
+        out.push_str(&format!("enum {{ FLUX_WINDOWS_MAX_WINDOWS = 16 }}; typedef struct {{ HWND hwnd; HWND tooltip_window; bool confirm_done; bool confirm_accept; bool choose_done; int64_t choose_selection; HWND choose_list; bool primary; int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi; WNDPROC runtime_previous_proc; HWND *control_windows; wchar_t **tooltip_texts; size_t tooltip_text_count; COLORREF *validation_colors; bool *validation_active; size_t validation_count;{menu_context_fields}{tray_context_fields} }} FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {{0}}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n"));
+        out.push_str("static void flux__windows_save_control_windows(FluxWindowsWindowContext *context); static void flux__windows_restore_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context); static void flux__windows_release_validation_state(FluxWindowsWindowContext *context);\n");
         out.push_str("static FluxWindowsWindowContext *flux__windows_context_for(HWND hwnd) { if (hwnd == NULL) return NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd == hwnd) return &flux__windows_contexts[index]; return NULL; }\n");
         out.push_str("static bool flux__windows_register_context(HWND hwnd, bool primary) { if (hwnd == NULL || flux__windows_context_for(hwnd) != NULL) return false; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) { if (flux__windows_contexts[index].hwnd != NULL) continue; flux__windows_contexts[index].hwnd = hwnd; flux__windows_contexts[index].confirm_done = false; flux__windows_contexts[index].confirm_accept = false; flux__windows_contexts[index].choose_done = false; flux__windows_contexts[index].choose_selection = INT64_C(-1); flux__windows_contexts[index].choose_list = NULL; flux__windows_contexts[index].primary = primary; flux__windows_contexts[index].logical_width = 0; flux__windows_contexts[index].logical_height = 0; flux__windows_contexts[index].display_scale = INT64_C(1); flux__windows_contexts[index].dpi = 96; flux__windows_contexts[index].runtime_previous_proc = NULL; if (flux__windows_active_context == NULL || primary) { if (flux__windows_active_context != NULL) flux__windows_save_control_windows(flux__windows_active_context); flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = hwnd; flux__windows_restore_control_windows(flux__windows_active_context); } return true; } return false; }\n");
         out.push_str("static void flux__windows_activate_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL || context == flux__windows_active_context) return; flux__windows_save_control_windows(flux__windows_active_context); flux__windows_active_context = context; flux__windows_active_window = hwnd; flux__windows_restore_control_windows(context); }\n");
-        out.push_str("static bool flux__windows_unregister_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return false; bool primary = context->primary; bool was_active = context == flux__windows_active_context; flux__windows_release_tooltip_texts(context); flux__windows_release_control_windows(context); *context = (FluxWindowsWindowContext){0}; if (was_active) { flux__windows_active_context = NULL; flux__windows_active_window = NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = flux__windows_contexts[index].hwnd; break; } flux__windows_restore_control_windows(flux__windows_active_context); } return primary; }\n");
+        out.push_str("static bool flux__windows_unregister_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return false; bool primary = context->primary; bool was_active = context == flux__windows_active_context; flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_control_windows(context); *context = (FluxWindowsWindowContext){0}; if (was_active) { flux__windows_active_context = NULL; flux__windows_active_window = NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = flux__windows_contexts[index].hwnd; break; } flux__windows_restore_control_windows(flux__windows_active_context); } return primary; }\n");
         out.push_str("static HWND flux__windows_message_window(const MSG *message) { if (message == NULL) return flux__windows_active_window; HWND hwnd = message->hwnd; while (hwnd != NULL) { if (flux__windows_context_for(hwnd) != NULL) return hwnd; hwnd = GetParent(hwnd); } return flux__windows_active_window; }\n");
     }
     let uses_focus_next = runtime_usage.contains("flux__focus_next(");
@@ -18341,12 +18341,6 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
                 element.name
             ));
         }
-        if element.kind == "TextInput" && view_property(element, "validation_state").is_some() {
-            out.push_str(&format!(
-                "static COLORREF flux__win_validation_color_{} = 0;\nstatic bool flux__win_validation_active_{} = false;\n",
-                element.name, element.name
-            ));
-        }
         if [
             "border_color",
             "border_top_color",
@@ -18494,6 +18488,11 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
         out.push_str("static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context) { if (context == NULL || context->tooltip_texts == NULL) return; for (size_t index = 0; index < context->tooltip_text_count; ++index) free(context->tooltip_texts[index]); free(context->tooltip_texts); context->tooltip_texts = NULL; context->tooltip_text_count = 0; }\n");
     } else {
         out.push_str("static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context) { (void)context; }\n");
+    }
+    if uses_validation_states {
+        out.push_str("static void flux__windows_release_validation_state(FluxWindowsWindowContext *context) { if (context == NULL) return; free(context->validation_colors); free(context->validation_active); context->validation_colors = NULL; context->validation_active = NULL; context->validation_count = 0; }\n");
+    } else {
+        out.push_str("static void flux__windows_release_validation_state(FluxWindowsWindowContext *context) { (void)context; }\n");
     }
     let styled_elements = view.elements.iter().filter(|element| {
         view_property(element, "background_color").is_some()
@@ -18706,7 +18705,8 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
     out.push_str("static void flux__win_set_text_if_changed(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; wchar_t *wide = flux__windows_utf8_to_wide(text); if (wide == NULL) return; int length = GetWindowTextLengthW(control); if (length < 0) { free(wide); return; } wchar_t *current = (wchar_t *)malloc(((size_t)length + 1) * sizeof(wchar_t)); if (current == NULL) { free(wide); return; } if (GetWindowTextW(control, current, length + 1) >= 0 && wcscmp(current, wide) != 0) { bool previous = flux__win_refreshing; flux__win_refreshing = true; SetWindowTextW(control, wide); flux__win_refreshing = previous; } free(current); free(wide); }\n");
     out.push_str("static void flux__win_set_cue(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0); if (length <= 0) return; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return; if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, length) > 0) SendMessageW(control, EM_SETCUEBANNER, TRUE, (LPARAM)wide); free(wide); }\n");
     if uses_validation_states {
-        out.push_str("static void flux__win_set_validation_state(HWND control, COLORREF *color, bool *active, const char *value) { if (control == NULL || color == NULL || active == NULL) return; const char *state = flux__ui_validation_state(value); bool next_active = strcmp(state, \"normal\") != 0; COLORREF next_color = 0; if (strcmp(state, \"error\") == 0) next_color = RGB(207, 34, 46); else if (strcmp(state, \"success\") == 0) next_color = RGB(26, 127, 55); else if (strcmp(state, \"warning\") == 0) next_color = RGB(154, 103, 0); if (*active == next_active && (!next_active || *color == next_color)) return; *active = next_active; *color = next_color; InvalidateRect(control, NULL, TRUE); }\n");
+        out.push_str(&format!("static bool flux__windows_validation_storage(FluxWindowsWindowContext *context, size_t slot, COLORREF **color, bool **active) {{ if (context == NULL || color == NULL || active == NULL || slot >= {}) return false; if (context->validation_colors == NULL) {{ context->validation_colors = (COLORREF *)calloc({}, sizeof(COLORREF)); context->validation_active = (bool *)calloc({}, sizeof(bool)); if (context->validation_colors == NULL || context->validation_active == NULL) abort(); context->validation_count = {}; }} *color = &context->validation_colors[slot]; *active = &context->validation_active[slot]; return true; }}\n", view.elements.len(), view.elements.len().max(1), view.elements.len().max(1), view.elements.len()));
+        out.push_str("static void flux__win_set_validation_state(HWND control, size_t slot, const char *value) { COLORREF *color = NULL; bool *active = NULL; if (control == NULL || !flux__windows_validation_storage(flux__windows_active_context, slot, &color, &active)) return; const char *state = flux__ui_validation_state(value); bool next_active = strcmp(state, \"normal\") != 0; COLORREF next_color = 0; if (strcmp(state, \"error\") == 0) next_color = RGB(207, 34, 46); else if (strcmp(state, \"success\") == 0) next_color = RGB(26, 127, 55); else if (strcmp(state, \"warning\") == 0) next_color = RGB(154, 103, 0); if (*active == next_active && (!next_active || *color == next_color)) return; *active = next_active; *color = next_color; InvalidateRect(control, NULL, TRUE); }\n");
     }
     let uses_dynamic_colors = view.elements.iter().any(|element| {
         ["background_color", "color"].iter().any(|property_name| {
@@ -20374,8 +20374,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         {
             let validation_state_value = ui_expr_c(&validation_state.value, view, signatures)?;
             out.push_str(&format!(
-                "flux__win_set_validation_state({variable}, &flux__win_validation_color_{}, &flux__win_validation_active_{}, {validation_state_value});\n",
-                element.name, element.name
+                "flux__win_set_validation_state({variable}, {index}, {validation_state_value});\n"
             ));
         }
         if element.kind == "TextInput"
@@ -20573,7 +20572,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     }
     out.push_str("flux__win_refreshing = previous_refreshing; }\n");
     out.push_str("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { switch (message) { case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT: { HDC dc = (HDC)wparam; HWND control = (HWND)lparam;\n");
-    for element in view.elements.iter().filter(|element| {
+    for (index, element) in view.elements.iter().enumerate().filter(|(_, element)| {
         let presentation_text_color = element.kind != "Image"
             && view_property(element, "status")
                 .and_then(|property| static_expr_str(&property.value, signatures))
@@ -20589,8 +20588,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         ));
         if element.kind == "TextInput" && view_property(element, "validation_state").is_some() {
             out.push_str(&format!(
-                " if (flux__win_validation_active_{}) SetTextColor(dc, flux__win_validation_color_{}); else SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));",
-                element.name, element.name
+                " FluxWindowsWindowContext *validation_context = flux__windows_active_context; if (validation_context != NULL && validation_context->validation_active != NULL && validation_context->validation_active[{index}]) SetTextColor(dc, validation_context->validation_colors[{index}]); else SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));"
             ));
         }
         if let Some(property) = view_property(element, "color") {
@@ -21294,9 +21292,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     }) {
         out.push_str(" flux__win_delete_brushes();");
     }
-    if uses_tooltips {
-        out.push_str(" for (size_t flux__windows_index = 0; flux__windows_index < FLUX_WINDOWS_MAX_WINDOWS; ++flux__windows_index) flux__windows_release_tooltip_texts(&flux__windows_contexts[flux__windows_index]);");
-    }
+    out.push_str(" for (size_t flux__windows_index = 0; flux__windows_index < FLUX_WINDOWS_MAX_WINDOWS; ++flux__windows_index) { flux__windows_release_validation_state(&flux__windows_contexts[flux__windows_index]); flux__windows_release_tooltip_texts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_control_windows(&flux__windows_contexts[flux__windows_index]); }");
     if uses_input_scopes {
         out.push_str(" flux__win_input_scope_shutdown();");
     }
