@@ -4044,6 +4044,16 @@ app Screen
         "int64_t requested_translate_y = (INT64_C(-3)) + flux__gesture_translate_y_card;"
     ));
     assert!(windows.contains("GWLP_WNDPROC, (LONG_PTR)flux__win_drag_proc_0"));
+    assert!(windows.contains("void *control_gesture_state;"));
+    assert!(windows.contains("typedef struct {"));
+    assert!(windows.contains("bool flux__win_dragging_0;"));
+    assert!(windows.contains("int64_t flux__gesture_translate_x_card;"));
+    assert!(
+        windows.contains("state->flux__gesture_translate_x_card = flux__gesture_translate_x_card")
+    );
+    assert!(windows.contains("flux__windows_save_control_gestures(flux__windows_active_context)"));
+    assert!(windows.contains("flux__windows_restore_control_gestures(context)"));
+    assert!(windows.contains("flux__windows_release_control_gestures(context)"));
 
     let dynamic_flag = r#"
 view Screen {

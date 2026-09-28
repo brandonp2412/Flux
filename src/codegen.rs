@@ -2776,12 +2776,12 @@ fn emit_runtime_prelude(
         } else {
             ""
         };
-        out.push_str(&format!("enum {{ FLUX_WINDOWS_MAX_WINDOWS = 16 }}; typedef struct {{ HWND hwnd; HWND tooltip_window; bool confirm_done; bool confirm_accept; bool choose_done; int64_t choose_selection; HWND choose_list; bool primary; int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi; WNDPROC runtime_previous_proc; HWND *control_windows; wchar_t **tooltip_texts; size_t tooltip_text_count; COLORREF *validation_colors; bool *validation_active; size_t validation_count; HBITMAP *image_bitmaps; size_t image_bitmap_count; HBRUSH *style_brushes; COLORREF *style_colors; bool *style_has_colors; size_t style_count; HFONT *text_fonts; char **text_font_families; int64_t *text_font_sizes; bool *text_font_bold; bool *text_font_italic; bool *text_font_underline; bool *text_font_strikethrough; UINT *text_font_dpis; bool *text_font_initialized; size_t text_font_count; HFONT *button_fonts; int64_t *button_font_sizes; UINT *button_font_dpis; size_t button_font_count; void *text_layout_states; size_t text_layout_count; COLORREF *border_colors; int64_t *border_widths; int *border_styles; size_t border_count; WNDPROC *control_subclass_originals; size_t control_subclass_original_count;{menu_context_fields}{tray_context_fields} }} FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {{0}}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n"));
-        out.push_str("static void flux__windows_save_control_windows(FluxWindowsWindowContext *context); static void flux__windows_restore_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context); static void flux__windows_release_validation_state(FluxWindowsWindowContext *context); static void flux__windows_release_image_bitmaps(FluxWindowsWindowContext *context); static void flux__windows_release_style_state(FluxWindowsWindowContext *context); static void flux__windows_save_text_fonts(FluxWindowsWindowContext *context); static void flux__windows_restore_text_fonts(FluxWindowsWindowContext *context); static void flux__windows_release_text_fonts(FluxWindowsWindowContext *context); static void flux__windows_save_button_fonts(FluxWindowsWindowContext *context); static void flux__windows_restore_button_fonts(FluxWindowsWindowContext *context); static void flux__windows_release_button_fonts(FluxWindowsWindowContext *context); static void flux__windows_save_text_layouts(FluxWindowsWindowContext *context); static void flux__windows_restore_text_layouts(FluxWindowsWindowContext *context); static void flux__windows_release_text_layouts(FluxWindowsWindowContext *context); static void flux__windows_save_borders(FluxWindowsWindowContext *context); static void flux__windows_restore_borders(FluxWindowsWindowContext *context); static void flux__windows_release_borders(FluxWindowsWindowContext *context); static void flux__windows_save_control_subclasses(FluxWindowsWindowContext *context); static void flux__windows_restore_control_subclasses(FluxWindowsWindowContext *context); static void flux__windows_release_control_subclasses(FluxWindowsWindowContext *context);\n");
+        out.push_str(&format!("enum {{ FLUX_WINDOWS_MAX_WINDOWS = 16 }}; typedef struct {{ HWND hwnd; HWND tooltip_window; bool confirm_done; bool confirm_accept; bool choose_done; int64_t choose_selection; HWND choose_list; bool primary; int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi; WNDPROC runtime_previous_proc; HWND *control_windows; wchar_t **tooltip_texts; size_t tooltip_text_count; COLORREF *validation_colors; bool *validation_active; size_t validation_count; HBITMAP *image_bitmaps; size_t image_bitmap_count; HBRUSH *style_brushes; COLORREF *style_colors; bool *style_has_colors; size_t style_count; HFONT *text_fonts; char **text_font_families; int64_t *text_font_sizes; bool *text_font_bold; bool *text_font_italic; bool *text_font_underline; bool *text_font_strikethrough; UINT *text_font_dpis; bool *text_font_initialized; size_t text_font_count; HFONT *button_fonts; int64_t *button_font_sizes; UINT *button_font_dpis; size_t button_font_count; void *text_layout_states; size_t text_layout_count; COLORREF *border_colors; int64_t *border_widths; int *border_styles; size_t border_count; WNDPROC *control_subclass_originals; size_t control_subclass_original_count; void *control_gesture_state;{menu_context_fields}{tray_context_fields} }} FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {{0}}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n"));
+        out.push_str("static void flux__windows_save_control_windows(FluxWindowsWindowContext *context); static void flux__windows_restore_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context); static void flux__windows_release_validation_state(FluxWindowsWindowContext *context); static void flux__windows_release_image_bitmaps(FluxWindowsWindowContext *context); static void flux__windows_release_style_state(FluxWindowsWindowContext *context); static void flux__windows_save_text_fonts(FluxWindowsWindowContext *context); static void flux__windows_restore_text_fonts(FluxWindowsWindowContext *context); static void flux__windows_release_text_fonts(FluxWindowsWindowContext *context); static void flux__windows_save_button_fonts(FluxWindowsWindowContext *context); static void flux__windows_restore_button_fonts(FluxWindowsWindowContext *context); static void flux__windows_release_button_fonts(FluxWindowsWindowContext *context); static void flux__windows_save_text_layouts(FluxWindowsWindowContext *context); static void flux__windows_restore_text_layouts(FluxWindowsWindowContext *context); static void flux__windows_release_text_layouts(FluxWindowsWindowContext *context); static void flux__windows_save_borders(FluxWindowsWindowContext *context); static void flux__windows_restore_borders(FluxWindowsWindowContext *context); static void flux__windows_release_borders(FluxWindowsWindowContext *context); static void flux__windows_save_control_subclasses(FluxWindowsWindowContext *context); static void flux__windows_restore_control_subclasses(FluxWindowsWindowContext *context); static void flux__windows_release_control_subclasses(FluxWindowsWindowContext *context); static void flux__windows_save_control_gestures(FluxWindowsWindowContext *context); static void flux__windows_restore_control_gestures(FluxWindowsWindowContext *context); static void flux__windows_release_control_gestures(FluxWindowsWindowContext *context);\n");
         out.push_str("static FluxWindowsWindowContext *flux__windows_context_for(HWND hwnd) { if (hwnd == NULL) return NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd == hwnd) return &flux__windows_contexts[index]; return NULL; }\n");
-        out.push_str("static bool flux__windows_register_context(HWND hwnd, bool primary) { if (hwnd == NULL || flux__windows_context_for(hwnd) != NULL) return false; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) { if (flux__windows_contexts[index].hwnd != NULL) continue; flux__windows_contexts[index].hwnd = hwnd; flux__windows_contexts[index].confirm_done = false; flux__windows_contexts[index].confirm_accept = false; flux__windows_contexts[index].choose_done = false; flux__windows_contexts[index].choose_selection = INT64_C(-1); flux__windows_contexts[index].choose_list = NULL; flux__windows_contexts[index].primary = primary; flux__windows_contexts[index].logical_width = 0; flux__windows_contexts[index].logical_height = 0; flux__windows_contexts[index].display_scale = INT64_C(1); flux__windows_contexts[index].dpi = 96; flux__windows_contexts[index].runtime_previous_proc = NULL; if (flux__windows_active_context == NULL || primary) { if (flux__windows_active_context != NULL) { flux__windows_save_control_windows(flux__windows_active_context); flux__windows_save_text_fonts(flux__windows_active_context); flux__windows_save_button_fonts(flux__windows_active_context); flux__windows_save_text_layouts(flux__windows_active_context); flux__windows_save_borders(flux__windows_active_context); flux__windows_save_control_subclasses(flux__windows_active_context); } flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = hwnd; flux__windows_restore_control_windows(flux__windows_active_context); flux__windows_restore_text_fonts(flux__windows_active_context); flux__windows_restore_button_fonts(flux__windows_active_context); flux__windows_restore_text_layouts(flux__windows_active_context); flux__windows_restore_borders(flux__windows_active_context); flux__windows_restore_control_subclasses(flux__windows_active_context); } return true; } return false; }\n");
-        out.push_str("static void flux__windows_activate_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL || context == flux__windows_active_context) return; flux__windows_save_control_windows(flux__windows_active_context); flux__windows_save_text_fonts(flux__windows_active_context); flux__windows_save_button_fonts(flux__windows_active_context); flux__windows_save_text_layouts(flux__windows_active_context); flux__windows_save_borders(flux__windows_active_context); flux__windows_save_control_subclasses(flux__windows_active_context); flux__windows_active_context = context; flux__windows_active_window = hwnd; flux__windows_restore_control_windows(context); flux__windows_restore_text_fonts(context); flux__windows_restore_button_fonts(context); flux__windows_restore_text_layouts(context); flux__windows_restore_borders(context); flux__windows_restore_control_subclasses(context); }\n");
-        out.push_str("static bool flux__windows_unregister_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return false; bool primary = context->primary; bool was_active = context == flux__windows_active_context; if (was_active) { flux__windows_save_text_fonts(context); flux__windows_save_button_fonts(context); flux__windows_save_text_layouts(context); flux__windows_save_borders(context); flux__windows_save_control_subclasses(context); } flux__windows_release_control_subclasses(context); flux__windows_release_borders(context); flux__windows_release_text_layouts(context); flux__windows_release_button_fonts(context); flux__windows_release_text_fonts(context); flux__windows_release_style_state(context); flux__windows_release_image_bitmaps(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_control_windows(context); *context = (FluxWindowsWindowContext){0}; if (was_active) { flux__windows_active_context = NULL; flux__windows_active_window = NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = flux__windows_contexts[index].hwnd; break; } flux__windows_restore_control_windows(flux__windows_active_context); flux__windows_restore_text_fonts(flux__windows_active_context); flux__windows_restore_button_fonts(flux__windows_active_context); flux__windows_restore_text_layouts(flux__windows_active_context); flux__windows_restore_borders(flux__windows_active_context); flux__windows_restore_control_subclasses(flux__windows_active_context); } return primary; }\n");
+        out.push_str("static bool flux__windows_register_context(HWND hwnd, bool primary) { if (hwnd == NULL || flux__windows_context_for(hwnd) != NULL) return false; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) { if (flux__windows_contexts[index].hwnd != NULL) continue; flux__windows_contexts[index].hwnd = hwnd; flux__windows_contexts[index].confirm_done = false; flux__windows_contexts[index].confirm_accept = false; flux__windows_contexts[index].choose_done = false; flux__windows_contexts[index].choose_selection = INT64_C(-1); flux__windows_contexts[index].choose_list = NULL; flux__windows_contexts[index].primary = primary; flux__windows_contexts[index].logical_width = 0; flux__windows_contexts[index].logical_height = 0; flux__windows_contexts[index].display_scale = INT64_C(1); flux__windows_contexts[index].dpi = 96; flux__windows_contexts[index].runtime_previous_proc = NULL; if (flux__windows_active_context == NULL || primary) { if (flux__windows_active_context != NULL) { flux__windows_save_control_windows(flux__windows_active_context); flux__windows_save_text_fonts(flux__windows_active_context); flux__windows_save_button_fonts(flux__windows_active_context); flux__windows_save_text_layouts(flux__windows_active_context); flux__windows_save_borders(flux__windows_active_context); flux__windows_save_control_subclasses(flux__windows_active_context); flux__windows_save_control_gestures(flux__windows_active_context); } flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = hwnd; flux__windows_restore_control_windows(flux__windows_active_context); flux__windows_restore_text_fonts(flux__windows_active_context); flux__windows_restore_button_fonts(flux__windows_active_context); flux__windows_restore_text_layouts(flux__windows_active_context); flux__windows_restore_borders(flux__windows_active_context); flux__windows_restore_control_subclasses(flux__windows_active_context); flux__windows_restore_control_gestures(flux__windows_active_context); } return true; } return false; }\n");
+        out.push_str("static void flux__windows_activate_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL || context == flux__windows_active_context) return; flux__windows_save_control_windows(flux__windows_active_context); flux__windows_save_text_fonts(flux__windows_active_context); flux__windows_save_button_fonts(flux__windows_active_context); flux__windows_save_text_layouts(flux__windows_active_context); flux__windows_save_borders(flux__windows_active_context); flux__windows_save_control_subclasses(flux__windows_active_context); flux__windows_save_control_gestures(flux__windows_active_context); flux__windows_active_context = context; flux__windows_active_window = hwnd; flux__windows_restore_control_windows(context); flux__windows_restore_text_fonts(context); flux__windows_restore_button_fonts(context); flux__windows_restore_text_layouts(context); flux__windows_restore_borders(context); flux__windows_restore_control_subclasses(context); flux__windows_restore_control_gestures(context); }\n");
+        out.push_str("static bool flux__windows_unregister_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return false; bool primary = context->primary; bool was_active = context == flux__windows_active_context; if (was_active) { flux__windows_save_text_fonts(context); flux__windows_save_button_fonts(context); flux__windows_save_text_layouts(context); flux__windows_save_borders(context); flux__windows_save_control_subclasses(context); flux__windows_save_control_gestures(context); } flux__windows_release_control_gestures(context); flux__windows_release_control_subclasses(context); flux__windows_release_borders(context); flux__windows_release_text_layouts(context); flux__windows_release_button_fonts(context); flux__windows_release_text_fonts(context); flux__windows_release_style_state(context); flux__windows_release_image_bitmaps(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_control_windows(context); *context = (FluxWindowsWindowContext){0}; if (was_active) { flux__windows_active_context = NULL; flux__windows_active_window = NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = flux__windows_contexts[index].hwnd; break; } flux__windows_restore_control_windows(flux__windows_active_context); flux__windows_restore_text_fonts(flux__windows_active_context); flux__windows_restore_button_fonts(flux__windows_active_context); flux__windows_restore_text_layouts(flux__windows_active_context); flux__windows_restore_borders(flux__windows_active_context); flux__windows_restore_control_subclasses(flux__windows_active_context); flux__windows_restore_control_gestures(flux__windows_active_context); } return primary; }\n");
         out.push_str("static HWND flux__windows_message_window(const MSG *message) { if (message == NULL) return flux__windows_active_window; HWND hwnd = message->hwnd; while (hwnd != NULL) { if (flux__windows_context_for(hwnd) != NULL) return hwnd; hwnd = GetParent(hwnd); } return flux__windows_active_window; }\n");
     }
     let uses_focus_next = runtime_usage.contains("flux__focus_next(");
@@ -19650,6 +19650,191 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     } else {
         out.push_str("static void flux__windows_save_control_subclasses(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_restore_control_subclasses(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_release_control_subclasses(FluxWindowsWindowContext *context) { (void)context; }\n");
     }
+    let mut control_gesture_fields = Vec::<(String, String, String)>::new();
+    for (index, element) in view.elements.iter().enumerate() {
+        if view_property(element, "on_hover").is_some()
+            || view_property(element, "on_leave").is_some()
+        {
+            control_gesture_fields.push((
+                "bool".to_string(),
+                format!("flux__win_hovering_{index}"),
+                "false".to_string(),
+            ));
+        }
+        if view_property(element, "on_double_tap").is_some() {
+            control_gesture_fields.push((
+                "bool".to_string(),
+                format!("flux__win_double_tap_armed_{index}"),
+                "false".to_string(),
+            ));
+            control_gesture_fields.push((
+                "DWORD".to_string(),
+                format!("flux__win_double_tap_time_{index}"),
+                "0".to_string(),
+            ));
+            control_gesture_fields.push((
+                "int".to_string(),
+                format!("flux__win_double_tap_x_{index}"),
+                "0".to_string(),
+            ));
+            control_gesture_fields.push((
+                "int".to_string(),
+                format!("flux__win_double_tap_y_{index}"),
+                "0".to_string(),
+            ));
+        }
+        if view_property(element, "on_long_press").is_some() {
+            control_gesture_fields.push((
+                "bool".to_string(),
+                format!("flux__win_long_press_armed_{index}"),
+                "false".to_string(),
+            ));
+            control_gesture_fields.push((
+                "bool".to_string(),
+                format!("flux__win_long_press_consumed_{index}"),
+                "false".to_string(),
+            ));
+            control_gesture_fields.push((
+                "POINT".to_string(),
+                format!("flux__win_long_press_start_{index}"),
+                "(POINT){0}".to_string(),
+            ));
+        }
+        if view_property(element, "drag_text").is_some() {
+            control_gesture_fields.push((
+                "bool".to_string(),
+                format!("flux__win_text_drag_tracking_{index}"),
+                "false".to_string(),
+            ));
+            control_gesture_fields.push((
+                "int".to_string(),
+                format!("flux__win_text_drag_start_x_{index}"),
+                "0".to_string(),
+            ));
+            control_gesture_fields.push((
+                "int".to_string(),
+                format!("flux__win_text_drag_start_y_{index}"),
+                "0".to_string(),
+            ));
+        }
+        let drag_translate =
+            static_gesture_transform_enabled(element, "drag_translate", signatures)?;
+        if view_property(element, "on_drag").is_some() || drag_translate {
+            control_gesture_fields.push((
+                "bool".to_string(),
+                format!("flux__win_dragging_{index}"),
+                "false".to_string(),
+            ));
+            control_gesture_fields.push((
+                "LONG".to_string(),
+                format!("flux__win_drag_start_screen_x_{index}"),
+                "0".to_string(),
+            ));
+            control_gesture_fields.push((
+                "LONG".to_string(),
+                format!("flux__win_drag_start_screen_y_{index}"),
+                "0".to_string(),
+            ));
+            if drag_translate {
+                control_gesture_fields.push((
+                    "int64_t".to_string(),
+                    ui_gesture_translate_x_c_name(&element.name),
+                    "INT64_C(0)".to_string(),
+                ));
+                control_gesture_fields.push((
+                    "int64_t".to_string(),
+                    ui_gesture_translate_y_c_name(&element.name),
+                    "INT64_C(0)".to_string(),
+                ));
+            }
+        }
+        if view_property(element, "on_swipe").is_some() {
+            control_gesture_fields.push((
+                "bool".to_string(),
+                format!("flux__win_swipe_tracking_{index}"),
+                "false".to_string(),
+            ));
+            control_gesture_fields.push((
+                "bool".to_string(),
+                format!("flux__win_swipe_moved_{index}"),
+                "false".to_string(),
+            ));
+            control_gesture_fields.push((
+                "bool".to_string(),
+                format!("flux__win_swipe_consumed_{index}"),
+                "false".to_string(),
+            ));
+            control_gesture_fields.push((
+                "int".to_string(),
+                format!("flux__win_swipe_start_x_{index}"),
+                "0".to_string(),
+            ));
+            control_gesture_fields.push((
+                "int".to_string(),
+                format!("flux__win_swipe_start_y_{index}"),
+                "0".to_string(),
+            ));
+            control_gesture_fields.push((
+                "DWORD".to_string(),
+                format!("flux__win_swipe_start_time_{index}"),
+                "0".to_string(),
+            ));
+        }
+        if view_property(element, "on_scale").is_some() {
+            control_gesture_fields.push((
+                "ULONGLONG".to_string(),
+                format!("flux__win_pinch_start_{index}"),
+                "0".to_string(),
+            ));
+        }
+        let edit_backed_text_tap = element.kind == "Text"
+            && (view_property(element, "selectable")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                .unwrap_or(false)
+                || view_property(element, "rich_text").is_some())
+            && view_property(element, "on_tap").is_some();
+        if edit_backed_text_tap {
+            control_gesture_fields.push((
+                "bool".to_string(),
+                format!("flux__win_selectable_tap_tracking_{index}"),
+                "false".to_string(),
+            ));
+            control_gesture_fields.push((
+                "bool".to_string(),
+                format!("flux__win_selectable_tap_moved_{index}"),
+                "false".to_string(),
+            ));
+            control_gesture_fields.push((
+                "int".to_string(),
+                format!("flux__win_selectable_tap_start_x_{index}"),
+                "0".to_string(),
+            ));
+            control_gesture_fields.push((
+                "int".to_string(),
+                format!("flux__win_selectable_tap_start_y_{index}"),
+                "0".to_string(),
+            ));
+        }
+    }
+    if !control_gesture_fields.is_empty() {
+        out.push_str("typedef struct {\n");
+        for (field_type, name, _) in &control_gesture_fields {
+            out.push_str(&format!("{field_type} {name};\n"));
+        }
+        out.push_str("} flux__win_control_gesture_state;\nstatic void flux__windows_save_control_gestures(FluxWindowsWindowContext *context) { if (context == NULL) return; if (context->control_gesture_state == NULL) { context->control_gesture_state = calloc(1, sizeof(flux__win_control_gesture_state)); if (context->control_gesture_state == NULL) abort(); } flux__win_control_gesture_state *state = (flux__win_control_gesture_state *)context->control_gesture_state;\n");
+        for (_, name, _) in &control_gesture_fields {
+            out.push_str(&format!("state->{name} = {name};\n"));
+        }
+        out.push_str("}\nstatic void flux__windows_restore_control_gestures(FluxWindowsWindowContext *context) { flux__win_control_gesture_state *state = context != NULL ? (flux__win_control_gesture_state *)context->control_gesture_state : NULL;\n");
+        for (_, name, zero) in &control_gesture_fields {
+            out.push_str(&format!(
+                "{name} = state != NULL ? state->{name} : {zero};\n"
+            ));
+        }
+        out.push_str("}\nstatic void flux__windows_release_control_gestures(FluxWindowsWindowContext *context) { if (context == NULL) return; free(context->control_gesture_state); context->control_gesture_state = NULL; }\n");
+    } else {
+        out.push_str("static void flux__windows_save_control_gestures(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_restore_control_gestures(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_release_control_gestures(FluxWindowsWindowContext *context) { (void)context; }\n");
+    }
     if uses_key_events || uses_passive_keyboard_activation || uses_shortcuts {
         out.push_str("static bool flux__win_dispatch_key(const MSG *message) { if (message == NULL || (message->message != WM_KEYDOWN && message->message != WM_SYSKEYDOWN)) return false; HWND focused = GetFocus(); char utf8[8] = {0};\n");
         for (index, element) in view.elements.iter().enumerate() {
@@ -21423,7 +21608,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         ""
     };
     out.push_str(&format!(" MSG message = {{0}}; int result; while ((result = GetMessageW(&message, NULL, 0, 0)) > 0) {{{key_dispatch} HWND dialog_window = flux__windows_message_window(&message); if (dialog_window != NULL && IsDialogMessageW(dialog_window, &message)) continue; TranslateMessage(&message); DispatchMessageW(&message); }} int exit_code = result < 0 ? 1 : (int)message.wParam;"));
-    out.push_str(" flux__windows_save_text_fonts(flux__windows_active_context); flux__windows_save_button_fonts(flux__windows_active_context); for (size_t flux__windows_index = 0; flux__windows_index < FLUX_WINDOWS_MAX_WINDOWS; ++flux__windows_index) { flux__windows_release_control_subclasses(&flux__windows_contexts[flux__windows_index]); flux__windows_release_borders(&flux__windows_contexts[flux__windows_index]); flux__windows_release_text_layouts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_button_fonts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_text_fonts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_style_state(&flux__windows_contexts[flux__windows_index]); flux__windows_release_image_bitmaps(&flux__windows_contexts[flux__windows_index]); flux__windows_release_validation_state(&flux__windows_contexts[flux__windows_index]); flux__windows_release_tooltip_texts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_control_windows(&flux__windows_contexts[flux__windows_index]); }");
+    out.push_str(" flux__windows_save_text_fonts(flux__windows_active_context); flux__windows_save_button_fonts(flux__windows_active_context); for (size_t flux__windows_index = 0; flux__windows_index < FLUX_WINDOWS_MAX_WINDOWS; ++flux__windows_index) { flux__windows_release_control_gestures(&flux__windows_contexts[flux__windows_index]); flux__windows_release_control_subclasses(&flux__windows_contexts[flux__windows_index]); flux__windows_release_borders(&flux__windows_contexts[flux__windows_index]); flux__windows_release_text_layouts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_button_fonts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_text_fonts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_style_state(&flux__windows_contexts[flux__windows_index]); flux__windows_release_image_bitmaps(&flux__windows_contexts[flux__windows_index]); flux__windows_release_validation_state(&flux__windows_contexts[flux__windows_index]); flux__windows_release_tooltip_texts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_control_windows(&flux__windows_contexts[flux__windows_index]); }");
     if uses_input_scopes {
         out.push_str(" flux__win_input_scope_shutdown();");
     }
