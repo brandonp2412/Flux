@@ -135,6 +135,14 @@ pub struct ConstantSignature {
     pub span: SourceSpan,
 }
 
+#[derive(Debug, Clone)]
+pub struct RouteSignature {
+    pub view_name: String,
+    pub view_identity: usize,
+    pub params: Vec<Type>,
+    pub span: SourceSpan,
+}
+
 impl StructSignature {
     pub fn field(&self, name: &str) -> Option<&StructFieldSignature> {
         self.fields.iter().find(|field| field.name == name)
@@ -151,6 +159,8 @@ pub struct Signatures {
     aliases: HashMap<String, Type>,
     alias_visibility: HashMap<String, (SourceSpan, bool)>,
     constants: HashMap<String, ConstantSignature>,
+    routes: HashMap<String, RouteSignature>,
+    application_view_identity: Option<usize>,
     package_constants: HashMap<SourceId, BTreeMap<String, ConstantSignature>>,
     module_imports: HashMap<SourceId, HashSet<SourceId>>,
 }
@@ -207,6 +217,14 @@ impl Signatures {
 
     pub fn constant(&self, name: &str) -> Option<&ConstantSignature> {
         self.constants.get(name)
+    }
+
+    pub fn route(&self, name: &str) -> Option<&RouteSignature> {
+        self.routes.get(name)
+    }
+
+    pub fn application_view_identity(&self) -> Option<usize> {
+        self.application_view_identity
     }
 
     pub fn package_constant(&self, source_id: SourceId, name: &str) -> Option<&ConstantSignature> {
@@ -454,6 +472,33 @@ fn check_all_with_package_constants_mode(
         ..Signatures::default()
     };
     let mut diagnostics = Vec::new();
+
+    signatures.application_view_identity = program.application.as_ref().and_then(|application| {
+        program
+            .views
+            .iter()
+            .position(|view| view.name == application.view_name)
+    });
+
+    for route in &program.routes {
+        let Some((view_identity, view)) = program
+            .views
+            .iter()
+            .enumerate()
+            .find(|(_, view)| view.name == route.view_name)
+        else {
+            continue;
+        };
+        signatures
+            .routes
+            .entry(route.name.clone())
+            .or_insert_with(|| RouteSignature {
+                view_name: view.name.clone(),
+                view_identity,
+                params: view.params.iter().map(|param| param.ty.clone()).collect(),
+                span: route.name_span,
+            });
+    }
 
     let mut alias_targets = HashMap::new();
     for alias in &program.aliases {
@@ -15426,11 +15471,52 @@ fn check_qualified_call_fallback(
             ));
         }
         match name.as_str() {
-            "open" | "close" => {
+            "open" => {
+                if args.is_empty() {
+                    return Ok(vec![Type::Bool]);
+                }
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("window.open expects 0 or 1 arguments, got {}", args.len()),
+                    ));
+                }
+                let ExprKind::Var(route_name) = &args[0].kind else {
+                    return Err(diag(
+                        args[0].span,
+                        "window.open route target must be a declared route name",
+                    ));
+                };
+                let Some(route) = signatures.route(route_name) else {
+                    return Err(diag(args[0].span, &format!("unknown route '{route_name}'")));
+                };
+                if !route.params.is_empty() {
+                    return Err(diag(
+                        args[0].span,
+                        &format!(
+                            "window.open route '{}' requires {} parameter{}; parameterized route windows are not supported yet",
+                            route_name,
+                            route.params.len(),
+                            if route.params.len() == 1 { "" } else { "s" }
+                        ),
+                    ));
+                }
+                if signatures.application_view_identity() != Some(route.view_identity) {
+                    return Err(diag(
+                        args[0].span,
+                        &format!(
+                            "window.open route '{}' targets view '{}'; distinct secondary view construction is not supported yet",
+                            route_name, route.view_name
+                        ),
+                    ));
+                }
+                return Ok(vec![Type::Bool]);
+            }
+            "close" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,
-                        &format!("window.{name} expects 0 arguments, got {}", args.len()),
+                        &format!("window.close expects 0 arguments, got {}", args.len()),
                     ));
                 }
                 return Ok(vec![Type::Bool]);

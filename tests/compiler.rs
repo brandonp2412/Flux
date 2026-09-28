@@ -70576,7 +70576,7 @@ app Screen
         "static bool flux__win_open_view(uint32_t view_identity) { HWND previous = flux__windows_active_window;"
     ));
     assert!(windows.contains(
-        "static bool flux__window_open(void) { uint32_t view_identity = flux__windows_active_context != NULL ? flux__windows_active_context->view_identity : flux__win_root_view_identity; return flux__win_open_view(view_identity); }"
+        "static bool flux__window_open(void) { uint32_t view_identity = flux__windows_active_context != NULL ? flux__windows_active_context->view_identity : flux__win_root_view_identity; return flux__window_open_view(view_identity); }"
     ));
     assert!(windows.contains(
         "flux__win_create_view_window(instance, L\"FluxNativeWindow\", false, view_identity)"
@@ -70606,6 +70606,74 @@ app Screen
             .message
             .contains("window.* APIs currently require the Windows target")
     );
+}
+
+#[test]
+fn windows_window_open_accepts_typed_root_route_identity() {
+    let source = r#"
+fn openSecondary() -> void {
+    if window.open(home):
+        return
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+route home = Screen
+app Screen
+"#;
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("typed root route window should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("typed root route window should lower for Windows");
+
+    assert!(windows.contains("flux__window_open_view(UINT32_C(0))"));
+    assert!(windows.contains(
+        "static bool flux__window_open_view(uint32_t view_identity) { return flux__win_open_view(view_identity); }"
+    ));
+
+    let distinct_source = r#"
+fn openSecondary() -> void {
+    if window.open(detail):
+        return
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Detail"
+}
+
+route detail = Detail
+app Screen
+"#;
+    let error = fluxc::semantic::SemanticDatabase::analyze(distinct_source, SourceId::UNKNOWN)
+        .expect_err("distinct route window construction should stay explicit until lowered");
+    assert!(error.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("distinct secondary view construction is not supported yet")
+    }));
 }
 
 #[test]
