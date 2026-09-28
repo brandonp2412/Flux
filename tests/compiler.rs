@@ -69844,6 +69844,12 @@ app Screen(onStart: started)
     .expect("menu bar APIs should lower to native Windows menus");
     assert!(windows.contains("FLUX_WINDOWS_MENU_MAX_TOP_LEVEL = 8"));
     assert!(windows.contains("void (*menu_callbacks[8])(int64_t);"));
+    assert!(windows.contains("void (*tray_callback)(void); NOTIFYICONDATAW tray_data; HICON tray_icon; bool tray_icon_owned; bool tray_added;"));
+    assert!(windows.contains("context->tray_callback"));
+    assert!(windows.contains("context->tray_data"));
+    assert!(windows.contains("context->tray_added"));
+    assert!(!windows.contains("static void (*flux__windows_tray_callback)(void)"));
+    assert!(!windows.contains("static NOTIFYICONDATAW flux__windows_tray_data"));
     assert!(windows.contains("context->menu_callbacks[menu_index]"));
     assert!(
         windows.contains(
