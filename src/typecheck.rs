@@ -6629,6 +6629,28 @@ pub(crate) fn borrow_index_result_type(
     index_ty: &Type,
     signatures: &Signatures,
 ) -> Result<Type, Diagnostic> {
+    let canonical_base = signatures.canonical_type(base_ty);
+    let map = if optional {
+        match canonical_base.clone() {
+            Type::Optional(inner) => match signatures.canonical_type(&inner) {
+                Type::Map(key, value) => Some((key, value)),
+                _ => None,
+            },
+            _ => None,
+        }
+    } else {
+        match canonical_base {
+            Type::Map(key, value) => Some((key, value)),
+            _ => None,
+        }
+    };
+    if let Some((key, value)) = map
+        && !signatures.is_copy_type(&value)
+        && is_borrowable_collection_type(&value)
+    {
+        require_type(index_span, &key, index_ty, "map key")?;
+        return Ok(Type::Optional(value));
+    }
     if optional
         && let Type::Optional(inner) = signatures.canonical_type(base_ty)
         && let Type::List(element) = signatures.canonical_type(&inner)

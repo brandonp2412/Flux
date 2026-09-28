@@ -23013,6 +23013,75 @@ fn main() -> i64 {
 }
 
 #[test]
+fn explicit_borrow_preserves_nested_map_lookup_owner_provenance() {
+    let live = r#"
+fn main() -> i64 {
+    let entries: map<str, i64[]> = {"numbers": [10, 20]}
+    let view: i64[]? = borrow entries["numbers"]
+    let destination: map<str, i64[]> = entries
+    if let present = borrow view:
+        print(present[0])
+    print(destination.count)
+    return 0
+}
+"#;
+    let errors = check_source_all(live)
+        .expect_err("a live map-value borrow must keep its root map owner live");
+    assert!(
+        errors.iter().any(|error| {
+            error.message.contains(
+                "cannot move non-copy binding 'entries' while borrowed view 'view' is still live",
+            )
+        }),
+        "nested map borrow errors: {errors:?}"
+    );
+
+    let escaping = r#"
+fn main() -> i64 {
+    let entries: map<str, i64[]> = {"numbers": [10, 20]}
+    let view: i64[]? = entries["numbers"]
+    if let present = borrow view:
+        print(present[0])
+    return 0
+}
+"#;
+    let error = check_source(escaping)
+        .expect_err("nested map collection lookup must require an explicit borrow");
+    assert!(
+        error
+            .message
+            .contains("map indexing currently requires an i64, bool, or str value"),
+        "unexpected nested map lookup diagnostic: {error:?}"
+    );
+
+    let dead = r#"
+fn main() -> i64 {
+    let entries: map<str, i64[]> = {"numbers": [10, 20]}
+    let view: i64[]? = borrow entries["numbers"]
+    if let present = borrow view:
+        print(present[1])
+    let destination: map<str, i64[]> = entries
+    print(destination.count)
+    return 0
+}
+"#;
+    check_source(dead)
+        .expect("a nested map-value borrow should release its root owner after last use");
+    compile_to_c(dead).expect("nested map-value borrows should lower as zero-copy descriptors");
+    let database = fluxc::semantic::SemanticDatabase::analyze(dead, SourceId::new(1219))
+        .expect("nested map-value borrow lifetimes should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    assert!(
+        graph
+            .borrow_lifetimes()
+            .iter()
+            .any(|lifetime| lifetime.borrower == "view" && lifetime.source == "entries")
+    );
+}
+
+#[test]
 fn explicit_collection_borrow_supports_set_and_map_storage() {
     let source = r#"
 fn main() -> i64 {
