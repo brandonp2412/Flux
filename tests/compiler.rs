@@ -68855,8 +68855,11 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
         .expect("activation dispatch should precede size dispatch");
     let activation = &generated[activation_start..activation_end];
     assert!(activation.contains("LOWORD(wparam) == WA_INACTIVE"));
-    assert!(activation.contains("flux__fn_paused();"));
-    assert!(activation.contains("flux__fn_resumed();"));
+    assert!(activation.contains(
+        "bool flux__windows_internal_activation = flux__windows_context_for((HWND)lparam) != NULL;"
+    ));
+    assert!(activation.contains("if (!flux__windows_internal_activation) { flux__fn_paused(); }"));
+    assert!(activation.contains("flux__windows_activate_context(hwnd); if (!flux__windows_internal_activation) { flux__fn_resumed(); }"));
     assert!(
         activation.contains("} break;"),
         "activation lifecycle dispatch must retain default Win32 processing: {activation}"
