@@ -4319,6 +4319,23 @@ app Screen
     assert!(dynamic_overflow_windows.contains(
         "static flux__win_text_layout_state flux__win_text_layout_label = { INT64_C(0), INT64_C(100), true, FLUX__WIN_WRAP_WORD, FLUX__WIN_ELLIPSIZE_NONE, INT64_C(0), INT64_C(0), INT64_C(0), INT64_C(0), false }"
     ));
+    assert!(
+        dynamic_overflow_windows.contains(
+            "static const flux__win_text_layout_state flux__win_text_layout_initial_label"
+        )
+    );
+    assert!(
+        dynamic_overflow_windows.contains("void *text_layout_states; size_t text_layout_count;")
+    );
+    assert!(
+        dynamic_overflow_windows
+            .contains("flux__windows_save_text_layouts(flux__windows_active_context)")
+    );
+    assert!(dynamic_overflow_windows.contains("flux__windows_restore_text_layouts(context)"));
+    assert!(dynamic_overflow_windows.contains("flux__windows_release_text_layouts(context)"));
+    assert!(dynamic_overflow_windows.contains(
+        "flux__win_text_layout_label = states != NULL ? states[0] : flux__win_text_layout_initial_label"
+    ));
     assert!(dynamic_overflow_windows.contains("flux__win_next_wrap_label"));
     assert!(
         dynamic_overflow_windows
