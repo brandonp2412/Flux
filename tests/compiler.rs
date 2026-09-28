@@ -70164,6 +70164,8 @@ app Screen
     ));
     assert!(windows.contains("flux__tooltip_context->tooltip_window = CreateWindowExW"));
     assert!(!windows.contains("static HWND flux__win_tooltips"));
+    assert!(!windows.contains("SendMessageW(flux__win_tooltips"));
+    assert!(windows.contains("SendMessageW(flux__tooltip_context->tooltip_window, TTM_ADDTOOLW"));
     assert!(windows.contains("flux__windows_register_context(flux__windows_active_window, true)"));
     assert!(windows.contains("flux__windows_activate_context(hwnd)"));
     assert!(windows.contains("flux__windows_restore_metrics(hwnd);  flux__win_refresh();"));

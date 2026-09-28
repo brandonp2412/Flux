@@ -21503,7 +21503,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             || (element.kind == "TextInput"
                 && view_property(element, "validation_message").is_some())
         {
-            out.push_str(&format!("TOOLINFOW flux__win_toolinfo_{index} = {{0}}; flux__win_toolinfo_{index}.cbSize = sizeof(flux__win_toolinfo_{index}); flux__win_toolinfo_{index}.uFlags = TTF_IDISHWND | TTF_SUBCLASS; flux__win_toolinfo_{index}.hwnd = flux__windows_active_window; flux__win_toolinfo_{index}.uId = (UINT_PTR){variable}; flux__win_toolinfo_{index}.lpszText = L\"\"; if (!SendMessageW(flux__win_tooltips, TTM_ADDTOOLW, 0, (LPARAM)&flux__win_toolinfo_{index})) return 1;\n"));
+            out.push_str(&format!("TOOLINFOW flux__win_toolinfo_{index} = {{0}}; flux__win_toolinfo_{index}.cbSize = sizeof(flux__win_toolinfo_{index}); flux__win_toolinfo_{index}.uFlags = TTF_IDISHWND | TTF_SUBCLASS; flux__win_toolinfo_{index}.hwnd = flux__windows_active_window; flux__win_toolinfo_{index}.uId = (UINT_PTR){variable}; flux__win_toolinfo_{index}.lpszText = L\"\"; if (!SendMessageW(flux__tooltip_context->tooltip_window, TTM_ADDTOOLW, 0, (LPARAM)&flux__win_toolinfo_{index})) return 1;\n"));
         }
         if let Some(property) = view_property(element, "accessibility_role") {
             let role = static_expr_str(&property.value, signatures).ok_or_else(|| {
