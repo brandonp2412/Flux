@@ -67462,10 +67462,12 @@ app DragDrop
     assert!(windows.contains("DoDragDrop(&data->iface, &source->iface, DROPEFFECT_COPY, &effect)"));
     assert!(windows.contains("flux__win_begin_text_drag(\"horse-profile\")"));
     assert!(windows.contains("RegisterDragDrop(control, &target->iface)"));
-    assert!(windows.contains("flux__win_drop_target_1"));
+    assert!(windows.contains("void *drop_targets; size_t drop_target_count;"));
+    assert!(windows.contains("flux__windows_drop_target_storage(flux__windows_active_context, 1)"));
     assert!(windows.contains(
-        "flux__win_register_drop_target(flux__ui_target, &flux__win_drop_target_1, flux__fn_dropped)"
+        "flux__win_register_drop_target(flux__ui_target, flux__win_drop_target_1, flux__fn_dropped)"
     ));
+    assert!(windows.contains("flux__windows_release_drop_targets(context)"));
     assert!(windows.contains("flux__win_revoke_drop_target(flux__ui_target)"));
     assert!(windows.contains("WideCharToMultiByte("));
     assert!(windows.contains("self->callback(utf8);"));
