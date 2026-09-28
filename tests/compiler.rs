@@ -69978,6 +69978,11 @@ app Screen
     assert!(windows.contains("FluxWindowsWindowContext"));
     assert!(windows.contains("flux__windows_register_context(flux__windows_active_window, true)"));
     assert!(windows.contains("flux__windows_activate_context(hwnd)"));
+    assert!(windows.contains(
+        "int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi;"
+    ));
+    assert!(windows.contains("flux__windows_store_metrics(hwnd, flux__ui_window_width, flux__ui_window_height, flux__win_dpi)"));
+    assert!(windows.contains("flux__windows_restore_metrics(hwnd)"));
     assert!(windows.contains("flux__windows_message_window(const MSG *message)"));
     assert!(windows.contains("HWND dialog_window = flux__windows_message_window(&message)"));
     assert!(windows.contains("if (flux__windows_unregister_context(hwnd)) PostQuitMessage(0)"));
