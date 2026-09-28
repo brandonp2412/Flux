@@ -69981,13 +69981,15 @@ fn windows_window_runtime_tracks_primary_context_for_multi_window_foundation() {
     let source = r#"
 view Screen {
     grid columns: 1fr
-    grid rows: auto auto
+    grid rows: auto auto auto
     Text label at 1,1
         text: "Primary"
         tooltip: "Primary tooltip"
     TextInput field at 2,1
         text: ""
         validationState: "error"
+    Image icon at 3,1
+        source: "missing.bmp"
 }
 app Screen
 "#;
@@ -70008,7 +70010,7 @@ app Screen
     assert!(windows.contains("HWND *control_windows;"));
     assert!(windows.contains("context->control_windows[0] = flux__ui_label;"));
     assert!(windows.contains("flux__ui_label = context != NULL && context->control_windows != NULL ? context->control_windows[0] : NULL;"));
-    assert!(windows.contains("context->control_windows = (HWND *)calloc(2, sizeof(HWND))"));
+    assert!(windows.contains("context->control_windows = (HWND *)calloc(3, sizeof(HWND))"));
     assert!(windows.contains("free(context->control_windows); context->control_windows = NULL;"));
     assert!(windows.contains("flux__windows_save_control_windows(flux__windows_active_context)"));
     assert!(windows.contains("flux__windows_restore_control_windows(context)"));
@@ -70017,6 +70019,7 @@ app Screen
     assert!(windows.contains(
         "COLORREF *validation_colors; bool *validation_active; size_t validation_count;"
     ));
+    assert!(windows.contains("HBITMAP *image_bitmaps; size_t image_bitmap_count;"));
     assert!(windows.contains("flux__windows_tooltip_storage(context, slot)"));
     assert!(windows.contains("flux__win_set_tooltip(flux__ui_label, 0,"));
     assert!(windows.contains("free(context->tooltip_texts[index])"));
@@ -70030,6 +70033,14 @@ app Screen
     );
     assert!(!windows.contains("flux__win_validation_color_field"));
     assert!(!windows.contains("flux__win_validation_active_field"));
+    assert!(
+        windows.contains("flux__windows_image_bitmap_storage(flux__windows_active_context, 2)")
+    );
+    assert!(
+        windows.contains("flux__win_set_bitmap(flux__ui_icon, flux__windows_image_bitmap_storage")
+    );
+    assert!(windows.contains("DeleteObject(context->image_bitmaps[index])"));
+    assert!(!windows.contains("flux__win_bitmap_icon"));
     assert!(!windows.contains("flux__win_tooltip_text_label"));
     assert!(windows.contains("flux__tooltip_context->tooltip_window = CreateWindowExW"));
     assert!(!windows.contains("static HWND flux__win_tooltips"));

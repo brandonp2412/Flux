@@ -2776,12 +2776,12 @@ fn emit_runtime_prelude(
         } else {
             ""
         };
-        out.push_str(&format!("enum {{ FLUX_WINDOWS_MAX_WINDOWS = 16 }}; typedef struct {{ HWND hwnd; HWND tooltip_window; bool confirm_done; bool confirm_accept; bool choose_done; int64_t choose_selection; HWND choose_list; bool primary; int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi; WNDPROC runtime_previous_proc; HWND *control_windows; wchar_t **tooltip_texts; size_t tooltip_text_count; COLORREF *validation_colors; bool *validation_active; size_t validation_count;{menu_context_fields}{tray_context_fields} }} FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {{0}}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n"));
-        out.push_str("static void flux__windows_save_control_windows(FluxWindowsWindowContext *context); static void flux__windows_restore_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context); static void flux__windows_release_validation_state(FluxWindowsWindowContext *context);\n");
+        out.push_str(&format!("enum {{ FLUX_WINDOWS_MAX_WINDOWS = 16 }}; typedef struct {{ HWND hwnd; HWND tooltip_window; bool confirm_done; bool confirm_accept; bool choose_done; int64_t choose_selection; HWND choose_list; bool primary; int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi; WNDPROC runtime_previous_proc; HWND *control_windows; wchar_t **tooltip_texts; size_t tooltip_text_count; COLORREF *validation_colors; bool *validation_active; size_t validation_count; HBITMAP *image_bitmaps; size_t image_bitmap_count;{menu_context_fields}{tray_context_fields} }} FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {{0}}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n"));
+        out.push_str("static void flux__windows_save_control_windows(FluxWindowsWindowContext *context); static void flux__windows_restore_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context); static void flux__windows_release_validation_state(FluxWindowsWindowContext *context); static void flux__windows_release_image_bitmaps(FluxWindowsWindowContext *context);\n");
         out.push_str("static FluxWindowsWindowContext *flux__windows_context_for(HWND hwnd) { if (hwnd == NULL) return NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd == hwnd) return &flux__windows_contexts[index]; return NULL; }\n");
         out.push_str("static bool flux__windows_register_context(HWND hwnd, bool primary) { if (hwnd == NULL || flux__windows_context_for(hwnd) != NULL) return false; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) { if (flux__windows_contexts[index].hwnd != NULL) continue; flux__windows_contexts[index].hwnd = hwnd; flux__windows_contexts[index].confirm_done = false; flux__windows_contexts[index].confirm_accept = false; flux__windows_contexts[index].choose_done = false; flux__windows_contexts[index].choose_selection = INT64_C(-1); flux__windows_contexts[index].choose_list = NULL; flux__windows_contexts[index].primary = primary; flux__windows_contexts[index].logical_width = 0; flux__windows_contexts[index].logical_height = 0; flux__windows_contexts[index].display_scale = INT64_C(1); flux__windows_contexts[index].dpi = 96; flux__windows_contexts[index].runtime_previous_proc = NULL; if (flux__windows_active_context == NULL || primary) { if (flux__windows_active_context != NULL) flux__windows_save_control_windows(flux__windows_active_context); flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = hwnd; flux__windows_restore_control_windows(flux__windows_active_context); } return true; } return false; }\n");
         out.push_str("static void flux__windows_activate_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL || context == flux__windows_active_context) return; flux__windows_save_control_windows(flux__windows_active_context); flux__windows_active_context = context; flux__windows_active_window = hwnd; flux__windows_restore_control_windows(context); }\n");
-        out.push_str("static bool flux__windows_unregister_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return false; bool primary = context->primary; bool was_active = context == flux__windows_active_context; flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_control_windows(context); *context = (FluxWindowsWindowContext){0}; if (was_active) { flux__windows_active_context = NULL; flux__windows_active_window = NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = flux__windows_contexts[index].hwnd; break; } flux__windows_restore_control_windows(flux__windows_active_context); } return primary; }\n");
+        out.push_str("static bool flux__windows_unregister_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return false; bool primary = context->primary; bool was_active = context == flux__windows_active_context; flux__windows_release_image_bitmaps(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_control_windows(context); *context = (FluxWindowsWindowContext){0}; if (was_active) { flux__windows_active_context = NULL; flux__windows_active_window = NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = flux__windows_contexts[index].hwnd; break; } flux__windows_restore_control_windows(flux__windows_active_context); } return primary; }\n");
         out.push_str("static HWND flux__windows_message_window(const MSG *message) { if (message == NULL) return flux__windows_active_window; HWND hwnd = message->hwnd; while (hwnd != NULL) { if (flux__windows_context_for(hwnd) != NULL) return hwnd; hwnd = GetParent(hwnd); } return flux__windows_active_window; }\n");
     }
     let uses_focus_next = runtime_usage.contains("flux__focus_next(");
@@ -18335,12 +18335,6 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
                 element.name, element.name, element.name
             ));
         }
-        if element.kind == "Image" {
-            out.push_str(&format!(
-                "static HBITMAP flux__win_bitmap_{} = NULL;\n",
-                element.name
-            ));
-        }
         if [
             "border_color",
             "border_top_color",
@@ -18493,6 +18487,11 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
         out.push_str("static void flux__windows_release_validation_state(FluxWindowsWindowContext *context) { if (context == NULL) return; free(context->validation_colors); free(context->validation_active); context->validation_colors = NULL; context->validation_active = NULL; context->validation_count = 0; }\n");
     } else {
         out.push_str("static void flux__windows_release_validation_state(FluxWindowsWindowContext *context) { (void)context; }\n");
+    }
+    if view.elements.iter().any(|element| element.kind == "Image") {
+        out.push_str("static void flux__windows_release_image_bitmaps(FluxWindowsWindowContext *context) { if (context == NULL || context->image_bitmaps == NULL) return; for (size_t index = 0; index < context->image_bitmap_count; ++index) if (context->image_bitmaps[index] != NULL) DeleteObject(context->image_bitmaps[index]); free(context->image_bitmaps); context->image_bitmaps = NULL; context->image_bitmap_count = 0; }\n");
+    } else {
+        out.push_str("static void flux__windows_release_image_bitmaps(FluxWindowsWindowContext *context) { (void)context; }\n");
     }
     let styled_elements = view.elements.iter().filter(|element| {
         view_property(element, "background_color").is_some()
@@ -18897,6 +18896,7 @@ static void flux__win_set_border_style(HWND control, int *current, const char *v
 "#);
     }
     if view.elements.iter().any(|element| element.kind == "Image") {
+        out.push_str(&format!("static HBITMAP *flux__windows_image_bitmap_storage(FluxWindowsWindowContext *context, size_t slot) {{ if (context == NULL || slot >= {}) return NULL; if (context->image_bitmaps == NULL) {{ context->image_bitmaps = (HBITMAP *)calloc({}, sizeof(HBITMAP)); if (context->image_bitmaps == NULL) abort(); context->image_bitmap_count = {}; }} return &context->image_bitmaps[slot]; }}\n", view.elements.len(), view.elements.len().max(1), view.elements.len()));
         out.push_str(r#"static char *flux__win_image_source_path(const char *source) { if (source == NULL) return NULL; size_t source_length = 0; while (source_length <= 65536 && source[source_length] != '\0') source_length += 1; if (source_length > 65536) return NULL; if (strncmp(source, "asset://", 8) != 0) return _strdup(source); const char *relative = source + 8; if (*relative == '\0' || *relative == '/' || strstr(relative, "..") != NULL) return NULL; char module[4096]; DWORD length = GetModuleFileNameA(NULL, module, (DWORD)sizeof(module)); if (length == 0 || length >= sizeof(module)) return NULL; char *separator = strrchr(module, '\\'); if (separator == NULL) return NULL; *separator = '\0'; size_t size = strlen(module) + strlen("\\assets\\") + strlen(relative) + 1; char *path = (char *)malloc(size); if (path == NULL) return NULL; snprintf(path, size, "%s\\assets\\%s", module, relative); return path; }
 static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *source, const char *fit) {
     if (control == NULL || current == NULL) return;
@@ -20359,8 +20359,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         c_string("contain")
                     };
                     out.push_str(&format!(
-                        "flux__win_set_bitmap({variable}, &flux__win_bitmap_{}, {value}, {fit});\n",
-                        element.name
+                        "flux__win_set_bitmap({variable}, flux__windows_image_bitmap_storage(flux__windows_active_context, {index}), {value}, {fit});\n"
                     ));
                 } else {
                     out.push_str(&format!(
@@ -21292,7 +21291,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     }) {
         out.push_str(" flux__win_delete_brushes();");
     }
-    out.push_str(" for (size_t flux__windows_index = 0; flux__windows_index < FLUX_WINDOWS_MAX_WINDOWS; ++flux__windows_index) { flux__windows_release_validation_state(&flux__windows_contexts[flux__windows_index]); flux__windows_release_tooltip_texts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_control_windows(&flux__windows_contexts[flux__windows_index]); }");
+    out.push_str(" for (size_t flux__windows_index = 0; flux__windows_index < FLUX_WINDOWS_MAX_WINDOWS; ++flux__windows_index) { flux__windows_release_image_bitmaps(&flux__windows_contexts[flux__windows_index]); flux__windows_release_validation_state(&flux__windows_contexts[flux__windows_index]); flux__windows_release_tooltip_texts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_control_windows(&flux__windows_contexts[flux__windows_index]); }");
     if uses_input_scopes {
         out.push_str(" flux__win_input_scope_shutdown();");
     }
