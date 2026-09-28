@@ -67272,7 +67272,9 @@ app ContextCard
     assert!(windows.contains("case WM_CONTEXTMENU"));
     assert!(windows.contains("CreatePopupMenu()"));
     assert!(windows.contains("AppendMenuW(menu, MF_STRING, (UINT_PTR)1"));
-    assert!(windows.contains("TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON"));
+    assert!(windows.contains("while (menu_window != NULL && flux__windows_context_for(menu_window) == NULL) menu_window = GetParent(menu_window)"));
+    assert!(windows.contains("SetForegroundWindow(menu_window)"));
+    assert!(windows.contains("TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, menu_window, NULL)"));
     assert!(windows.contains("flux__ui_state_opened = true; flux__win_refresh();"));
     assert!(windows.contains("flux__ui_state_selected = true; flux__win_refresh();"));
     assert!(windows.contains("WS_TABSTOP"));

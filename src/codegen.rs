@@ -19320,7 +19320,7 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
         } else {
             String::new()
         };
-        let position = "POINT point = {0}; if (position == (LPARAM)-1) { RECT bounds = {0}; if (!GetWindowRect(anchor, &bounds)) return; point.x = bounds.left + (bounds.right - bounds.left) / 2; point.y = bounds.top + (bounds.bottom - bounds.top) / 2; } else { point.x = (int)(short)LOWORD(position); point.y = (int)(short)HIWORD(position); } SetForegroundWindow(flux__windows_active_window); ";
+        let position = "POINT point = {0}; if (position == (LPARAM)-1) { RECT bounds = {0}; if (!GetWindowRect(anchor, &bounds)) return; point.x = bounds.left + (bounds.right - bounds.left) / 2; point.y = bounds.top + (bounds.bottom - bounds.top) / 2; } else { point.x = (int)(short)LOWORD(position); point.y = (int)(short)HIWORD(position); } HWND menu_window = anchor; while (menu_window != NULL && flux__windows_context_for(menu_window) == NULL) menu_window = GetParent(menu_window); if (menu_window == NULL) menu_window = flux__windows_active_window; SetForegroundWindow(menu_window); ";
         let menu_body = if let Some(items) = static_context_menu_items(element, signatures)? {
             let ExprKind::Var(function) = &view_property(element, "on_context_menu_item_select")
                 .expect("validated context menu item callback")
@@ -19345,7 +19345,7 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
                 ));
             }
             body.push_str(&format!(
-                "UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, flux__windows_active_window, NULL); DestroyMenu(menu); if (command >= 1 && command <= {}) {{ {}((int64_t)(command - 1)); flux__win_refresh(); }} ",
+                "UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, menu_window, NULL); DestroyMenu(menu); if (command >= 1 && command <= {}) {{ {}((int64_t)(command - 1)); flux__win_refresh(); }} ",
                 items.len(),
                 function_c_name(function),
             ));
@@ -19375,7 +19375,7 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
                 format!("{}(); flux__win_refresh();", function_c_name(function))
             };
             format!(
-                "{position}HMENU menu = CreatePopupMenu(); if (menu == NULL) return; wchar_t *label = flux__windows_utf8_to_wide({}); if (label == NULL || !AppendMenuW(menu, MF_STRING, (UINT_PTR)1, label)) {{ free(label); DestroyMenu(menu); return; }} free(label); UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, flux__windows_active_window, NULL); DestroyMenu(menu); if (command == 1) {{ {select_body} }} ",
+                "{position}HMENU menu = CreatePopupMenu(); if (menu == NULL) return; wchar_t *label = flux__windows_utf8_to_wide({}); if (label == NULL || !AppendMenuW(menu, MF_STRING, (UINT_PTR)1, label)) {{ free(label); DestroyMenu(menu); return; }} free(label); UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, menu_window, NULL); DestroyMenu(menu); if (command == 1) {{ {select_body} }} ",
                 c_string(&label),
             )
         } else {
