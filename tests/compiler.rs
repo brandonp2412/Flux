@@ -70002,6 +70002,13 @@ app Screen
     assert!(windows.contains("FLUX_WINDOWS_MAX_WINDOWS = 16"));
     assert!(windows.contains("FluxWindowsWindowContext"));
     assert!(windows.contains("HWND hwnd; HWND tooltip_window;"));
+    assert!(windows.contains("HWND *control_windows;"));
+    assert!(windows.contains("context->control_windows[0] = flux__ui_label;"));
+    assert!(windows.contains("flux__ui_label = context != NULL && context->control_windows != NULL ? context->control_windows[0] : NULL;"));
+    assert!(windows.contains("context->control_windows = (HWND *)calloc(1, sizeof(HWND))"));
+    assert!(windows.contains("free(context->control_windows); context->control_windows = NULL;"));
+    assert!(windows.contains("flux__windows_save_control_windows(flux__windows_active_context)"));
+    assert!(windows.contains("flux__windows_restore_control_windows(context)"));
     assert!(windows.contains("context->tooltip_window"));
     assert!(windows.contains("flux__tooltip_context->tooltip_window = CreateWindowExW"));
     assert!(!windows.contains("static HWND flux__win_tooltips"));

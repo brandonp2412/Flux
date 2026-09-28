@@ -2776,11 +2776,12 @@ fn emit_runtime_prelude(
         } else {
             ""
         };
-        out.push_str(&format!("enum {{ FLUX_WINDOWS_MAX_WINDOWS = 16 }}; typedef struct {{ HWND hwnd; HWND tooltip_window; bool confirm_done; bool confirm_accept; bool choose_done; int64_t choose_selection; HWND choose_list; bool primary; int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi; WNDPROC runtime_previous_proc;{menu_context_fields}{tray_context_fields} }} FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {{0}}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n"));
+        out.push_str(&format!("enum {{ FLUX_WINDOWS_MAX_WINDOWS = 16 }}; typedef struct {{ HWND hwnd; HWND tooltip_window; bool confirm_done; bool confirm_accept; bool choose_done; int64_t choose_selection; HWND choose_list; bool primary; int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi; WNDPROC runtime_previous_proc; HWND *control_windows;{menu_context_fields}{tray_context_fields} }} FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {{0}}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n"));
+        out.push_str("static void flux__windows_save_control_windows(FluxWindowsWindowContext *context); static void flux__windows_restore_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_control_windows(FluxWindowsWindowContext *context);\n");
         out.push_str("static FluxWindowsWindowContext *flux__windows_context_for(HWND hwnd) { if (hwnd == NULL) return NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd == hwnd) return &flux__windows_contexts[index]; return NULL; }\n");
-        out.push_str("static bool flux__windows_register_context(HWND hwnd, bool primary) { if (hwnd == NULL || flux__windows_context_for(hwnd) != NULL) return false; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) { if (flux__windows_contexts[index].hwnd != NULL) continue; flux__windows_contexts[index].hwnd = hwnd; flux__windows_contexts[index].confirm_done = false; flux__windows_contexts[index].confirm_accept = false; flux__windows_contexts[index].choose_done = false; flux__windows_contexts[index].choose_selection = INT64_C(-1); flux__windows_contexts[index].choose_list = NULL; flux__windows_contexts[index].primary = primary; flux__windows_contexts[index].logical_width = 0; flux__windows_contexts[index].logical_height = 0; flux__windows_contexts[index].display_scale = INT64_C(1); flux__windows_contexts[index].dpi = 96; flux__windows_contexts[index].runtime_previous_proc = NULL; if (flux__windows_active_context == NULL || primary) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = hwnd; } return true; } return false; }\n");
-        out.push_str("static void flux__windows_activate_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return; flux__windows_active_context = context; flux__windows_active_window = hwnd; }\n");
-        out.push_str("static bool flux__windows_unregister_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return false; bool primary = context->primary; bool was_active = context == flux__windows_active_context; *context = (FluxWindowsWindowContext){0}; if (was_active) { flux__windows_active_context = NULL; flux__windows_active_window = NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = flux__windows_contexts[index].hwnd; break; } } return primary; }\n");
+        out.push_str("static bool flux__windows_register_context(HWND hwnd, bool primary) { if (hwnd == NULL || flux__windows_context_for(hwnd) != NULL) return false; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) { if (flux__windows_contexts[index].hwnd != NULL) continue; flux__windows_contexts[index].hwnd = hwnd; flux__windows_contexts[index].confirm_done = false; flux__windows_contexts[index].confirm_accept = false; flux__windows_contexts[index].choose_done = false; flux__windows_contexts[index].choose_selection = INT64_C(-1); flux__windows_contexts[index].choose_list = NULL; flux__windows_contexts[index].primary = primary; flux__windows_contexts[index].logical_width = 0; flux__windows_contexts[index].logical_height = 0; flux__windows_contexts[index].display_scale = INT64_C(1); flux__windows_contexts[index].dpi = 96; flux__windows_contexts[index].runtime_previous_proc = NULL; if (flux__windows_active_context == NULL || primary) { if (flux__windows_active_context != NULL) flux__windows_save_control_windows(flux__windows_active_context); flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = hwnd; flux__windows_restore_control_windows(flux__windows_active_context); } return true; } return false; }\n");
+        out.push_str("static void flux__windows_activate_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL || context == flux__windows_active_context) return; flux__windows_save_control_windows(flux__windows_active_context); flux__windows_active_context = context; flux__windows_active_window = hwnd; flux__windows_restore_control_windows(context); }\n");
+        out.push_str("static bool flux__windows_unregister_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return false; bool primary = context->primary; bool was_active = context == flux__windows_active_context; flux__windows_release_control_windows(context); *context = (FluxWindowsWindowContext){0}; if (was_active) { flux__windows_active_context = NULL; flux__windows_active_window = NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = flux__windows_contexts[index].hwnd; break; } flux__windows_restore_control_windows(flux__windows_active_context); } return primary; }\n");
         out.push_str("static HWND flux__windows_message_window(const MSG *message) { if (message == NULL) return flux__windows_active_window; HWND hwnd = message->hwnd; while (hwnd != NULL) { if (flux__windows_context_for(hwnd) != NULL) return hwnd; hwnd = GetParent(hwnd); } return flux__windows_active_window; }\n");
     }
     let uses_focus_next = runtime_usage.contains("flux__focus_next(");
@@ -18475,6 +18476,27 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
             }
         }
     }
+    out.push_str("static void flux__windows_save_control_windows(FluxWindowsWindowContext *context) { if (context == NULL) return;\n");
+    if !view.elements.is_empty() {
+        out.push_str(&format!(
+            "if (context->control_windows == NULL) {{ context->control_windows = (HWND *)calloc({}, sizeof(HWND)); if (context->control_windows == NULL) abort(); }}\n",
+            view.elements.len()
+        ));
+    }
+    for (index, element) in view.elements.iter().enumerate() {
+        out.push_str(&format!(
+            "context->control_windows[{index}] = {};\n",
+            ui_widget_c_name(&element.name)
+        ));
+    }
+    out.push_str("}\nstatic void flux__windows_restore_control_windows(FluxWindowsWindowContext *context) {\n");
+    for (index, element) in view.elements.iter().enumerate() {
+        out.push_str(&format!(
+            "{} = context != NULL && context->control_windows != NULL ? context->control_windows[{index}] : NULL;\n",
+            ui_widget_c_name(&element.name)
+        ));
+    }
+    out.push_str("}\nstatic void flux__windows_release_control_windows(FluxWindowsWindowContext *context) { if (context == NULL) return; free(context->control_windows); context->control_windows = NULL; }\n");
     let styled_elements = view.elements.iter().filter(|element| {
         view_property(element, "background_color").is_some()
             || (element.kind == "Text" && view_property(element, "color").is_some())
