@@ -70454,7 +70454,7 @@ app Screen
     assert!(windows.contains("SendMessageW(flux__tooltip_context->tooltip_window, TTM_ADDTOOLW"));
     assert!(windows.contains("static HWND flux__win_create_view_window_failure(HWND window, bool primary) { (void)primary; if (window != NULL && IsWindow(window)) { (void)flux__windows_unregister_context(window); DestroyWindow(window); } return NULL; }"));
     let creation_start = windows
-        .find("static HWND flux__win_create_root_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary)")
+        .find("static HWND flux__win_create_root_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary, uint32_t view_identity)")
         .expect("Windows view creation helper should exist");
     let creation_end = windows[creation_start..]
         .find("static HWND flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary, uint32_t view_identity)")
@@ -70467,9 +70467,9 @@ app Screen
     ));
     assert!(windows.contains("HWND flux__win_created_window = CreateWindowExW("));
     assert!(windows.contains("static const uint32_t flux__win_view_count = UINT32_C(1);"));
-    assert!(windows.contains("if (view_identity >= flux__win_view_count) return NULL; switch (view_identity) { case UINT32_C(0): return flux__win_create_root_view_window(instance, class_name, primary); default: return NULL; }"));
+    assert!(windows.contains("if (view_identity >= flux__win_view_count) return NULL; switch (view_identity) { case UINT32_C(0): return flux__win_create_root_view_window(instance, class_name, primary, view_identity); default: return NULL; }"));
     assert!(windows.contains(
-        "flux__windows_register_context(flux__win_created_window, primary, flux__win_root_view_identity)"
+        "flux__windows_register_context(flux__win_created_window, primary, view_identity)"
     ));
     assert!(windows.contains("if (primary) { for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL && flux__windows_contexts[index].primary) return false; }"));
     assert!(windows.contains("flux__windows_activate_context(flux__win_created_window);"));
@@ -70561,7 +70561,7 @@ app Screen
     assert!(windows.contains("static bool flux__window_open(void);"));
     assert!(windows.contains("static const uint32_t flux__win_root_view_identity = UINT32_C(1);"));
     assert!(windows.contains("static const uint32_t flux__win_view_count = UINT32_C(2);"));
-    assert!(windows.contains("case UINT32_C(1): return flux__win_create_root_view_window(instance, class_name, primary); default: return NULL;"));
+    assert!(windows.contains("case UINT32_C(1): return flux__win_create_root_view_window(instance, class_name, primary, view_identity); default: return NULL;"));
     assert!(windows.contains(
         "static bool flux__win_open_view(uint32_t view_identity) { HWND previous = flux__windows_active_window;"
     ));

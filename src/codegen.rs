@@ -21410,8 +21410,8 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     };
     out.push_str("static HWND flux__win_create_view_window_failure(HWND window, bool primary) { (void)primary; if (window != NULL && IsWindow(window)) { (void)flux__windows_unregister_context(window); DestroyWindow(window); } return NULL; }\n");
     let window_creation_start = out.len();
-    out.push_str("static HWND flux__win_create_root_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary) {\n");
-    out.push_str(&format!("HWND flux__win_created_window = CreateWindowExW({window_ex_style}, class_name, L\"\", {window_style}, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__win_created_window == NULL) return 1; if (!flux__windows_register_context(flux__win_created_window, primary, flux__win_root_view_identity)) {{ DestroyWindow(flux__win_created_window); return 1; }} flux__windows_activate_context(flux__win_created_window); if (flux__windows_active_window != flux__win_created_window) {{ DestroyWindow(flux__win_created_window); return 1; }} flux__win_set_text_if_changed(flux__windows_active_window, {});\n", width, height, c_string(&title)));
+    out.push_str("static HWND flux__win_create_root_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary, uint32_t view_identity) {\n");
+    out.push_str(&format!("HWND flux__win_created_window = CreateWindowExW({window_ex_style}, class_name, L\"\", {window_style}, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__win_created_window == NULL) return 1; if (!flux__windows_register_context(flux__win_created_window, primary, view_identity)) {{ DestroyWindow(flux__win_created_window); return 1; }} flux__windows_activate_context(flux__win_created_window); if (flux__windows_active_window != flux__win_created_window) {{ DestroyWindow(flux__win_created_window); return 1; }} flux__win_set_text_if_changed(flux__windows_active_window, {});\n", width, height, c_string(&title)));
     if uses_tooltips {
         out.push_str("FluxWindowsWindowContext *flux__tooltip_context = flux__windows_context_for(flux__windows_active_window); if (flux__tooltip_context == NULL) return 1; flux__tooltip_context->tooltip_window = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, flux__tooltip_context->hwnd, NULL, instance, NULL); if (flux__tooltip_context->tooltip_window == NULL) return 1; SetWindowPos(flux__tooltip_context->tooltip_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);\n");
     }
@@ -21886,7 +21886,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     );
     out.truncate(window_creation_start);
     out.push_str(&window_creation);
-    out.push_str(&format!("static HWND flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary, uint32_t view_identity) {{ if (view_identity >= flux__win_view_count) return NULL; switch (view_identity) {{ case UINT32_C({root_view_identity}): return flux__win_create_root_view_window(instance, class_name, primary); default: return NULL; }} }}\n"));
+    out.push_str(&format!("static HWND flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary, uint32_t view_identity) {{ if (view_identity >= flux__win_view_count) return NULL; switch (view_identity) {{ case UINT32_C({root_view_identity}): return flux__win_create_root_view_window(instance, class_name, primary, view_identity); default: return NULL; }} }}\n"));
     if uses_window_open {
         out.push_str("static bool flux__win_open_view(uint32_t view_identity) { HWND previous = flux__windows_active_window; HINSTANCE instance = GetModuleHandleW(NULL); if (instance == NULL) return false; HWND window = flux__win_create_view_window(instance, L\"FluxNativeWindow\", false, view_identity); if (window == NULL) { if (previous != NULL && IsWindow(previous)) flux__windows_activate_context(previous); return false; } ShowWindow(window, SW_SHOW); UpdateWindow(window); if (previous != NULL && IsWindow(previous)) flux__windows_activate_context(previous); return true; }\nstatic bool flux__window_open(void) { uint32_t view_identity = flux__windows_active_context != NULL ? flux__windows_active_context->view_identity : flux__win_root_view_identity; return flux__win_open_view(view_identity); }\n");
     }
@@ -56199,7 +56199,7 @@ fn emit_qualified_call(
         if !named_args.is_empty() || !matches!(name, "open" | "close") || !args.is_empty() {
             return Err(diag(span, "invalid window call reached code generation"));
         }
-        return Ok((format!("flux__window_{name}()"), Vec::new(), None));
+        return Ok((format!("flux__window_{name}()"), vec![Type::Bool], None));
     }
     if namespace == "focus" {
         if !named_args.is_empty() {
