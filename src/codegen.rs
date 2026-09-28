@@ -17014,6 +17014,18 @@ fn emit_windows_native_application(
             ("layout_transition_ms", "layoutTransitionMs"),
         ] {
             if let Some(property) = view_property(element, property_name) {
+                let neutral_numeric = matches!(
+                    property_name,
+                    "rotate_degrees"
+                        | "skew_x_degrees"
+                        | "skew_y_degrees"
+                        | "transition_ms"
+                        | "transition_delay_ms"
+                        | "layout_transition_ms"
+                ) && static_expr_i64(&property.value, signatures) == Some(0);
+                if neutral_numeric {
+                    continue;
+                }
                 return Err(diag(
                     property.value.span,
                     &format!(

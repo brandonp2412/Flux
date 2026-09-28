@@ -3306,6 +3306,58 @@ app Screen
 }
 
 #[test]
+fn windows_accepts_neutral_unsupported_transform_and_transition_values() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Neutral"
+        rotateDegrees: 0
+        skewXDegrees: 0
+        skewYDegrees: 0
+        transitionMs: 0
+        transitionDelayMs: 0
+        layoutTransitionMs: 0
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("neutral Windows styles should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("neutral Windows styles should typecheck");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("provably neutral unsupported Windows styles should lower as no-ops");
+
+    let dynamic = r#"
+view Screen {
+    state angle: i64 = 0
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Dynamic"
+        rotateDegrees: angle
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(dynamic).expect("dynamic Windows style should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("dynamic Windows style should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("dynamic rotation must remain explicit until Windows rotation is implemented");
+    assert!(error.message.contains("rotateDegrees is not yet supported"));
+}
+
+#[test]
 fn windows_rejects_unimplemented_portable_styles_instead_of_silently_dropping_them() {
     for (property, source_name) in [
         ("shadowColor: \"shadow\"", "shadowColor"),
