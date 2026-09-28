@@ -21148,7 +21148,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         .map(|function| format!("{}();", function_c_name(function)))
         .unwrap_or_default();
     let activation_messages = format!(
-        " case WM_ACTIVATE: {{ if (LOWORD(wparam) == WA_INACTIVE) {{ {pause_callback} }} else {{ flux__windows_activate_context(hwnd); flux__windows_restore_metrics(hwnd); {resume_callback} }} }} break;"
+        " case WM_ACTIVATE: {{ if (LOWORD(wparam) == WA_INACTIVE) {{ {pause_callback} }} else {{ flux__windows_activate_context(hwnd); flux__windows_restore_metrics(hwnd); {resume_callback} flux__win_refresh(); }} }} break;"
     );
     let configuration_callback = on_configuration_changed
         .map(|function| format!("{}();", function_c_name(function)))

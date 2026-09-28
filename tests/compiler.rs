@@ -70148,6 +70148,7 @@ app Screen
     assert!(!windows.contains("static HWND flux__win_tooltips"));
     assert!(windows.contains("flux__windows_register_context(flux__windows_active_window, true)"));
     assert!(windows.contains("flux__windows_activate_context(hwnd)"));
+    assert!(windows.contains("flux__windows_restore_metrics(hwnd);  flux__win_refresh();"));
     assert!(windows.contains(
         "int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi;"
     ));
