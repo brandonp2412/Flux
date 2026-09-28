@@ -3881,7 +3881,7 @@ fn signature_help_for_document_cached(
         .sum::<usize>()
         + byte_in_line;
     let prefix = source.get(..absolute.min(source.len()))?;
-    let (call_name, active_parameter, _) = active_call(prefix)?;
+    let (call_name, active_parameter, call_open) = active_call(prefix)?;
     let implementation_call_name = crate::builtin_names::global_impl(call_name);
     // Built-in signatures remain useful while unrelated document diagnostics
     // prevent construction of the semantic database.
@@ -6141,6 +6141,12 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "window" && matches!(implementation_member, "open" | "close") {
+            if implementation_member == "open" {
+                let route_form = prefix
+                    .get(call_open + 1..)
+                    .is_some_and(|arguments| !arguments.trim().is_empty());
+                return Some(signature_help_for_window_open(route_form));
+            }
             return Some(signature_help_for_builtin(
                 &format!("window.{member}"),
                 &[],
@@ -6361,6 +6367,37 @@ fn signature_help_for_builtin(
         crate::builtin_names::global(name).to_string()
     };
     signature_help_from_labels(&canonical, labels, returns, active_parameter)
+}
+
+fn signature_help_for_window_open(route_form: bool) -> JsonValue {
+    let no_route = object([
+        (
+            "label",
+            JsonValue::String("fn window.open() -> bool".to_string()),
+        ),
+        ("parameters", JsonValue::Array(Vec::new())),
+    ]);
+    let with_route = object([
+        (
+            "label",
+            JsonValue::String("fn window.open(routeName) -> bool".to_string()),
+        ),
+        (
+            "parameters",
+            JsonValue::Array(vec![object([(
+                "label",
+                JsonValue::String("routeName".to_string()),
+            )])]),
+        ),
+    ]);
+    object([
+        ("signatures", JsonValue::Array(vec![no_route, with_route])),
+        (
+            "activeSignature",
+            JsonValue::Number(if route_form { 1 } else { 0 }),
+        ),
+        ("activeParameter", JsonValue::Number(0)),
+    ])
 }
 
 fn signature_help_for_enum_variant(
@@ -14161,6 +14198,42 @@ fn main() -> i64 {
             .to_json();
             assert!(help.contains(expected));
         }
+    }
+
+    #[test]
+    fn signature_help_supports_window_route_identity_open() {
+        let uri = "file:///tmp/window-route-signatures.flux";
+        let source = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+route home = Screen
+fn openSecondary() -> void {
+    window.open(home)
+}
+app Screen
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("window.open(home)"))
+            .expect("window route call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find("home").unwrap() + "home".len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("window route call should have signature help")
+        .to_json();
+
+        assert!(help.contains("fn window.open() -> bool"));
+        assert!(help.contains("fn window.open(routeName) -> bool"));
+        assert!(help.contains(r#""activeSignature":1"#));
     }
 
     #[test]
