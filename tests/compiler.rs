@@ -3320,7 +3320,6 @@ fn windows_rejects_unimplemented_portable_styles_instead_of_silently_dropping_th
         ("transitionDelayMs: 20", "transitionDelayMs"),
         ("transitionEasing: \"ease\"", "transitionEasing"),
         ("layoutTransitionMs: 120", "layoutTransitionMs"),
-        ("pinchScale: true", "pinchScale"),
     ] {
         let source = format!(
             "view Screen {{\n    grid columns: 1fr\n    grid rows: auto\n    Text label at 1,1\n        text: \"Styled\"\n        {property}\n}}\napp Screen\n"
@@ -4014,6 +4013,7 @@ view Screen {
         text: "Scale"
         scalePercent: zoom
         scaleYPercent: 80
+        pinchScale: true
         transformOriginXPercent: origin
         transformOriginYPercent: 75
     Button action at 2,1
@@ -4033,8 +4033,15 @@ app Screen
     )
     .expect("Windows scale transforms should lower into native layout");
 
-    assert!(windows.contains("int64_t requested_scale_x = flux__ui_state_zoom;"));
-    assert!(windows.contains("int64_t requested_scale_y = INT64_C(80);"));
+    assert!(windows.contains(
+        "int64_t requested_scale_x = ((int64_t)(flux__ui_state_zoom) * flux__gesture_scale_label / INT64_C(100));"
+    ));
+    assert!(windows.contains(
+        "int64_t requested_scale_y = ((int64_t)(INT64_C(80)) * flux__gesture_scale_label / INT64_C(100));"
+    ));
+    assert!(windows.contains("static int64_t flux__gesture_scale_label = INT64_C(100);"));
+    assert!(windows.contains("flux__gesture_scale_label = scale_percent; flux__win_refresh();"));
+    assert!(windows.contains("GESTURECONFIG flux__win_zoom_config_0 = { GID_ZOOM, GC_ZOOM, 0 };"));
     assert!(windows.contains("int64_t requested_transform_origin_x = flux__ui_state_origin;"));
     assert!(windows.contains("int64_t requested_transform_origin_y = INT64_C(75);"));
     assert!(windows.contains(
@@ -5519,6 +5526,7 @@ view Screen {
         onLongPress: count => count + 1
         onSwipe: swiped
         onScale: scaled
+        pinchScale: true
     Image logo at 4,1
         source: "logo.bmp"
         fit: "cover"

@@ -17013,7 +17013,6 @@ fn emit_windows_native_application(
             ("transition_delay_ms", "transitionDelayMs"),
             ("transition_easing", "transitionEasing"),
             ("layout_transition_ms", "layoutTransitionMs"),
-            ("pinch_scale", "pinchScale"),
         ] {
             if let Some(property) = view_property(element, property_name) {
                 return Err(diag(
@@ -19651,17 +19650,39 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
         out.push_str(&format!("static WNDPROC flux__win_swipe_orig_{index} = NULL;\nstatic bool flux__win_swipe_tracking_{index} = false;\nstatic bool flux__win_swipe_moved_{index} = false;\nstatic bool flux__win_swipe_consumed_{index} = false;\nstatic int flux__win_swipe_start_x_{index} = 0;\nstatic int flux__win_swipe_start_y_{index} = 0;\nstatic DWORD flux__win_swipe_start_time_{index} = 0;\nstatic LRESULT CALLBACK flux__win_swipe_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); if (message == WM_LBUTTONDOWN) {{ LRESULT result = CallWindowProcW(flux__win_swipe_orig_{index}, hwnd, message, wparam, lparam); flux__win_swipe_tracking_{index} = true; flux__win_swipe_moved_{index} = false; flux__win_swipe_consumed_{index} = false; flux__win_swipe_start_x_{index} = (int)(short)LOWORD(lparam); flux__win_swipe_start_y_{index} = (int)(short)HIWORD(lparam); flux__win_swipe_start_time_{index} = (DWORD)GetMessageTime(); SetCapture(hwnd); return result; }} if (message == WM_MOUSEMOVE && flux__win_swipe_tracking_{index}) {{ if ((wparam & MK_LBUTTON) == 0) {{ flux__win_swipe_tracking_{index} = false; flux__win_swipe_moved_{index} = false; if (GetCapture() == hwnd) ReleaseCapture(); }} else {{ int dx = (int)(short)LOWORD(lparam) - flux__win_swipe_start_x_{index}; int dy = (int)(short)HIWORD(lparam) - flux__win_swipe_start_y_{index}; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) flux__win_swipe_moved_{index} = true; }} }} if (message == WM_LBUTTONUP && flux__win_swipe_tracking_{index}) {{ int delta_x = (int)(short)LOWORD(lparam) - flux__win_swipe_start_x_{index}; int delta_y = (int)(short)HIWORD(lparam) - flux__win_swipe_start_y_{index}; DWORD elapsed = (DWORD)((DWORD)GetMessageTime() - flux__win_swipe_start_time_{index}); int abs_x = delta_x < 0 ? -delta_x : delta_x; int abs_y = delta_y < 0 ? -delta_y : delta_y; if (abs_x > GetSystemMetrics(SM_CXDRAG) || abs_y > GetSystemMetrics(SM_CYDRAG)) flux__win_swipe_moved_{index} = true; flux__win_swipe_consumed_{index} = flux__win_swipe_moved_{index}; if (flux__win_swipe_moved_{index} && elapsed > 0) {{ int64_t logical_x = flux__win_unscale(delta_x); int64_t logical_y = flux__win_unscale(delta_y); int64_t velocity_x = logical_x * INT64_C(1000) / (int64_t)elapsed; int64_t velocity_y = logical_y * INT64_C(1000) / (int64_t)elapsed; UINT interval = GetDoubleClickTime(); if (interval == 0) interval = 1; int64_t minimum_x = (flux__win_unscale(GetSystemMetrics(SM_CXDRAG)) * INT64_C(1000) + (int64_t)interval - 1) / (int64_t)interval; int64_t minimum_y = (flux__win_unscale(GetSystemMetrics(SM_CYDRAG)) * INT64_C(1000) + (int64_t)interval - 1) / (int64_t)interval; int64_t speed_x = velocity_x < 0 ? -velocity_x : velocity_x; int64_t speed_y = velocity_y < 0 ? -velocity_y : velocity_y; if (speed_x >= minimum_x || speed_y >= minimum_y) {{ {callback}(velocity_x, velocity_y); flux__win_refresh(); }} }} flux__win_swipe_tracking_{index} = false; flux__win_swipe_moved_{index} = false; LRESULT result = CallWindowProcW(flux__win_swipe_orig_{index}, hwnd, message, wparam, lparam); if (GetCapture() == hwnd) ReleaseCapture(); return result; }} if (message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ flux__win_swipe_tracking_{index} = false; flux__win_swipe_moved_{index} = false; }} return CallWindowProcW(flux__win_swipe_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
     }
     for (index, element) in view.elements.iter().enumerate() {
-        let Some(action) = view_property(element, "on_scale") else {
+        let action = view_property(element, "on_scale");
+        let pinch_scale = static_gesture_transform_enabled(element, "pinch_scale", signatures)?;
+        if action.is_none() && !pinch_scale {
             continue;
+        }
+        let callback = if let Some(action) = action {
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap Windows onScale requires a named fn(i64) -> void callback",
+                ));
+            };
+            format!("{}(scale_percent); ", function_c_name(function))
+        } else {
+            String::new()
         };
-        let ExprKind::Var(function) = &action.value.kind else {
-            return Err(diag(
-                action.value.span,
-                "bootstrap Windows onScale requires a named fn(i64) -> void callback",
-            ));
+        let gesture_state = if pinch_scale {
+            format!(
+                "static int64_t {} = INT64_C(100);\n",
+                ui_gesture_scale_c_name(&element.name)
+            )
+        } else {
+            String::new()
         };
-        let callback = function_c_name(function);
-        out.push_str(&format!("static WNDPROC flux__win_pinch_orig_{index} = NULL;\nstatic ULONGLONG flux__win_pinch_start_{index} = 0;\nstatic LRESULT CALLBACK flux__win_pinch_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); if (message == WM_GESTURE) {{ GESTUREINFO info = {{0}}; info.cbSize = sizeof(info); HGESTUREINFO handle = (HGESTUREINFO)lparam; if (GetGestureInfo(handle, &info) && info.dwID == GID_ZOOM) {{ if ((info.dwFlags & GF_BEGIN) != 0 || flux__win_pinch_start_{index} == 0) flux__win_pinch_start_{index} = info.ullArguments; else if (flux__win_pinch_start_{index} > 0) {{ double ratio = (double)info.ullArguments / (double)flux__win_pinch_start_{index}; int64_t scale_percent = (int64_t)(ratio * 100.0 + 0.5); {callback}(scale_percent); flux__win_refresh(); }} if ((info.dwFlags & GF_END) != 0) flux__win_pinch_start_{index} = 0; CloseGestureInfoHandle(handle); return 0; }} }} return CallWindowProcW(flux__win_pinch_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
+        let gesture_update = if pinch_scale {
+            format!(
+                "{} = scale_percent; ",
+                ui_gesture_scale_c_name(&element.name)
+            )
+        } else {
+            String::new()
+        };
+        out.push_str(&format!("static WNDPROC flux__win_pinch_orig_{index} = NULL;\nstatic ULONGLONG flux__win_pinch_start_{index} = 0;\n{gesture_state}static LRESULT CALLBACK flux__win_pinch_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); if (message == WM_GESTURE) {{ GESTUREINFO info = {{0}}; info.cbSize = sizeof(info); HGESTUREINFO handle = (HGESTUREINFO)lparam; if (GetGestureInfo(handle, &info) && info.dwID == GID_ZOOM) {{ if ((info.dwFlags & GF_BEGIN) != 0 || flux__win_pinch_start_{index} == 0) flux__win_pinch_start_{index} = info.ullArguments; else if (flux__win_pinch_start_{index} > 0) {{ double ratio = (double)info.ullArguments / (double)flux__win_pinch_start_{index}; double requested_gesture_scale = ratio * 100.0; int64_t scale_percent = requested_gesture_scale <= 0.0 ? INT64_C(0) : (requested_gesture_scale >= (double)INT32_MAX ? INT64_C(INT32_MAX) : (int64_t)(requested_gesture_scale + 0.5)); {callback}{gesture_update}flux__win_refresh(); }} if ((info.dwFlags & GF_END) != 0) flux__win_pinch_start_{index} = 0; CloseGestureInfoHandle(handle); return 0; }} }} return CallWindowProcW(flux__win_pinch_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
     }
     for (index, element) in view.elements.iter().enumerate() {
         let edit_backed_text_tap = element.kind == "Text"
@@ -19752,7 +19773,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         if view_property(element, "on_swipe").is_some() {
             control_subclass_originals.push(format!("flux__win_swipe_orig_{index}"));
         }
-        if view_property(element, "on_scale").is_some() {
+        if view_property(element, "on_scale").is_some()
+            || static_gesture_transform_enabled(element, "pinch_scale", signatures)?
+        {
             control_subclass_originals.push(format!("flux__win_pinch_orig_{index}"));
         }
         let edit_backed_text_tap = element.kind == "Text"
@@ -19911,12 +19934,20 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 "0".to_string(),
             ));
         }
-        if view_property(element, "on_scale").is_some() {
+        let pinch_scale = static_gesture_transform_enabled(element, "pinch_scale", signatures)?;
+        if view_property(element, "on_scale").is_some() || pinch_scale {
             control_gesture_fields.push((
                 "ULONGLONG".to_string(),
                 format!("flux__win_pinch_start_{index}"),
                 "0".to_string(),
             ));
+            if pinch_scale {
+                control_gesture_fields.push((
+                    "int64_t".to_string(),
+                    ui_gesture_scale_c_name(&element.name),
+                    "INT64_C(100)".to_string(),
+                ));
+            }
         }
         let edit_backed_text_tap = element.kind == "Text"
             && (view_property(element, "selectable")
@@ -20355,13 +20386,21 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         };
         let scale_percent_value =
             scale_value("scale_percent", "scalePercent", "INT64_C(100)".to_string())?;
-        let scale_x_percent_value = scale_value(
+        let mut scale_x_percent_value = scale_value(
             "scale_x_percent",
             "scaleXPercent",
             scale_percent_value.clone(),
         )?;
-        let scale_y_percent_value =
+        let mut scale_y_percent_value =
             scale_value("scale_y_percent", "scaleYPercent", scale_percent_value)?;
+        let pinch_scale = static_gesture_transform_enabled(element, "pinch_scale", signatures)?;
+        if pinch_scale {
+            let gesture_scale = ui_gesture_scale_c_name(&element.name);
+            scale_x_percent_value =
+                format!("((int64_t)({scale_x_percent_value}) * {gesture_scale} / INT64_C(100))");
+            scale_y_percent_value =
+                format!("((int64_t)({scale_y_percent_value}) * {gesture_scale} / INT64_C(100))");
+        }
         let transform_origin_x_percent_value =
             origin_value("transform_origin_x_percent", "transformOriginXPercent")?;
         let transform_origin_y_percent_value =
@@ -20371,6 +20410,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             || view_property(element, "scale_y_percent").is_some()
             || view_property(element, "transform_origin_x_percent").is_some()
             || view_property(element, "transform_origin_y_percent").is_some()
+            || pinch_scale
         {
             format!(
                 "int64_t requested_scale_x = {scale_x_percent_value}; int64_t requested_scale_y = {scale_y_percent_value}; int64_t requested_transform_origin_x = {transform_origin_x_percent_value}; int64_t requested_transform_origin_y = {transform_origin_y_percent_value}; if (requested_scale_x < 0 || requested_scale_x > INT32_MAX) {{ fputs(\"Flux runtime error: scaleXPercent must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_scale_y < 0 || requested_scale_y > INT32_MAX) {{ fputs(\"Flux runtime error: scaleYPercent must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_transform_origin_x < INT32_MIN || requested_transform_origin_x > INT32_MAX) {{ fputs(\"Flux runtime error: transformOriginXPercent must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_transform_origin_y < INT32_MIN || requested_transform_origin_y > INT32_MAX) {{ fputs(\"Flux runtime error: transformOriginYPercent must fit within a 32-bit signed integer\\n\", stderr); abort(); }} int previous_control_width = control_width; int previous_control_height = control_height; int64_t scaled_control_width = ((int64_t)previous_control_width * requested_scale_x) / INT64_C(100); int64_t scaled_control_height = ((int64_t)previous_control_height * requested_scale_y) / INT64_C(100); if (scaled_control_width > INT32_MAX) scaled_control_width = INT32_MAX; if (scaled_control_height > INT32_MAX) scaled_control_height = INT32_MAX; control_width = (int)scaled_control_width; control_height = (int)scaled_control_height; int64_t scale_origin_delta_x = ((int64_t)previous_control_width - control_width) * requested_transform_origin_x / INT64_C(100); int64_t scale_origin_delta_y = ((int64_t)previous_control_height - control_height) * requested_transform_origin_y / INT64_C(100); int64_t transformed_x = (int64_t)x + scale_origin_delta_x; int64_t transformed_y = (int64_t)y + scale_origin_delta_y; x = transformed_x < INT32_MIN ? INT32_MIN : (transformed_x > INT32_MAX ? INT32_MAX : (int)transformed_x); y = transformed_y < INT32_MIN ? INT32_MIN : (transformed_y > INT32_MAX ? INT32_MAX : (int)transformed_y); "
@@ -21706,7 +21746,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         if view_property(element, "on_swipe").is_some() {
             out.push_str(&format!("SetLastError(0); flux__win_swipe_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrW({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_swipe_proc_{index}); if (flux__win_swipe_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
         }
-        if view_property(element, "on_scale").is_some() {
+        if view_property(element, "on_scale").is_some()
+            || static_gesture_transform_enabled(element, "pinch_scale", signatures)?
+        {
             out.push_str(&format!(r#"SetLastError(0); flux__win_pinch_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrW({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_pinch_proc_{index}); if (flux__win_pinch_orig_{index} == NULL && GetLastError() != 0) return 1; GESTURECONFIG flux__win_zoom_config_{index} = {{ GID_ZOOM, GC_ZOOM, 0 }}; if (!SetGestureConfig({variable}, 0, 1, &flux__win_zoom_config_{index}, sizeof(flux__win_zoom_config_{index}))) {{ fputs("Flux runtime error: native Windows zoom gestures are unavailable\n", stderr); return 1; }} "#));
         }
         if [
