@@ -4780,6 +4780,7 @@ app Screen
         "flux__ui_label = CreateWindowExW(0, L\"EDIT\", L\"\", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY"
     ));
     assert!(windows.contains("static LRESULT CALLBACK flux__win_selectable_tap_proc_0"));
+    assert!(windows.contains("flux__win_selectable_tap_proc_0(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { flux__windows_activate_control_context(hwnd);"));
     assert!(windows.contains("flux__win_selectable_tap_moved_0"));
     assert!(windows.contains("GetSystemMetrics(SM_CXDRAG)"));
     assert!(windows.contains("GetSystemMetrics(SM_CYDRAG)"));
@@ -6111,6 +6112,7 @@ app Screen(title: "Keyboard Windows")
     assert!(generated.contains("WM_SETFOCUS"));
     assert!(generated.contains("WM_KILLFOCUS"));
     assert!(generated.contains("flux__win_focus_proc_0"));
+    assert!(generated.contains("flux__win_focus_proc_0(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { flux__windows_activate_control_context(hwnd);"));
     assert!(generated.contains("SS_LEFT | SS_NOTIFY | WS_TABSTOP"));
     assert!(generated.contains("if (flux__ui_title != NULL) SetFocus(flux__ui_title);"));
     assert!(generated.contains("HWND dialog_window = flux__windows_message_window(&message)"));
@@ -67159,6 +67161,7 @@ app HoverCard
     assert!(windows.contains("flux__ui_state_hovered = false; flux__win_refresh();"));
     assert!(windows.contains("flux__fn_leave_notice(); flux__win_refresh();"));
     assert!(windows.contains("flux__win_hover_proc_0"));
+    assert!(windows.contains("flux__win_hover_proc_0(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { flux__windows_activate_control_context(hwnd);"));
     assert!(windows.contains("flux__win_hover_proc_1"));
     assert!(windows.contains("flux__win_double_tap_proc_0"));
     assert!(windows.contains("flux__win_long_press_proc_0"));
