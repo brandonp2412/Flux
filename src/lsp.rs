@@ -893,6 +893,16 @@ fn completion_items_at_cursor_cached(
         encoding,
         program.as_ref(),
     );
+    add_window_route_completions(
+        &mut items,
+        &mut seen,
+        uri,
+        source,
+        line_index,
+        character,
+        encoding,
+        program.as_ref(),
+    );
     let Some(receiver) = member_receiver_at_cursor(source, line_index, character, encoding) else {
         return items;
     };
@@ -1023,6 +1033,64 @@ fn add_named_argument_completions(
             &format!("{}: ", param.0),
             10,
             &format!("named argument {}", param.1),
+        );
+    }
+}
+
+fn add_window_route_completions(
+    items: &mut Vec<JsonValue>,
+    seen: &mut HashSet<String>,
+    uri: &str,
+    source: &str,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+    program: Option<&crate::ast::Program>,
+) {
+    let Some(program) = program else {
+        return;
+    };
+    let line = source.lines().nth(line_index).unwrap_or("");
+    let byte_in_line = byte_offset_for_encoded_column(line, character, encoding);
+    let absolute = source
+        .lines()
+        .take(line_index)
+        .map(|line| line.len() + 1)
+        .sum::<usize>()
+        + byte_in_line;
+    let Some(prefix) = source.get(..absolute.min(source.len())) else {
+        return;
+    };
+    let Some((call_name, active_parameter, _)) = active_call(prefix) else {
+        return;
+    };
+    if call_name != "window.open" || active_parameter != 0 {
+        return;
+    }
+    let Some(application) = &program.application else {
+        return;
+    };
+    let current_id = source_id_for_uri(uri);
+    for route in &program.routes {
+        if route.name_span.source_id != current_id || route.view_name != application.view_name {
+            continue;
+        }
+        let Some(view) = program
+            .views
+            .iter()
+            .find(|view| view.name == route.view_name)
+        else {
+            continue;
+        };
+        if !view.params.is_empty() {
+            continue;
+        }
+        push_completion_item(
+            items,
+            seen,
+            &route.name,
+            6,
+            &format!("route {} = {}", route.name, route.view_name),
         );
     }
 }
@@ -1316,6 +1384,9 @@ fn completion_contract_program_cached(
         if let Ok((program, _)) = crate::project::load_with_overlays(&path, &overlays) {
             return Some(program);
         }
+    }
+    if let Ok(program) = crate::parser::parse_all_with_source(source, source_id_for_uri(uri)) {
+        return Some(program);
     }
     crate::parser::parse_all_with_source(&probe, source_id_for_uri(uri)).ok()
 }
@@ -10267,6 +10338,50 @@ mod tests {
         .to_json();
         assert!(items.contains("fn window.open() -> bool"));
         assert!(items.contains("fn window.close() -> bool"));
+    }
+
+    #[test]
+    fn completion_suggests_eligible_window_route_identity() {
+        let uri = "file:///tmp/window-route-completion.flux";
+        let source = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+
+view Detail(id: i64) {
+    grid columns: 1fr
+    grid rows: auto
+}
+
+route home = Screen
+route detail = Detail
+
+fn openSecondary() -> void {
+    window.open()
+}
+
+app Screen
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("window.open()"))
+            .expect("window route completion line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find("window.open(").unwrap() + "window.open(".len();
+        let items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(line_index),
+            Some(cursor),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+
+        assert!(items.contains(r#""label":"home""#));
+        assert!(items.contains("route home = Screen"));
+        assert!(!items.contains(r#""label":"detail""#));
     }
 
     #[test]
