@@ -2771,6 +2771,7 @@ fn emit_runtime_prelude(
         out.push_str("static bool flux__windows_register_context(HWND hwnd, bool primary) { if (hwnd == NULL || flux__windows_context_for(hwnd) != NULL) return false; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) { if (flux__windows_contexts[index].hwnd != NULL) continue; flux__windows_contexts[index].hwnd = hwnd; flux__windows_contexts[index].primary = primary; if (flux__windows_active_context == NULL || primary) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = hwnd; } return true; } return false; }\n");
         out.push_str("static void flux__windows_activate_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return; flux__windows_active_context = context; flux__windows_active_window = hwnd; }\n");
         out.push_str("static bool flux__windows_unregister_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return false; bool primary = context->primary; bool was_active = context == flux__windows_active_context; context->hwnd = NULL; context->primary = false; if (was_active) { flux__windows_active_context = NULL; flux__windows_active_window = NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = flux__windows_contexts[index].hwnd; break; } } return primary; }\n");
+        out.push_str("static HWND flux__windows_message_window(const MSG *message) { if (message == NULL) return flux__windows_active_window; HWND hwnd = message->hwnd; while (hwnd != NULL) { if (flux__windows_context_for(hwnd) != NULL) return hwnd; hwnd = GetParent(hwnd); } return flux__windows_active_window; }\n");
     }
     let uses_focus_next = runtime_usage.contains("flux__focus_next(");
     let uses_focus_previous = runtime_usage.contains("flux__focus_previous(");
@@ -21248,7 +21249,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     } else {
         ""
     };
-    out.push_str(&format!(" MSG message = {{0}}; int result; while ((result = GetMessageW(&message, NULL, 0, 0)) > 0) {{{key_dispatch} if (IsDialogMessageW(flux__windows_active_window, &message)) continue; TranslateMessage(&message); DispatchMessageW(&message); }} int exit_code = result < 0 ? 1 : (int)message.wParam;"));
+    out.push_str(&format!(" MSG message = {{0}}; int result; while ((result = GetMessageW(&message, NULL, 0, 0)) > 0) {{{key_dispatch} HWND dialog_window = flux__windows_message_window(&message); if (dialog_window != NULL && IsDialogMessageW(dialog_window, &message)) continue; TranslateMessage(&message); DispatchMessageW(&message); }} int exit_code = result < 0 ? 1 : (int)message.wParam;"));
     if view.elements.iter().any(|element| element.kind == "Text") {
         out.push_str(" flux__win_delete_fonts();");
     }

@@ -6042,7 +6042,8 @@ app Screen(title: "Keyboard Windows")
     assert!(generated.contains("flux__win_focus_proc_0"));
     assert!(generated.contains("SS_LEFT | SS_NOTIFY | WS_TABSTOP"));
     assert!(generated.contains("if (flux__ui_title != NULL) SetFocus(flux__ui_title);"));
-    assert!(generated.contains("IsDialogMessageW(flux__windows_active_window, &message)"));
+    assert!(generated.contains("HWND dialog_window = flux__windows_message_window(&message)"));
+    assert!(generated.contains("IsDialogMessageW(dialog_window, &message)"));
     assert!(!generated.contains("method_channel"));
     assert!(!generated.contains("plugin_registry"));
 }
@@ -69977,6 +69978,8 @@ app Screen
     assert!(windows.contains("FluxWindowsWindowContext"));
     assert!(windows.contains("flux__windows_register_context(flux__windows_active_window, true)"));
     assert!(windows.contains("flux__windows_activate_context(hwnd)"));
+    assert!(windows.contains("flux__windows_message_window(const MSG *message)"));
+    assert!(windows.contains("HWND dialog_window = flux__windows_message_window(&message)"));
     assert!(windows.contains("if (flux__windows_unregister_context(hwnd)) PostQuitMessage(0)"));
     assert!(!windows.contains("flux__windows_active_window = NULL; PostQuitMessage(0)"));
 }
