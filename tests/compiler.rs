@@ -2893,7 +2893,14 @@ app Screen
     ));
     assert!(generated.contains("*current_size == size && *current_dpi == flux__win_dpi"));
     assert!(generated.contains("CreateFontW(-flux__win_scale(size)"));
-    assert!(generated.contains("flux__win_delete_button_fonts();"));
+    assert!(
+        generated
+            .contains("HFONT *button_fonts; int64_t *button_font_sizes; UINT *button_font_dpis;")
+    );
+    assert!(generated.contains("flux__windows_save_button_fonts(flux__windows_active_context)"));
+    assert!(generated.contains("flux__windows_restore_button_fonts(context)"));
+    assert!(generated.contains("flux__windows_release_button_fonts(context)"));
+    assert!(!generated.contains("static void flux__win_delete_button_fonts(void)"));
 }
 
 #[test]
