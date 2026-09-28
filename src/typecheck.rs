@@ -4733,23 +4733,22 @@ fn check_block_all(
                             let cond_type = signatures.canonical_type(&cond_type);
                             match cond_type {
                                 Type::Optional(inner) if *inner != Type::Void => {
-                                    if !signatures.is_copy_type(&inner)
-                                        && !matches!(
-                                            signatures.canonical_type(&inner),
-                                            Type::List(_)
-                                        ) || (matches!(
-                                            signatures.canonical_type(&inner),
-                                            Type::List(_)
-                                        ) && !matches!(
+                                    let explicit_collection_borrow =
+                                        is_borrowable_collection_type(
+                                            &signatures.canonical_type(&inner),
+                                        ) && matches!(
                                             cond.kind,
                                             ExprKind::Unary {
                                                 op: UnaryOp::Borrow,
                                                 ..
                                             }
-                                        )) {
+                                        );
+                                    if !signatures.is_copy_type(&inner)
+                                        && !explicit_collection_borrow
+                                    {
                                         diagnostics.push(diag(
                                             cond.span,
-                                            "optional binding patterns currently require a Copy payload; borrowed optional lists support explicit borrow projections such as '?[index]' and '?[start:end]' until first-class borrow lifetimes are implemented",
+                                            "optional binding patterns currently require a Copy payload unless the collection payload is explicitly borrowed",
                                         ));
                                     } else if binding.name != "_" {
                                         if env.contains_key(&binding.name) {

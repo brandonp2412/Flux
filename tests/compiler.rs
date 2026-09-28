@@ -23082,6 +23082,111 @@ fn main() -> i64 {
 }
 
 #[test]
+fn explicit_borrow_preserves_chained_map_lookup_root_owner() {
+    let live = r#"
+fn main() -> i64 {
+    let entries: map<str, map<str, i64[]>> = {"group": {"numbers": [10, 20]}}
+    let view: i64[]? = borrow entries["group"]?["numbers"]
+    let destination: map<str, map<str, i64[]>> = entries
+    if let present = borrow view:
+        print(present[0])
+    print(destination.count)
+    return 0
+}
+"#;
+    let errors = check_source_all(live)
+        .expect_err("a chained map-value borrow must keep its root map owner live");
+    assert!(
+        errors.iter().any(|error| {
+            error.message.contains(
+                "cannot move non-copy binding 'entries' while borrowed view 'view' is still live",
+            )
+        }),
+        "chained map borrow errors: {errors:?}"
+    );
+
+    let dead = r#"
+fn main() -> i64 {
+    let entries: map<str, map<str, i64[]>> = {"group": {"numbers": [10, 20]}}
+    let view: i64[]? = borrow entries["group"]?["numbers"]
+    if let present = borrow view:
+        print(present[1])
+    let destination: map<str, map<str, i64[]>> = entries
+    print(destination.count)
+    return 0
+}
+"#;
+    check_source(dead)
+        .expect("a chained map-value borrow should release its root owner after last use");
+    compile_to_c(dead).expect("chained map-value borrows should lower as zero-copy descriptors");
+    let database = fluxc::semantic::SemanticDatabase::analyze(dead, SourceId::new(1220))
+        .expect("chained map-value borrow lifetimes should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    assert!(
+        graph
+            .borrow_lifetimes()
+            .iter()
+            .any(|lifetime| lifetime.borrower == "view" && lifetime.source == "entries")
+    );
+}
+
+#[test]
+fn explicit_borrow_preserves_optional_map_receiver_owner_provenance() {
+    let live = r#"
+fn main() -> i64 {
+    let entries: map<str, i64[]>? = {"numbers": [10, 20]}
+    let view: i64[]? = borrow entries?["numbers"]
+    let destination: map<str, i64[]>? = entries
+    if let present = borrow view:
+        print(present[0])
+    if let moved = borrow destination:
+        print(moved.count)
+    return 0
+}
+"#;
+    let errors = check_source_all(live)
+        .expect_err("an optional map receiver borrow must keep its root owner live");
+    assert!(
+        errors.iter().any(|error| {
+            error.message.contains(
+                "cannot move non-copy binding 'entries' while borrowed view 'view' is still live",
+            )
+        }),
+        "optional map receiver borrow errors: {errors:?}"
+    );
+
+    let dead = r#"
+fn main() -> i64 {
+    let entries: map<str, i64[]>? = {"numbers": [10, 20]}
+    let view: i64[]? = borrow entries?["numbers"]
+    if let present = borrow view:
+        print(present[1])
+    let destination: map<str, i64[]>? = entries
+    if let moved = borrow destination:
+        print(moved.count)
+    return 0
+}
+"#;
+    check_source(dead)
+        .expect("an optional map receiver borrow should release its root owner after last use");
+    compile_to_c(dead)
+        .expect("optional map receiver borrows should lower as zero-copy descriptors");
+    let database = fluxc::semantic::SemanticDatabase::analyze(dead, SourceId::new(1221))
+        .expect("optional map receiver borrow lifetimes should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    assert!(
+        graph
+            .borrow_lifetimes()
+            .iter()
+            .any(|lifetime| lifetime.borrower == "view" && lifetime.source == "entries")
+    );
+}
+
+#[test]
 fn explicit_collection_borrow_supports_set_and_map_storage() {
     let source = r#"
 fn main() -> i64 {
