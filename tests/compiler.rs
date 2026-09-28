@@ -5214,8 +5214,13 @@ flux__win_apply_fonts();"
     ));
     assert!(generated.contains("RECT flux__win_refresh_client = {0};"));
     assert!(
-        generated.contains("free(flux__win_font_family_body); flux__win_font_family_body = NULL;")
+        generated
+            .contains("HFONT *text_fonts; char **text_font_families; int64_t *text_font_sizes;")
     );
+    assert!(generated.contains("flux__windows_save_text_fonts(flux__windows_active_context)"));
+    assert!(generated.contains("flux__windows_restore_text_fonts(context)"));
+    assert!(generated.contains("flux__windows_release_text_fonts(context)"));
+    assert!(!generated.contains("static void flux__win_delete_fonts(void)"));
     assert!(generated.contains("Text.font_family cannot be empty"));
     assert!(
         generated
