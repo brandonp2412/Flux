@@ -68410,7 +68410,7 @@ app Screen(layoutDirection: "rtl")
         fluxc::codegen::NativeTarget::Windows,
     )
     .expect("RTL direction should lower to Windows");
-    assert!(windows.contains("CreateWindowExW(WS_EX_LAYOUTRTL, wc.lpszClassName"));
+    assert!(windows.contains("CreateWindowExW(WS_EX_LAYOUTRTL, class_name"));
 
     let system = r#"
 view Screen {
@@ -68439,7 +68439,7 @@ app Screen(layoutDirection: "system")
         fluxc::codegen::NativeTarget::Windows,
     )
     .expect("system direction should preserve Windows default layout");
-    assert!(windows.contains("CreateWindowExW(0, wc.lpszClassName"));
+    assert!(windows.contains("CreateWindowExW(0, class_name"));
 
     let invalid = r#"
 view Screen {
@@ -70171,7 +70171,13 @@ app Screen
     assert!(!windows.contains("static HWND flux__win_tooltips"));
     assert!(!windows.contains("SendMessageW(flux__win_tooltips"));
     assert!(windows.contains("SendMessageW(flux__tooltip_context->tooltip_window, TTM_ADDTOOLW"));
-    assert!(windows.contains("flux__windows_register_context(flux__windows_active_window, true)"));
+    assert!(windows.contains("static int flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary)"));
+    assert!(
+        windows.contains("flux__windows_register_context(flux__windows_active_window, primary)")
+    );
+    assert!(windows.contains(
+        "if (flux__win_create_view_window(instance, wc.lpszClassName, true) != 0) return 1;"
+    ));
     assert!(windows.contains("flux__windows_activate_context(hwnd)"));
     assert!(windows.contains(
         "flux__windows_restore_control_gestures(context); flux__windows_restore_metrics(hwnd);"
