@@ -69966,6 +69966,7 @@ view Screen {
     grid rows: auto
     Text label at 1,1
         text: "Primary"
+        tooltip: "Primary tooltip"
 }
 app Screen
 "#;
@@ -69982,6 +69983,10 @@ app Screen
 
     assert!(windows.contains("FLUX_WINDOWS_MAX_WINDOWS = 16"));
     assert!(windows.contains("FluxWindowsWindowContext"));
+    assert!(windows.contains("HWND hwnd; HWND tooltip_window;"));
+    assert!(windows.contains("context->tooltip_window"));
+    assert!(windows.contains("flux__tooltip_context->tooltip_window = CreateWindowExW"));
+    assert!(!windows.contains("static HWND flux__win_tooltips"));
     assert!(windows.contains("flux__windows_register_context(flux__windows_active_window, true)"));
     assert!(windows.contains("flux__windows_activate_context(hwnd)"));
     assert!(windows.contains(
