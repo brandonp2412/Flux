@@ -2776,12 +2776,12 @@ fn emit_runtime_prelude(
         } else {
             ""
         };
-        out.push_str(&format!("enum {{ FLUX_WINDOWS_MAX_WINDOWS = 16 }}; typedef struct {{ HWND hwnd; HWND tooltip_window; bool confirm_done; bool confirm_accept; bool choose_done; int64_t choose_selection; HWND choose_list; bool primary; int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi; WNDPROC runtime_previous_proc; HWND *control_windows; wchar_t **tooltip_texts; size_t tooltip_text_count; COLORREF *validation_colors; bool *validation_active; size_t validation_count; HBITMAP *image_bitmaps; size_t image_bitmap_count;{menu_context_fields}{tray_context_fields} }} FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {{0}}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n"));
-        out.push_str("static void flux__windows_save_control_windows(FluxWindowsWindowContext *context); static void flux__windows_restore_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context); static void flux__windows_release_validation_state(FluxWindowsWindowContext *context); static void flux__windows_release_image_bitmaps(FluxWindowsWindowContext *context);\n");
+        out.push_str(&format!("enum {{ FLUX_WINDOWS_MAX_WINDOWS = 16 }}; typedef struct {{ HWND hwnd; HWND tooltip_window; bool confirm_done; bool confirm_accept; bool choose_done; int64_t choose_selection; HWND choose_list; bool primary; int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi; WNDPROC runtime_previous_proc; HWND *control_windows; wchar_t **tooltip_texts; size_t tooltip_text_count; COLORREF *validation_colors; bool *validation_active; size_t validation_count; HBITMAP *image_bitmaps; size_t image_bitmap_count; HBRUSH *style_brushes; COLORREF *style_colors; bool *style_has_colors; size_t style_count;{menu_context_fields}{tray_context_fields} }} FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {{0}}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n"));
+        out.push_str("static void flux__windows_save_control_windows(FluxWindowsWindowContext *context); static void flux__windows_restore_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context); static void flux__windows_release_validation_state(FluxWindowsWindowContext *context); static void flux__windows_release_image_bitmaps(FluxWindowsWindowContext *context); static void flux__windows_release_style_state(FluxWindowsWindowContext *context);\n");
         out.push_str("static FluxWindowsWindowContext *flux__windows_context_for(HWND hwnd) { if (hwnd == NULL) return NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd == hwnd) return &flux__windows_contexts[index]; return NULL; }\n");
         out.push_str("static bool flux__windows_register_context(HWND hwnd, bool primary) { if (hwnd == NULL || flux__windows_context_for(hwnd) != NULL) return false; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) { if (flux__windows_contexts[index].hwnd != NULL) continue; flux__windows_contexts[index].hwnd = hwnd; flux__windows_contexts[index].confirm_done = false; flux__windows_contexts[index].confirm_accept = false; flux__windows_contexts[index].choose_done = false; flux__windows_contexts[index].choose_selection = INT64_C(-1); flux__windows_contexts[index].choose_list = NULL; flux__windows_contexts[index].primary = primary; flux__windows_contexts[index].logical_width = 0; flux__windows_contexts[index].logical_height = 0; flux__windows_contexts[index].display_scale = INT64_C(1); flux__windows_contexts[index].dpi = 96; flux__windows_contexts[index].runtime_previous_proc = NULL; if (flux__windows_active_context == NULL || primary) { if (flux__windows_active_context != NULL) flux__windows_save_control_windows(flux__windows_active_context); flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = hwnd; flux__windows_restore_control_windows(flux__windows_active_context); } return true; } return false; }\n");
         out.push_str("static void flux__windows_activate_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL || context == flux__windows_active_context) return; flux__windows_save_control_windows(flux__windows_active_context); flux__windows_active_context = context; flux__windows_active_window = hwnd; flux__windows_restore_control_windows(context); }\n");
-        out.push_str("static bool flux__windows_unregister_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return false; bool primary = context->primary; bool was_active = context == flux__windows_active_context; flux__windows_release_image_bitmaps(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_control_windows(context); *context = (FluxWindowsWindowContext){0}; if (was_active) { flux__windows_active_context = NULL; flux__windows_active_window = NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = flux__windows_contexts[index].hwnd; break; } flux__windows_restore_control_windows(flux__windows_active_context); } return primary; }\n");
+        out.push_str("static bool flux__windows_unregister_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return false; bool primary = context->primary; bool was_active = context == flux__windows_active_context; flux__windows_release_style_state(context); flux__windows_release_image_bitmaps(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_control_windows(context); *context = (FluxWindowsWindowContext){0}; if (was_active) { flux__windows_active_context = NULL; flux__windows_active_window = NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = flux__windows_contexts[index].hwnd; break; } flux__windows_restore_control_windows(flux__windows_active_context); } return primary; }\n");
         out.push_str("static HWND flux__windows_message_window(const MSG *message) { if (message == NULL) return flux__windows_active_window; HWND hwnd = message->hwnd; while (hwnd != NULL) { if (flux__windows_context_for(hwnd) != NULL) return hwnd; hwnd = GetParent(hwnd); } return flux__windows_active_window; }\n");
     }
     let uses_focus_next = runtime_usage.contains("flux__focus_next(");
@@ -18441,18 +18441,11 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
                         )
                     })?;
                     out.push_str(&format!(
-                        "static HBRUSH flux__win_brush_{}_{} = NULL;\nstatic const COLORREF flux__win_color_{}_{} = {};\n",
-                        element.name,
-                        property_name,
-                        element.name,
-                        property_name,
-                        color
+                        "static const COLORREF flux__win_color_{}_{} = {};\n",
+                        element.name, property_name, color
                     ));
                 } else {
-                    out.push_str(&format!(
-                        "static HBRUSH flux__win_dynamic_brush_{}_{} = NULL;\nstatic COLORREF flux__win_dynamic_color_{}_{} = 0;\nstatic bool flux__win_dynamic_has_color_{}_{} = false;\n",
-                        element.name, property_name, element.name, property_name, element.name, property_name
-                    ));
+                    // Dynamic Windows colors and brushes are stored per top-level window context.
                 }
             }
         }
@@ -18498,29 +18491,14 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
             || (element.kind == "Text" && view_property(element, "color").is_some())
     });
     if styled_elements.clone().next().is_some() {
-        out.push_str("static void flux__win_delete_brushes(void) {\n");
-        for element in styled_elements.clone() {
-            if view_property(element, "background_color").is_some() {
-                out.push_str(&format!(
-                    "if (flux__win_brush_{}_background_color != NULL) {{ DeleteObject(flux__win_brush_{}_background_color); flux__win_brush_{}_background_color = NULL; }}\n",
-                    element.name, element.name, element.name
-                ));
-            }
-            for property_name in ["background_color", "color"] {
-                if property_name == "color" && element.kind != "Text" {
-                    continue;
-                }
-                if let Some(property) = view_property(element, property_name)
-                    && static_expr_str(&property.value, signatures).is_none()
-                {
-                    out.push_str(&format!(
-                        "if (flux__win_dynamic_brush_{}_{} != NULL) {{ DeleteObject(flux__win_dynamic_brush_{}_{}); flux__win_dynamic_brush_{}_{} = NULL; }}\n",
-                        element.name, property_name, element.name, property_name, element.name, property_name
-                    ));
-                }
-            }
-        }
-        out.push_str("}\n");
+        let style_slots = view.elements.len().saturating_mul(2).max(1);
+        out.push_str(&format!("static bool flux__windows_style_storage(FluxWindowsWindowContext *context, size_t slot, HBRUSH **brush, COLORREF **color, bool **has_color) {{ if (context == NULL || slot >= {style_slots} || brush == NULL || color == NULL || has_color == NULL) return false; if (context->style_brushes == NULL) {{ context->style_brushes = (HBRUSH *)calloc({style_slots}, sizeof(HBRUSH)); context->style_colors = (COLORREF *)calloc({style_slots}, sizeof(COLORREF)); context->style_has_colors = (bool *)calloc({style_slots}, sizeof(bool)); if (context->style_brushes == NULL || context->style_colors == NULL || context->style_has_colors == NULL) abort(); context->style_count = {style_slots}; }} *brush = &context->style_brushes[slot]; *color = &context->style_colors[slot]; *has_color = &context->style_has_colors[slot]; return true; }}\n"));
+        out.push_str("static void flux__windows_release_style_state(FluxWindowsWindowContext *context) { if (context == NULL) return; if (context->style_brushes != NULL) for (size_t index = 0; index < context->style_count; ++index) if (context->style_brushes[index] != NULL) DeleteObject(context->style_brushes[index]); free(context->style_brushes); free(context->style_colors); free(context->style_has_colors); context->style_brushes = NULL; context->style_colors = NULL; context->style_has_colors = NULL; context->style_count = 0; }\n");
+        out.push_str("static HBRUSH flux__win_static_brush(size_t slot, COLORREF color) { HBRUSH *brush = NULL; COLORREF *current = NULL; bool *has_color = NULL; if (!flux__windows_style_storage(flux__windows_active_context, slot, &brush, &current, &has_color)) return NULL; if (*brush == NULL || !*has_color || *current != color) { if (*brush != NULL) DeleteObject(*brush); *brush = CreateSolidBrush(color); *current = color; *has_color = *brush != NULL; } return *brush; }\n");
+        out.push_str("static bool flux__win_style_color(size_t slot, COLORREF *result) { HBRUSH *brush = NULL; COLORREF *color = NULL; bool *has_color = NULL; if (result == NULL || !flux__windows_style_storage(flux__windows_active_context, slot, &brush, &color, &has_color) || !*has_color) return false; *result = *color; return true; }\n");
+        out.push_str("static HBRUSH flux__win_style_brush(size_t slot) { HBRUSH *brush = NULL; COLORREF *color = NULL; bool *has_color = NULL; if (!flux__windows_style_storage(flux__windows_active_context, slot, &brush, &color, &has_color) || !*has_color) return NULL; return *brush; }\n");
+    } else {
+        out.push_str("static void flux__windows_release_style_state(FluxWindowsWindowContext *context) { (void)context; }\n");
     }
     if view.elements.iter().any(|element| element.kind == "Text") {
         out.push_str(
@@ -18716,7 +18694,7 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
     });
     if uses_dynamic_colors {
         out.push_str("static bool flux__win_parse_color(const char *value, COLORREF *result) { if (value == NULL || result == NULL) return false; if (strcmp(value, \"surface\") == 0) { *result = RGB(248, 249, 250); return true; } if (strcmp(value, \"surfaceRaised\") == 0) { *result = RGB(255, 255, 255); return true; } if (strcmp(value, \"text\") == 0) { *result = RGB(31, 35, 40); return true; } if (strcmp(value, \"textMuted\") == 0) { *result = RGB(87, 96, 106); return true; } if (strcmp(value, \"accent\") == 0) { *result = RGB(9, 105, 218); return true; } if (strcmp(value, \"onAccent\") == 0) { *result = RGB(255, 255, 255); return true; } if (strcmp(value, \"outline\") == 0) { *result = RGB(208, 215, 222); return true; } if (strcmp(value, \"danger\") == 0) { *result = RGB(207, 34, 46); return true; } if (strcmp(value, \"success\") == 0) { *result = RGB(26, 127, 55); return true; } if (strcmp(value, \"warning\") == 0) { *result = RGB(154, 103, 0); return true; } if (strcmp(value, \"shadow\") == 0) { *result = RGB(31, 35, 40); return true; } if (strcmp(value, \"transparent\") == 0) { *result = GetSysColor(COLOR_WINDOW); return true; } size_t length = 0; while (length <= 9 && value[length] != '\\0') length += 1; if (length > 9) return false; if (length != 7 && length != 9) return false; if (value[0] != '#') return false; for (size_t index = 1; index < 7; index += 1) if (!isxdigit((unsigned char)value[index])) return false; char *end = NULL; unsigned long red = strtoul(value + 1, &end, 16); unsigned long green = strtoul(value + 3, &end, 16); unsigned long blue = strtoul(value + 5, &end, 16); (void)end; *result = RGB((BYTE)red, (BYTE)green, (BYTE)blue); return true; }\n");
-        out.push_str("static void flux__win_set_dynamic_background(HWND control, HBRUSH *brush, COLORREF *current, bool *has_color, const char *value) { COLORREF next; if (control == NULL || brush == NULL || current == NULL || has_color == NULL || !flux__win_parse_color(value, &next)) return; if (!*has_color || *current != next) { if (*brush != NULL) DeleteObject(*brush); *brush = CreateSolidBrush(next); *current = next; *has_color = *brush != NULL; InvalidateRect(control, NULL, TRUE); } }\nstatic void flux__win_set_dynamic_text_color(HWND control, COLORREF *current, bool *has_color, const char *value) { COLORREF next; if (control == NULL || current == NULL || has_color == NULL || !flux__win_parse_color(value, &next)) return; if (!*has_color || *current != next) { *current = next; *has_color = true; InvalidateRect(control, NULL, TRUE); } }\n");
+        out.push_str("static void flux__win_set_dynamic_background(HWND control, size_t slot, const char *value) { HBRUSH *brush = NULL; COLORREF *current = NULL; bool *has_color = NULL; COLORREF next; if (control == NULL || !flux__windows_style_storage(flux__windows_active_context, slot, &brush, &current, &has_color) || !flux__win_parse_color(value, &next)) return; if (!*has_color || *current != next) { if (*brush != NULL) DeleteObject(*brush); *brush = CreateSolidBrush(next); *current = next; *has_color = *brush != NULL; InvalidateRect(control, NULL, TRUE); } }\nstatic void flux__win_set_dynamic_text_color(HWND control, size_t slot, const char *value) { HBRUSH *brush = NULL; COLORREF *current = NULL; bool *has_color = NULL; COLORREF next; if (control == NULL || !flux__windows_style_storage(flux__windows_active_context, slot, &brush, &current, &has_color) || !flux__win_parse_color(value, &next)) return; if (!*has_color || *current != next) { *current = next; *has_color = true; InvalidateRect(control, NULL, TRUE); } }\n");
     }
     let uses_native_borders = view.elements.iter().any(|element| {
         [
@@ -20242,8 +20220,8 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
-                "flux__win_set_dynamic_background({variable}, &flux__win_dynamic_brush_{}_background_color, &flux__win_dynamic_color_{}_background_color, &flux__win_dynamic_has_color_{}_background_color, {value});\n",
-                element.name, element.name, element.name
+                "flux__win_set_dynamic_background({variable}, {}, {value});\n",
+                index * 2
             ));
         }
         if element.kind == "Text"
@@ -20252,8 +20230,8 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
-                "flux__win_set_dynamic_text_color({variable}, &flux__win_dynamic_color_{}_color, &flux__win_dynamic_has_color_{}_color, {value});\n",
-                element.name, element.name
+                "flux__win_set_dynamic_text_color({variable}, {}, {value});\n",
+                index * 2 + 1
             ));
         }
         if let Some(property) = view_property(element, "border_color")
@@ -20597,7 +20575,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     element.name
                 ));
             } else {
-                out.push_str(&format!(" if (flux__win_dynamic_has_color_{}_color) SetTextColor(dc, flux__win_dynamic_color_{}_color);", element.name, element.name));
+                out.push_str(&format!(" COLORREF flux__win_dynamic_text_color; if (flux__win_style_color({}, &flux__win_dynamic_text_color)) SetTextColor(dc, flux__win_dynamic_text_color);", index * 2 + 1));
             }
         }
         if element.kind != "Image"
@@ -20612,9 +20590,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
         if let Some(property) = view_property(element, "background_color") {
             if static_expr_str(&property.value, signatures).is_some() {
-                out.push_str(&format!(" if (flux__win_brush_{}_background_color == NULL) flux__win_brush_{}_background_color = CreateSolidBrush(flux__win_color_{}_background_color); return (LRESULT)flux__win_brush_{}_background_color; }}\n", element.name, element.name, element.name, element.name));
+                out.push_str(&format!(" HBRUSH flux__win_background_brush = flux__win_static_brush({}, flux__win_color_{}_background_color); if (flux__win_background_brush != NULL) return (LRESULT)flux__win_background_brush; }}\n", index * 2, element.name));
             } else {
-                out.push_str(&format!(" if (flux__win_dynamic_has_color_{}_background_color) return (LRESULT)flux__win_dynamic_brush_{}_background_color; }}\n", element.name, element.name));
+                out.push_str(&format!(" HBRUSH flux__win_background_brush = flux__win_style_brush({}); if (flux__win_background_brush != NULL) return (LRESULT)flux__win_background_brush; }}\n", index * 2));
             }
         } else {
             out.push_str(" return (LRESULT)GetSysColorBrush(COLOR_WINDOW); }\n");
@@ -21285,13 +21263,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     {
         out.push_str(" flux__win_delete_button_fonts();");
     }
-    if view.elements.iter().any(|element| {
-        view_property(element, "background_color").is_some()
-            || (element.kind == "Text" && view_property(element, "color").is_some())
-    }) {
-        out.push_str(" flux__win_delete_brushes();");
-    }
-    out.push_str(" for (size_t flux__windows_index = 0; flux__windows_index < FLUX_WINDOWS_MAX_WINDOWS; ++flux__windows_index) { flux__windows_release_image_bitmaps(&flux__windows_contexts[flux__windows_index]); flux__windows_release_validation_state(&flux__windows_contexts[flux__windows_index]); flux__windows_release_tooltip_texts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_control_windows(&flux__windows_contexts[flux__windows_index]); }");
+    out.push_str(" for (size_t flux__windows_index = 0; flux__windows_index < FLUX_WINDOWS_MAX_WINDOWS; ++flux__windows_index) { flux__windows_release_style_state(&flux__windows_contexts[flux__windows_index]); flux__windows_release_image_bitmaps(&flux__windows_contexts[flux__windows_index]); flux__windows_release_validation_state(&flux__windows_contexts[flux__windows_index]); flux__windows_release_tooltip_texts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_control_windows(&flux__windows_contexts[flux__windows_index]); }");
     if uses_input_scopes {
         out.push_str(" flux__win_input_scope_shutdown();");
     }
