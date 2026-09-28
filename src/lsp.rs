@@ -8465,7 +8465,9 @@ fn hover_description(
         SymbolKind::Enum => format!("enum {}", symbol.name),
         SymbolKind::EnumVariant => typed_symbol("variant", symbol),
         SymbolKind::Struct => format!("struct {}", symbol.name),
-        SymbolKind::Route => typed_symbol("route", symbol),
+        SymbolKind::Route => {
+            format_route_contract(symbol, database).unwrap_or_else(|| typed_symbol("route", symbol))
+        }
         SymbolKind::View => format!("view {}", symbol.name),
         SymbolKind::ViewElement => format!("element {}", symbol.name),
     }
@@ -8477,6 +8479,44 @@ fn typed_symbol(prefix: &str, symbol: &crate::semantic::SemanticSymbol) -> Strin
         .as_ref()
         .map(|ty| format!("{prefix} {}: {}", symbol.name, ty.name()))
         .unwrap_or_else(|| format!("{prefix} {}", symbol.name))
+}
+
+fn format_route_contract(
+    symbol: &crate::semantic::SemanticSymbol,
+    database: &crate::semantic::SemanticDatabase,
+) -> Option<String> {
+    let route = database
+        .program()
+        .routes
+        .iter()
+        .find(|route| route.name == symbol.name && route.name_span == symbol.span)?;
+    let view = database
+        .program()
+        .views
+        .iter()
+        .find(|view| view.name == route.view_name)?;
+
+    let mut params = Vec::new();
+    let mut emitted_named_marker = false;
+    for param in &view.params {
+        if param.named_only && !emitted_named_marker {
+            params.push("*".to_string());
+            emitted_named_marker = true;
+        }
+        let mut rendered = format!("{}: {}", param.name, param.ty.name());
+        if let Some(default) = &param.default {
+            rendered.push_str(" = ");
+            rendered.push_str(&crate::formatter::format_expr(default, 0));
+        }
+        params.push(rendered);
+    }
+
+    Some(format!(
+        "route {}: fn({}) -> void (view {})",
+        route.name,
+        params.join(", "),
+        route.view_name
+    ))
 }
 
 fn format_signature(name: &str, signature: &crate::typecheck::Signature) -> String {
@@ -9546,7 +9586,9 @@ mod tests {
         let hover = hover_for_document(uri, source, &documents, 4, 8, PositionEncoding::Utf8)
             .expect("route declaration should hover")
             .to_json();
-        assert!(hover.contains("route detail: fn(i64, str) -> void"));
+        assert!(hover.contains("route detail: fn(id: i64, *, tab: str = "));
+        assert!(hover.contains("overview"));
+        assert!(hover.contains(") -> void (view Detail)"));
     }
 
     #[test]

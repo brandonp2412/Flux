@@ -1184,7 +1184,7 @@ Verified development callback-indirection bootstrap: Linux application code now 
 # Milestone 13 — Navigation
 
 - [x] Typed routes: `route name = ViewName` declares a compiler-owned route identity that resolves across the loaded project graph to one visible Flux view, rejects duplicate/unknown targets statically, participates in formatter/semantic/LSP keyword tooling, and lowers to no runtime route/controller object until navigation operations consume it.
-- [x] Route parameters are inferred directly from the target view's typed parameter contract rather than duplicated in route syntax: parameterized views may be route targets, semantic route symbols carry the target parameter types, ordinary positional/named/default rules remain owned by the view declaration, and route metadata still emits no runtime object until navigation operations consume it.
+- [x] Route parameters are inferred directly from the target view's typed parameter contract rather than duplicated in route syntax: parameterized views may be route targets, semantic route symbols carry the target parameter types, ordinary positional/named/default rules remain owned by the view declaration, route hover now preserves parameter names, the named-only boundary, defaults, and target-view identity for future typed navigation/window invocation, and route metadata still emits no runtime object until navigation operations consume it.
 - [ ] Back stack.
 - [ ] Tabs.
 - [ ] Nested navigation where genuinely needed.
