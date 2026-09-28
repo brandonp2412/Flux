@@ -70210,6 +70210,9 @@ app Screen
     assert!(windows.contains("FLUX_WINDOWS_MAX_WINDOWS = 16"));
     assert!(windows.contains("FluxWindowsWindowContext"));
     assert!(windows.contains("HWND hwnd; HWND tooltip_window;"));
+    assert!(windows.contains("bool primary; uint32_t view_identity;"));
+    assert!(windows.contains("static const uint32_t flux__win_root_view_identity = UINT32_C(0);"));
+    assert!(windows.contains("flux__windows_contexts[index].view_identity = view_identity;"));
     assert!(windows.contains("WNDPROC runtime_previous_proc; bool refreshing;"));
     assert!(windows.contains("flux__windows_active_context->refreshing"));
     assert!(!windows.contains("static bool flux__win_refreshing"));
@@ -70283,7 +70286,7 @@ app Screen
     assert!(windows.contains("SendMessageW(flux__tooltip_context->tooltip_window, TTM_ADDTOOLW"));
     assert!(windows.contains("static HWND flux__win_create_view_window_failure(HWND window, bool primary) { (void)primary; if (window != NULL && IsWindow(window)) { (void)flux__windows_unregister_context(window); DestroyWindow(window); } return NULL; }"));
     let creation_start = windows
-        .find("static HWND flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary)")
+        .find("static HWND flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary, uint32_t view_identity)")
         .expect("Windows view creation helper should exist");
     let creation_end = windows[creation_start..]
         .find("static int flux__win_run(void)")
@@ -70295,12 +70298,14 @@ app Screen
         "return flux__win_create_view_window_failure(flux__win_created_window, primary);"
     ));
     assert!(windows.contains("HWND flux__win_created_window = CreateWindowExW("));
-    assert!(windows.contains("flux__windows_register_context(flux__win_created_window, primary)"));
+    assert!(windows.contains(
+        "flux__windows_register_context(flux__win_created_window, primary, view_identity)"
+    ));
     assert!(windows.contains("if (primary) { for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL && flux__windows_contexts[index].primary) return false; }"));
     assert!(windows.contains("flux__windows_activate_context(flux__win_created_window);"));
     assert!(windows.contains("if (flux__windows_active_window != flux__win_created_window)"));
     assert!(windows.contains(
-        "HWND flux__win_primary_window = flux__win_create_view_window(instance, wc.lpszClassName, true); if (flux__win_primary_window == NULL) return 1;"
+        "HWND flux__win_primary_window = flux__win_create_view_window(instance, wc.lpszClassName, true, flux__win_root_view_identity); if (flux__win_primary_window == NULL) return 1;"
     ));
     assert!(creation.contains("return flux__win_created_window;"));
     assert!(windows.contains(
@@ -70381,7 +70386,7 @@ app Screen
         "static bool flux__window_open(void) { HWND previous = flux__windows_active_window;"
     ));
     assert!(
-        windows.contains("flux__win_create_view_window(instance, L\"FluxNativeWindow\", false)")
+        windows.contains("flux__win_create_view_window(instance, L\"FluxNativeWindow\", false, flux__win_root_view_identity)")
     );
     assert!(windows.contains("ShowWindow(window, SW_SHOW); UpdateWindow(window);"));
     assert!(windows.contains(
