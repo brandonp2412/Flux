@@ -2751,7 +2751,7 @@ app Screen(title: "Flux Windows runtime smoke")
         .find("static HWND flux__windows_active_window = NULL;")
         .expect("Windows GUI runtime should declare its root window handle");
     let first_use = generated
-        .find("flux__windows_active_window = CreateWindowExW(")
+        .find("HWND flux__win_created_window = CreateWindowExW(")
         .expect("Windows GUI runtime should create its root window");
     assert!(declaration < first_use);
     assert!(generated.contains("LoadCursorW(NULL, MAKEINTRESOURCEW(32512))"));
@@ -6372,7 +6372,7 @@ app Screen(onStart: started)
         );
     }
     let window = generated
-        .find("flux__windows_active_window = CreateWindowExW(")
+        .find("HWND flux__win_created_window = CreateWindowExW(")
         .expect("Windows root window should be created");
     let startup = generated
         .find("flux__fn_started();")
@@ -70172,9 +70172,10 @@ app Screen
     assert!(!windows.contains("SendMessageW(flux__win_tooltips"));
     assert!(windows.contains("SendMessageW(flux__tooltip_context->tooltip_window, TTM_ADDTOOLW"));
     assert!(windows.contains("static int flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary)"));
-    assert!(
-        windows.contains("flux__windows_register_context(flux__windows_active_window, primary)")
-    );
+    assert!(windows.contains("HWND flux__win_created_window = CreateWindowExW("));
+    assert!(windows.contains("flux__windows_register_context(flux__win_created_window, primary)"));
+    assert!(windows.contains("flux__windows_activate_context(flux__win_created_window);"));
+    assert!(windows.contains("if (flux__windows_active_window != flux__win_created_window)"));
     assert!(windows.contains(
         "if (flux__win_create_view_window(instance, wc.lpszClassName, true) != 0) return 1;"
     ));
