@@ -67270,6 +67270,7 @@ app ContextCard
     )
     .expect("context-menu requests should lower to native Win32 menus");
     assert!(windows.contains("case WM_CONTEXTMENU"));
+    assert!(windows.contains("case WM_CONTEXTMENU: { flux__windows_activate_context(hwnd);"));
     assert!(windows.contains("CreatePopupMenu()"));
     assert!(windows.contains("AppendMenuW(menu, MF_STRING, (UINT_PTR)1"));
     assert!(windows.contains("while (menu_window != NULL && flux__windows_context_for(menu_window) == NULL) menu_window = GetParent(menu_window)"));
@@ -70172,6 +70173,11 @@ app Screen
     );
     assert!(windows.contains("flux__windows_message_window(const MSG *message)"));
     assert!(windows.contains("HWND dialog_window = flux__windows_message_window(&message)"));
+    assert!(
+        windows
+            .contains("if (dialog_window != NULL) flux__windows_activate_context(dialog_window);")
+    );
+    assert!(windows.contains("case WM_COMMAND: flux__windows_activate_context(hwnd);"));
     assert!(windows.contains("if (flux__windows_unregister_context(hwnd)) PostQuitMessage(0)"));
     assert!(!windows.contains("flux__windows_active_window = NULL; PostQuitMessage(0)"));
 }

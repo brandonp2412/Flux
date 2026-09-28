@@ -21050,7 +21050,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             out.push_str(" return (LRESULT)GetSysColorBrush(COLOR_WINDOW); }\n");
         }
     }
-    out.push_str("return (LRESULT)GetSysColorBrush(COLOR_WINDOW); } break; case WM_COMMAND: switch (LOWORD(wparam)) {\n");
+    out.push_str("return (LRESULT)GetSysColorBrush(COLOR_WINDOW); } break; case WM_COMMAND: flux__windows_activate_context(hwnd); switch (LOWORD(wparam)) {\n");
     for (index, element) in view.elements.iter().enumerate() {
         let click_action = match element.kind.as_str() {
             "Button" => view_property(element, "on_press"),
@@ -21111,7 +21111,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     }
     let mut context_menu_messages = String::new();
     if uses_context_menus {
-        context_menu_messages.push_str(" case WM_CONTEXTMENU: { HWND control = (HWND)wparam;");
+        context_menu_messages.push_str(" case WM_CONTEXTMENU: { flux__windows_activate_context(hwnd); HWND control = (HWND)wparam;");
         for (index, element) in view.elements.iter().enumerate() {
             if view_property(element, "on_context_menu").is_some()
                 || view_property(element, "context_menu_label").is_some()
@@ -21704,7 +21704,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     } else {
         ""
     };
-    out.push_str(&format!(" MSG message = {{0}}; int result; while ((result = GetMessageW(&message, NULL, 0, 0)) > 0) {{{key_dispatch} HWND dialog_window = flux__windows_message_window(&message); if (dialog_window != NULL && IsDialogMessageW(dialog_window, &message)) continue; TranslateMessage(&message); DispatchMessageW(&message); }} int exit_code = result < 0 ? 1 : (int)message.wParam;"));
+    out.push_str(&format!(" MSG message = {{0}}; int result; while ((result = GetMessageW(&message, NULL, 0, 0)) > 0) {{ HWND dialog_window = flux__windows_message_window(&message); if (dialog_window != NULL) flux__windows_activate_context(dialog_window);{key_dispatch} if (dialog_window != NULL && IsDialogMessageW(dialog_window, &message)) continue; TranslateMessage(&message); DispatchMessageW(&message); }} int exit_code = result < 0 ? 1 : (int)message.wParam;"));
     out.push_str(" flux__windows_save_string_view_state(flux__windows_active_context); flux__windows_save_text_fonts(flux__windows_active_context); flux__windows_save_button_fonts(flux__windows_active_context); for (size_t flux__windows_index = 0; flux__windows_index < FLUX_WINDOWS_MAX_WINDOWS; ++flux__windows_index) { flux__windows_release_string_view_state(&flux__windows_contexts[flux__windows_index]); flux__windows_release_scalar_view_state(&flux__windows_contexts[flux__windows_index]); flux__windows_release_drop_targets(&flux__windows_contexts[flux__windows_index]); flux__windows_release_control_gestures(&flux__windows_contexts[flux__windows_index]); flux__windows_release_control_subclasses(&flux__windows_contexts[flux__windows_index]); flux__windows_release_borders(&flux__windows_contexts[flux__windows_index]); flux__windows_release_text_layouts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_button_fonts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_text_fonts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_style_state(&flux__windows_contexts[flux__windows_index]); flux__windows_release_image_bitmaps(&flux__windows_contexts[flux__windows_index]); flux__windows_release_validation_state(&flux__windows_contexts[flux__windows_index]); flux__windows_release_tooltip_texts(&flux__windows_contexts[flux__windows_index]); flux__windows_release_control_windows(&flux__windows_contexts[flux__windows_index]); }");
     if uses_input_scopes {
         out.push_str(" flux__win_input_scope_shutdown();");
