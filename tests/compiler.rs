@@ -70168,7 +70168,8 @@ app Screen
     assert!(windows.contains("SendMessageW(flux__tooltip_context->tooltip_window, TTM_ADDTOOLW"));
     assert!(windows.contains("flux__windows_register_context(flux__windows_active_window, true)"));
     assert!(windows.contains("flux__windows_activate_context(hwnd)"));
-    assert!(windows.contains("flux__windows_restore_metrics(hwnd);  flux__win_refresh();"));
+    assert!(windows.contains("flux__windows_restore_control_gestures(context); flux__windows_restore_metrics(hwnd);"));
+    assert!(!windows.contains("flux__windows_activate_context(hwnd); flux__windows_restore_metrics(hwnd);"));
     assert!(windows.contains(
         "int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi;"
     ));
