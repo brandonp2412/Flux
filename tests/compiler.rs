@@ -70484,6 +70484,15 @@ app Screen
     assert!(windows.contains("flux__windows_activate_context(hwnd)"));
     assert!(windows.contains("flux__windows_save_view_state(flux__windows_active_context);"));
     assert!(windows.contains("flux__windows_restore_view_state(context, hwnd);"));
+    assert!(
+        windows.contains("static FluxWindowsWindowContext *flux__windows_fallback_context(void)")
+    );
+    assert!(windows.contains("HWND foreground = GetForegroundWindow(); FluxWindowsWindowContext *foreground_context = flux__windows_context_for(foreground); if (foreground_context != NULL) return foreground_context;"));
+    assert!(windows.contains(
+        "flux__windows_contexts[index].hwnd != NULL && flux__windows_contexts[index].primary"
+    ));
+    assert!(windows.contains("flux__windows_active_context = flux__windows_fallback_context();"));
+    assert!(windows.contains("flux__windows_active_window = flux__windows_active_context != NULL ? flux__windows_active_context->hwnd : NULL;"));
     assert!(windows.contains("flux__windows_restore_view_state(flux__windows_active_context, flux__windows_active_window);"));
     assert!(
         !windows
