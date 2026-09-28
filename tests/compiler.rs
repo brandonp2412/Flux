@@ -69456,6 +69456,11 @@ app Screen(onStart: started)
     )
     .expect("portable confirm dialog should lower on Windows");
     assert!(windows.contains("static void flux__dialog_confirm("));
+    assert!(windows.contains("bool confirm_done; bool confirm_accept;"));
+    assert!(windows.contains("dialog_context->confirm_done"));
+    assert!(windows.contains("dialog_context->confirm_accept"));
+    assert!(!windows.contains("static bool flux__windows_confirm_done"));
+    assert!(!windows.contains("static bool flux__windows_confirm_accept"));
     assert!(windows.contains("L\"FluxConfirmDialog\""));
     assert!(windows.contains("CreateWindowExW(WS_EX_DLGMODALFRAME"));
     assert!(windows.contains("wide_cancel"));
