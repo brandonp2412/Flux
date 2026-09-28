@@ -3113,6 +3113,17 @@ app Screen
     assert!(windows.contains("GetWindowRgn(control, region)"));
     assert!(windows.contains("FrameRgn(dc, region, brush, top_width, top_width)"));
     assert!(windows.contains("static WNDPROC flux__win_border_orig_0 = NULL;"));
+    assert!(
+        windows.contains(
+            "WNDPROC *control_subclass_originals; size_t control_subclass_original_count;"
+        )
+    );
+    assert!(windows.contains("context->control_subclass_originals[0] = flux__win_border_orig_0"));
+    assert!(
+        windows.contains("flux__windows_save_control_subclasses(flux__windows_active_context)")
+    );
+    assert!(windows.contains("flux__windows_restore_control_subclasses(context)"));
+    assert!(windows.contains("flux__windows_release_control_subclasses(context)"));
     assert!(windows.contains("flux__win_set_border_color(flux__ui_label, &flux__win_border_color_label, flux__ui_state_strokeColor);"));
     assert!(windows.contains("flux__win_set_border_color(flux__ui_label, &flux__win_border_top_color_label, flux__ui_state_strokeColor);"));
     assert!(windows.contains("flux__win_set_border_color(flux__ui_label, &flux__win_border_end_color_label, flux__ui_state_strokeColor);"));
