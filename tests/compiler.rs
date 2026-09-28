@@ -70179,7 +70179,7 @@ app Screen
     assert!(!windows.contains("static HWND flux__win_tooltips"));
     assert!(!windows.contains("SendMessageW(flux__win_tooltips"));
     assert!(windows.contains("SendMessageW(flux__tooltip_context->tooltip_window, TTM_ADDTOOLW"));
-    assert!(windows.contains("static HWND flux__win_create_view_window_failure(HWND window, bool primary) { if (!primary && window != NULL && IsWindow(window)) DestroyWindow(window); return NULL; }"));
+    assert!(windows.contains("static HWND flux__win_create_view_window_failure(HWND window, bool primary) { (void)primary; if (window != NULL && IsWindow(window)) { (void)flux__windows_unregister_context(window); DestroyWindow(window); } return NULL; }"));
     let creation_start = windows
         .find("static HWND flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary)")
         .expect("Windows view creation helper should exist");

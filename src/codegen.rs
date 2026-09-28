@@ -21229,7 +21229,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     } else {
         ""
     };
-    out.push_str("static HWND flux__win_create_view_window_failure(HWND window, bool primary) { if (!primary && window != NULL && IsWindow(window)) DestroyWindow(window); return NULL; }\n");
+    out.push_str("static HWND flux__win_create_view_window_failure(HWND window, bool primary) { (void)primary; if (window != NULL && IsWindow(window)) { (void)flux__windows_unregister_context(window); DestroyWindow(window); } return NULL; }\n");
     let window_creation_start = out.len();
     out.push_str("static HWND flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary) {\n");
     out.push_str(&format!("HWND flux__win_created_window = CreateWindowExW({window_ex_style}, class_name, L\"\", {window_style}, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__win_created_window == NULL) return 1; if (!flux__windows_register_context(flux__win_created_window, primary)) {{ DestroyWindow(flux__win_created_window); return 1; }} flux__windows_activate_context(flux__win_created_window); if (flux__windows_active_window != flux__win_created_window) {{ DestroyWindow(flux__win_created_window); return 1; }} flux__win_set_text_if_changed(flux__windows_active_window, {});\n", width, height, c_string(&title)));
