@@ -70010,6 +70010,11 @@ app Screen
     assert!(windows.contains("flux__windows_save_control_windows(flux__windows_active_context)"));
     assert!(windows.contains("flux__windows_restore_control_windows(context)"));
     assert!(windows.contains("context->tooltip_window"));
+    assert!(windows.contains("wchar_t **tooltip_texts; size_t tooltip_text_count;"));
+    assert!(windows.contains("flux__windows_tooltip_storage(context, slot)"));
+    assert!(windows.contains("flux__win_set_tooltip(flux__ui_label, 0,"));
+    assert!(windows.contains("free(context->tooltip_texts[index])"));
+    assert!(!windows.contains("flux__win_tooltip_text_label"));
     assert!(windows.contains("flux__tooltip_context->tooltip_window = CreateWindowExW"));
     assert!(!windows.contains("static HWND flux__win_tooltips"));
     assert!(windows.contains("flux__windows_register_context(flux__windows_active_window, true)"));

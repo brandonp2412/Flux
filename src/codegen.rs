@@ -2776,12 +2776,12 @@ fn emit_runtime_prelude(
         } else {
             ""
         };
-        out.push_str(&format!("enum {{ FLUX_WINDOWS_MAX_WINDOWS = 16 }}; typedef struct {{ HWND hwnd; HWND tooltip_window; bool confirm_done; bool confirm_accept; bool choose_done; int64_t choose_selection; HWND choose_list; bool primary; int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi; WNDPROC runtime_previous_proc; HWND *control_windows;{menu_context_fields}{tray_context_fields} }} FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {{0}}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n"));
-        out.push_str("static void flux__windows_save_control_windows(FluxWindowsWindowContext *context); static void flux__windows_restore_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_control_windows(FluxWindowsWindowContext *context);\n");
+        out.push_str(&format!("enum {{ FLUX_WINDOWS_MAX_WINDOWS = 16 }}; typedef struct {{ HWND hwnd; HWND tooltip_window; bool confirm_done; bool confirm_accept; bool choose_done; int64_t choose_selection; HWND choose_list; bool primary; int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi; WNDPROC runtime_previous_proc; HWND *control_windows; wchar_t **tooltip_texts; size_t tooltip_text_count;{menu_context_fields}{tray_context_fields} }} FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {{0}}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n"));
+        out.push_str("static void flux__windows_save_control_windows(FluxWindowsWindowContext *context); static void flux__windows_restore_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context);\n");
         out.push_str("static FluxWindowsWindowContext *flux__windows_context_for(HWND hwnd) { if (hwnd == NULL) return NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd == hwnd) return &flux__windows_contexts[index]; return NULL; }\n");
         out.push_str("static bool flux__windows_register_context(HWND hwnd, bool primary) { if (hwnd == NULL || flux__windows_context_for(hwnd) != NULL) return false; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) { if (flux__windows_contexts[index].hwnd != NULL) continue; flux__windows_contexts[index].hwnd = hwnd; flux__windows_contexts[index].confirm_done = false; flux__windows_contexts[index].confirm_accept = false; flux__windows_contexts[index].choose_done = false; flux__windows_contexts[index].choose_selection = INT64_C(-1); flux__windows_contexts[index].choose_list = NULL; flux__windows_contexts[index].primary = primary; flux__windows_contexts[index].logical_width = 0; flux__windows_contexts[index].logical_height = 0; flux__windows_contexts[index].display_scale = INT64_C(1); flux__windows_contexts[index].dpi = 96; flux__windows_contexts[index].runtime_previous_proc = NULL; if (flux__windows_active_context == NULL || primary) { if (flux__windows_active_context != NULL) flux__windows_save_control_windows(flux__windows_active_context); flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = hwnd; flux__windows_restore_control_windows(flux__windows_active_context); } return true; } return false; }\n");
         out.push_str("static void flux__windows_activate_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL || context == flux__windows_active_context) return; flux__windows_save_control_windows(flux__windows_active_context); flux__windows_active_context = context; flux__windows_active_window = hwnd; flux__windows_restore_control_windows(context); }\n");
-        out.push_str("static bool flux__windows_unregister_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return false; bool primary = context->primary; bool was_active = context == flux__windows_active_context; flux__windows_release_control_windows(context); *context = (FluxWindowsWindowContext){0}; if (was_active) { flux__windows_active_context = NULL; flux__windows_active_window = NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = flux__windows_contexts[index].hwnd; break; } flux__windows_restore_control_windows(flux__windows_active_context); } return primary; }\n");
+        out.push_str("static bool flux__windows_unregister_context(HWND hwnd) { FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); if (context == NULL) return false; bool primary = context->primary; bool was_active = context == flux__windows_active_context; flux__windows_release_tooltip_texts(context); flux__windows_release_control_windows(context); *context = (FluxWindowsWindowContext){0}; if (was_active) { flux__windows_active_context = NULL; flux__windows_active_window = NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL) { flux__windows_active_context = &flux__windows_contexts[index]; flux__windows_active_window = flux__windows_contexts[index].hwnd; break; } flux__windows_restore_control_windows(flux__windows_active_context); } return primary; }\n");
         out.push_str("static HWND flux__windows_message_window(const MSG *message) { if (message == NULL) return flux__windows_active_window; HWND hwnd = message->hwnd; while (hwnd != NULL) { if (flux__windows_context_for(hwnd) != NULL) return hwnd; hwnd = GetParent(hwnd); } return flux__windows_active_window; }\n");
     }
     let uses_focus_next = runtime_usage.contains("flux__focus_next(");
@@ -17284,7 +17284,9 @@ fn emit_windows_native_application(
         out.push_str("static int flux__win_text_height_for_lines(HWND control, int64_t lines, int64_t line_height_percent) { if (control == NULL) return INT32_MAX; if (lines < 1 || lines > INT32_MAX) { fputs(\"Flux runtime error: Text.maxLines must be between 1 and 2147483647\\n\", stderr); abort(); } if (line_height_percent < 1 || line_height_percent > INT32_MAX) { fputs(\"Flux runtime error: Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); } HDC dc = GetDC(control); if (dc == NULL) return INT32_MAX; HFONT font = (HFONT)SendMessageW(control, WM_GETFONT, 0, 0); HGDIOBJ previous = font != NULL ? SelectObject(dc, font) : NULL; TEXTMETRICA metrics = {0}; int result = INT32_MAX; if (GetTextMetricsA(dc, &metrics)) { int base_line_height = metrics.tmHeight + metrics.tmExternalLeading; if (base_line_height < 1) base_line_height = 1; int64_t scaled_line_height = ((int64_t)base_line_height * line_height_percent + INT64_C(50)) / INT64_C(100); if (scaled_line_height < 1) scaled_line_height = 1; int64_t measured = lines * scaled_line_height; result = measured > INT32_MAX ? INT32_MAX : (int)measured; } if (previous != NULL && previous != HGDI_ERROR) SelectObject(dc, previous); ReleaseDC(control, dc); return result; }\n");
     }
     if uses_tooltips {
-        out.push_str("static void flux__win_set_tooltip(HWND control, wchar_t **storage, const char *text) { FluxWindowsWindowContext *context = flux__windows_active_context; if (control == NULL || context == NULL || context->tooltip_window == NULL || storage == NULL) return; if (text == NULL) text = \"\"; size_t length = 0; if (!flux__win_bounded_length(text, 65536, &length)) { fputs(\"Flux runtime error: tooltip exceeds 65536 bytes\\n\", stderr); abort(); } (void)length; wchar_t *wide = flux__windows_utf8_to_wide(text); if (wide == NULL) { fputs(\"Flux runtime error: tooltip is not valid UTF-8\\n\", stderr); abort(); } if (*storage != NULL && wcscmp(*storage, wide) == 0) { free(wide); return; } free(*storage); *storage = wide; TOOLINFOW info = {0}; info.cbSize = sizeof(info); info.uFlags = TTF_IDISHWND | TTF_SUBCLASS; info.hwnd = context->hwnd; info.uId = (UINT_PTR)control; info.lpszText = *storage; SendMessageW(context->tooltip_window, TTM_UPDATETIPTEXTW, 0, (LPARAM)&info); }\n");
+        out.push_str(&format!("static wchar_t **flux__windows_tooltip_storage(FluxWindowsWindowContext *context, size_t slot) {{ if (context == NULL || slot >= {}) return NULL; if (context->tooltip_texts == NULL) {{ context->tooltip_texts = (wchar_t **)calloc({}, sizeof(wchar_t *)); if (context->tooltip_texts == NULL) abort(); context->tooltip_text_count = {}; }} return &context->tooltip_texts[slot]; }}\n", view.elements.len(), view.elements.len().max(1), view.elements.len()));
+        out.push_str(r#"static void flux__win_set_tooltip(HWND control, size_t slot, const char *text) { FluxWindowsWindowContext *context = flux__windows_active_context; wchar_t **storage = flux__windows_tooltip_storage(context, slot); if (control == NULL || context == NULL || context->tooltip_window == NULL || storage == NULL) return; if (text == NULL) text = ""; size_t length = 0; if (!flux__win_bounded_length(text, 65536, &length)) { fputs("Flux runtime error: tooltip exceeds 65536 bytes\n", stderr); abort(); } (void)length; wchar_t *wide = flux__windows_utf8_to_wide(text); if (wide == NULL) { fputs("Flux runtime error: tooltip is not valid UTF-8\n", stderr); abort(); } if (*storage != NULL && wcscmp(*storage, wide) == 0) { free(wide); return; } free(*storage); *storage = wide; TOOLINFOW info = {0}; info.cbSize = sizeof(info); info.uFlags = TTF_IDISHWND | TTF_SUBCLASS; info.hwnd = context->hwnd; info.uId = (UINT_PTR)control; info.lpszText = *storage; SendMessageW(context->tooltip_window, TTM_UPDATETIPTEXTW, 0, (LPARAM)&info); }
+"#);
     }
     out.push_str("static void flux__win_enable_dpi_awareness(void) { HMODULE user32 = GetModuleHandleA(\"user32.dll\"); if (user32 != NULL) { typedef BOOL (WINAPI *flux__set_dpi_context_fn)(HANDLE); flux__set_dpi_context_fn set_context = (flux__set_dpi_context_fn)(void *)GetProcAddress(user32, \"SetProcessDpiAwarenessContext\"); if (set_context != NULL && set_context((HANDLE)(INT_PTR)-4)) return; } (void)SetProcessDPIAware(); }\nstatic UINT flux__win_query_dpi(HWND hwnd) { HDC dc = GetDC(hwnd); if (dc == NULL) return 96; int value = GetDeviceCaps(dc, LOGPIXELSX); ReleaseDC(hwnd, dc); return value > 0 ? (UINT)value : 96; }\nstatic int flux__win_scale(int64_t logical) { if (logical > INT32_MAX) return INT32_MAX; if (logical < INT32_MIN) return INT32_MIN; int64_t product = logical * (int64_t)flux__win_dpi; int64_t scaled = product >= 0 ? (product + INT64_C(48)) / INT64_C(96) : (product - INT64_C(48)) / INT64_C(96); if (scaled > INT32_MAX) return INT32_MAX; if (scaled < INT32_MIN) return INT32_MIN; return (int)scaled; }\nstatic int64_t flux__win_unscale_for_dpi(int physical, UINT dpi) { if (dpi == 0) dpi = 96; int64_t scaled = (int64_t)physical * INT64_C(96); int64_t rounding = (int64_t)dpi / INT64_C(2); return scaled >= 0 ? (scaled + rounding) / (int64_t)dpi : (scaled - rounding) / (int64_t)dpi; }\nstatic int64_t flux__win_unscale(int physical) { return flux__win_unscale_for_dpi(physical, flux__win_dpi); }\n");
     if uses_custom_windows_text_layout {
@@ -18339,15 +18341,6 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
                 element.name
             ));
         }
-        if view_property(element, "tooltip").is_some()
-            || (element.kind == "TextInput"
-                && view_property(element, "validation_message").is_some())
-        {
-            out.push_str(&format!(
-                "static wchar_t *flux__win_tooltip_text_{} = NULL;\n",
-                element.name
-            ));
-        }
         if element.kind == "TextInput" && view_property(element, "validation_state").is_some() {
             out.push_str(&format!(
                 "static COLORREF flux__win_validation_color_{} = 0;\nstatic bool flux__win_validation_active_{} = false;\n",
@@ -18497,6 +18490,11 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
         ));
     }
     out.push_str("}\nstatic void flux__windows_release_control_windows(FluxWindowsWindowContext *context) { if (context == NULL) return; free(context->control_windows); context->control_windows = NULL; }\n");
+    if uses_tooltips {
+        out.push_str("static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context) { if (context == NULL || context->tooltip_texts == NULL) return; for (size_t index = 0; index < context->tooltip_text_count; ++index) free(context->tooltip_texts[index]); free(context->tooltip_texts); context->tooltip_texts = NULL; context->tooltip_text_count = 0; }\n");
+    } else {
+        out.push_str("static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context) { (void)context; }\n");
+    }
     let styled_elements = view.elements.iter().filter(|element| {
         view_property(element, "background_color").is_some()
             || (element.kind == "Text" && view_property(element, "color").is_some())
@@ -20215,7 +20213,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     if uses_dynamic_layout {
         out.push_str("RECT flux__win_refresh_client = {0}; if (flux__windows_active_window != NULL && GetClientRect(flux__windows_active_window, &flux__win_refresh_client)) { flux__win_layout(flux__win_refresh_client.right - flux__win_refresh_client.left, flux__win_refresh_client.bottom - flux__win_refresh_client.top); }\n");
     }
-    for element in &view.elements {
+    for (index, element) in view.elements.iter().enumerate() {
         let variable = ui_widget_c_name(&element.name);
         if element.kind == "Text"
             && let Some(property) = view_property(element, "text_align")
@@ -20389,12 +20387,11 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             } else {
                 c_string("")
             };
-            out.push_str(&format!("const char *flux__win_validation_message_{} = {validation_value}; const char *flux__win_effective_tooltip_{} = (flux__win_validation_message_{} != NULL && flux__win_validation_message_{}[0] != '\\0') ? flux__win_validation_message_{} : {fallback}; flux__win_set_tooltip({variable}, &flux__win_tooltip_text_{}, flux__win_effective_tooltip_{});\n", element.name, element.name, element.name, element.name, element.name, element.name, element.name));
+            out.push_str(&format!("const char *flux__win_validation_message_{} = {validation_value}; const char *flux__win_effective_tooltip_{} = (flux__win_validation_message_{} != NULL && flux__win_validation_message_{}[0] != '\\0') ? flux__win_validation_message_{} : {fallback}; flux__win_set_tooltip({variable}, {index}, flux__win_effective_tooltip_{});\n", element.name, element.name, element.name, element.name, element.name, element.name));
         } else if let Some(property) = view_property(element, "tooltip") {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
-                "flux__win_set_tooltip({variable}, &flux__win_tooltip_text_{}, {value});\n",
-                element.name
+                "flux__win_set_tooltip({variable}, {index}, {value});\n"
             ));
         }
         if let Some(property) = view_property(element, "visible") {
@@ -21298,16 +21295,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         out.push_str(" flux__win_delete_brushes();");
     }
     if uses_tooltips {
-        for element in view.elements.iter().filter(|element| {
-            view_property(element, "tooltip").is_some()
-                || (element.kind == "TextInput"
-                    && view_property(element, "validation_message").is_some())
-        }) {
-            out.push_str(&format!(
-                " free(flux__win_tooltip_text_{}); flux__win_tooltip_text_{} = NULL;",
-                element.name, element.name
-            ));
-        }
+        out.push_str(" for (size_t flux__windows_index = 0; flux__windows_index < FLUX_WINDOWS_MAX_WINDOWS; ++flux__windows_index) flux__windows_release_tooltip_texts(&flux__windows_contexts[flux__windows_index]);");
     }
     if uses_input_scopes {
         out.push_str(" flux__win_input_scope_shutdown();");
