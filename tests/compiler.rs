@@ -70194,6 +70194,7 @@ app Screen
     ));
     assert!(windows.contains("HWND flux__win_created_window = CreateWindowExW("));
     assert!(windows.contains("flux__windows_register_context(flux__win_created_window, primary)"));
+    assert!(windows.contains("if (primary) { for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd != NULL && flux__windows_contexts[index].primary) return false; }"));
     assert!(windows.contains("flux__windows_activate_context(flux__win_created_window);"));
     assert!(windows.contains("if (flux__windows_active_window != flux__win_created_window)"));
     assert!(windows.contains(
