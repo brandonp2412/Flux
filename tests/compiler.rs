@@ -68856,7 +68856,7 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     let activation = &generated[activation_start..activation_end];
     assert!(activation.contains("LOWORD(wparam) == WA_INACTIVE"));
     assert!(activation.contains(
-        "bool flux__windows_internal_activation = flux__windows_context_for((HWND)lparam) != NULL;"
+        "bool flux__windows_internal_activation = flux__windows_registered_window_for((HWND)lparam) != NULL;"
     ));
     assert!(activation.contains("if (!flux__windows_internal_activation) { flux__fn_paused(); }"));
     assert!(activation.contains("flux__windows_activate_context(hwnd); if (!flux__windows_internal_activation) { flux__fn_resumed(); }"));
@@ -70189,6 +70189,10 @@ app Screen
     assert!(
         windows
             .contains("flux__windows_store_metrics(hwnd, logical_width, logical_height, next_dpi)")
+    );
+    assert!(windows.contains("flux__windows_registered_window_for(HWND hwnd)"));
+    assert!(
+        windows.contains("HWND registered = flux__windows_registered_window_for(message->hwnd)")
     );
     assert!(windows.contains("flux__windows_message_window(const MSG *message)"));
     assert!(windows.contains("HWND dialog_window = flux__windows_message_window(&message)"));
