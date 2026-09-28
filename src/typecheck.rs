@@ -15490,6 +15490,14 @@ fn check_qualified_call_fallback(
                 let Some(route) = signatures.route(route_name) else {
                     return Err(diag(args[0].span, &format!("unknown route '{route_name}'")));
                 };
+                require_visible_declaration(
+                    args[0].span,
+                    route.span,
+                    false,
+                    "route",
+                    route_name,
+                    signatures,
+                )?;
                 if !route.params.is_empty() {
                     return Err(diag(
                         args[0].span,

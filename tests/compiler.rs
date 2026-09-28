@@ -70677,6 +70677,55 @@ app Screen
 }
 
 #[test]
+fn windows_window_open_route_identity_respects_module_visibility() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-window-route-visibility-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary route project should be writable");
+    fs::write(
+        root.join("routes.flux"),
+        r#"
+pub view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Screen"
+}
+
+route home = Screen
+"#,
+    )
+    .expect("route module should be writable");
+
+    let entry = root.join("app.flux");
+    fs::write(
+        &entry,
+        r#"
+import "routes.flux"
+
+fn openSecondary() -> void {
+    if window.open(home):
+        return
+}
+
+app Screen
+"#,
+    )
+    .expect("route entry should be writable");
+
+    let diagnostics = fluxc::project::check(&entry).expect_err("routes must remain module-local");
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("private route 'home' is not accessible from this module")
+    }));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn portable_focus_navigation_lowers_to_native_application_backends() {
     let source = r#"
 fn started() -> void {
