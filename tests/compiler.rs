@@ -4361,16 +4361,21 @@ app Screen
         .expect("centered Windows clipped no-wrap Text source should parse");
     let centered_nowrap_signatures = fluxc::typecheck::check(&centered_nowrap_program)
         .expect("centered Windows clipped no-wrap Text source should typecheck");
-    let centered_nowrap_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+    let centered_nowrap_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
         &centered_nowrap_program,
         &centered_nowrap_signatures,
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Windows,
     )
-    .expect_err("centered Windows clipped no-wrap Text must not silently wrap");
-    assert!(centered_nowrap_error.message.contains(
-        "Text.wrap: false without ellipsizing currently supports only left/fill alignment"
+    .expect("centered Windows clipped no-wrap Text should use the native custom painter");
+    assert!(centered_nowrap_windows.contains(
+        "flux__ui_label = CreateWindowExW(0, L\"STATIC\", L\"\", WS_CHILD | WS_VISIBLE | SS_CENTER"
     ));
+    assert!(
+        centered_nowrap_windows
+            .contains("SetWindowSubclass(flux__ui_label, flux__win_text_layout_proc")
+    );
+    assert!(centered_nowrap_windows.contains("UINT flags = DT_SINGLELINE | DT_NOPREFIX"));
 
     let dynamic_nowrap_source = r#"
 view Screen {
@@ -4388,17 +4393,20 @@ app Screen
         .expect("dynamic Windows no-wrap alignment source should parse");
     let dynamic_nowrap_signatures = fluxc::typecheck::check(&dynamic_nowrap_program)
         .expect("dynamic Windows no-wrap alignment source should typecheck");
-    let dynamic_nowrap_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+    let dynamic_nowrap_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
         &dynamic_nowrap_program,
         &dynamic_nowrap_signatures,
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Windows,
     )
-    .expect_err("dynamic clipped no-wrap alignment must not silently regain wrapping");
+    .expect("dynamic clipped no-wrap alignment should use the native custom painter");
     assert!(
-        dynamic_nowrap_error.message.contains(
-            "Text.wrap: false requires compile-time textAlign unless ellipsize is enabled"
-        )
+        dynamic_nowrap_windows
+            .contains("flux__win_set_text_alignment(flux__ui_label, flux__ui_state_alignment)")
+    );
+    assert!(
+        dynamic_nowrap_windows
+            .contains("SetWindowSubclass(flux__ui_label, flux__win_text_layout_proc")
     );
 
     let advanced_source = r#"

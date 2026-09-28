@@ -16835,8 +16835,6 @@ fn emit_windows_native_application(
                 }
             }
         }
-        let uses_custom_text_layout = view_property(element, "letter_spacing").is_some()
-            || view_property(element, "line_height_percent").is_some();
         if selectable
             && rich_text.is_none()
             && let Some(property) = view_property(element, "letter_spacing")
@@ -16864,25 +16862,11 @@ fn emit_windows_native_application(
                 "Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer",
             ));
         }
-        let mut wrap_is_dynamic = false;
-        let wrap = match view_property(element, "wrap") {
-            Some(property) => {
-                if let Some(wrap) = static_expr_bool(&property.value, signatures) {
-                    wrap
-                } else {
-                    wrap_is_dynamic = true;
-                    true
-                }
-            }
-            None => true,
-        };
-        let wrap_mode_uses_custom_painter = if let Some(property) =
-            view_property(element, "wrap_mode")
-        {
+        if let Some(property) = view_property(element, "wrap_mode") {
             if let Some(wrap_mode) = static_expr_str(&property.value, signatures) {
                 match wrap_mode.as_str() {
-                    "word" => false,
-                    "char" | "wordChar" | "word_char" if !selectable => true,
+                    "word" | "char" | "wordChar" | "word_char" if !selectable => {}
+                    "word" => {}
                     "char" | "wordChar" | "word_char" => {
                         return Err(diag(
                             property.value.span,
@@ -16901,14 +16885,9 @@ fn emit_windows_native_application(
                     property.value.span,
                     "bootstrap Windows selectable Text does not yet support state-driven wrapMode",
                 ));
-            } else {
-                true
             }
-        } else {
-            false
-        };
-        let mut ellipsize_is_dynamic = false;
-        let ellipsize = if let Some(property) = view_property(element, "ellipsize") {
+        }
+        if let Some(property) = view_property(element, "ellipsize") {
             if let Some(ellipsize) = static_expr_str(&property.value, signatures) {
                 match ellipsize.as_str() {
                     "none" => {}
@@ -16928,47 +16907,11 @@ fn emit_windows_native_application(
                         ));
                     }
                 }
-                Some(ellipsize)
             } else if selectable {
                 return Err(diag(
                     property.value.span,
                     "bootstrap Windows selectable Text does not yet support state-driven ellipsize",
                 ));
-            } else {
-                ellipsize_is_dynamic = true;
-                None
-            }
-        } else {
-            None
-        };
-        let text_uses_custom_painter = uses_custom_text_layout
-            || windows_text_has_padding(element)
-            || wrap_is_dynamic
-            || wrap_mode_uses_custom_painter
-            || ellipsize_is_dynamic
-            || matches!(ellipsize.as_deref(), Some("start" | "middle"));
-        if !wrap {
-            let wrap_span = view_property(element, "wrap")
-                .expect("wrap exists when explicitly disabled")
-                .value
-                .span;
-            if !selectable
-                && !text_uses_custom_painter
-                && matches!(ellipsize.as_deref(), None | Some("none"))
-                && let Some(alignment) = view_property(element, "text_align")
-            {
-                let Some(alignment_value) = static_expr_str(&alignment.value, signatures) else {
-                    return Err(diag(
-                        alignment.value.span,
-                        "bootstrap Windows Text.wrap: false requires compile-time textAlign unless ellipsize is enabled",
-                    ));
-                };
-                if matches!(alignment_value.as_str(), "center" | "right") {
-                    return Err(diag(
-                        wrap_span,
-                        "bootstrap Windows Text.wrap: false without ellipsizing currently supports only left/fill alignment",
-                    ));
-                }
             }
         }
     }
@@ -30177,6 +30120,10 @@ fn windows_element_uses_custom_text_layout(
                 static_expr_str(&property.value, signatures)
                     .is_none_or(|value| matches!(value.as_str(), "start" | "middle"))
             })
+            || (view_property(element, "wrap")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                == Some(false)
+                && view_property(element, "text_align").is_some())
     } else {
         windows_semantic_text_surface(element) && windows_text_has_padding(element)
     }
