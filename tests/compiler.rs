@@ -3103,6 +3103,13 @@ app Screen
     )
     .expect("uniform Windows borders should lower natively");
     assert!(windows.contains("static void flux__win_draw_border("));
+    assert!(
+        windows.contains("COLORREF *border_colors; int64_t *border_widths; int *border_styles;")
+    );
+    assert!(windows.contains("static const COLORREF flux__win_border_initial_color_label"));
+    assert!(windows.contains("flux__windows_save_borders(flux__windows_active_context)"));
+    assert!(windows.contains("flux__windows_restore_borders(context)"));
+    assert!(windows.contains("flux__windows_release_borders(context)"));
     assert!(windows.contains("GetWindowRgn(control, region)"));
     assert!(windows.contains("FrameRgn(dc, region, brush, top_width, top_width)"));
     assert!(windows.contains("static WNDPROC flux__win_border_orig_0 = NULL;"));
