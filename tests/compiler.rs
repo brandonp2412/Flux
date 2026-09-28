@@ -70171,7 +70171,19 @@ app Screen
     assert!(!windows.contains("static HWND flux__win_tooltips"));
     assert!(!windows.contains("SendMessageW(flux__win_tooltips"));
     assert!(windows.contains("SendMessageW(flux__tooltip_context->tooltip_window, TTM_ADDTOOLW"));
-    assert!(windows.contains("static int flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary)"));
+    assert!(windows.contains("static int flux__win_create_view_window_failure(HWND window, bool primary) { if (!primary && window != NULL && IsWindow(window)) DestroyWindow(window); return 1; }"));
+    let creation_start = windows
+        .find("static int flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary)")
+        .expect("Windows view creation helper should exist");
+    let creation_end = windows[creation_start..]
+        .find("static int flux__win_run(void)")
+        .map(|offset| creation_start + offset)
+        .expect("Windows view creation helper should end before app startup");
+    let creation = &windows[creation_start..creation_end];
+    assert!(!creation.contains("return 1;"));
+    assert!(creation.contains(
+        "return flux__win_create_view_window_failure(flux__win_created_window, primary);"
+    ));
     assert!(windows.contains("HWND flux__win_created_window = CreateWindowExW("));
     assert!(windows.contains("flux__windows_register_context(flux__win_created_window, primary)"));
     assert!(windows.contains("flux__windows_activate_context(flux__win_created_window);"));
