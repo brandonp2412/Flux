@@ -1704,16 +1704,16 @@ fn emit_c_for_target_with_source_metadata_impl(
             "preferences.* requires the Linux, Windows, or Android application target",
         ));
     }
-    if runtime_usage.contains("flux__window_open(") && program.application.is_none() {
+    if runtime_usage.contains("flux__window_") && program.application.is_none() {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
-            "window.open requires an application target",
+            "window.* APIs require an application target",
         ));
     }
-    if runtime_usage.contains("flux__window_open(") && target != NativeTarget::Windows {
+    if runtime_usage.contains("flux__window_") && target != NativeTarget::Windows {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
-            "window.open currently requires the Windows target",
+            "window.* APIs currently require the Windows target",
         ));
     }
     if runtime_usage.contains("flux__clipboard_") && program.application.is_none() {
@@ -2770,6 +2770,7 @@ fn emit_runtime_prelude(
     let uses_windows_secure_storage =
         uses_windows_secure_store || uses_windows_secure_read || uses_windows_secure_remove;
     let uses_window_open = runtime_usage.contains("flux__window_open(");
+    let uses_window_close = runtime_usage.contains("flux__window_close(");
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
     let uses_menu_show = runtime_usage.contains("flux__menu_show(");
@@ -2800,6 +2801,9 @@ fn emit_runtime_prelude(
         out.push_str("static void flux__windows_restore_metrics(HWND hwnd); static void flux__windows_save_scalar_view_state(FluxWindowsWindowContext *context); static void flux__windows_restore_scalar_view_state(FluxWindowsWindowContext *context); static void flux__windows_release_scalar_view_state(FluxWindowsWindowContext *context); static void flux__windows_save_string_view_state(FluxWindowsWindowContext *context); static void flux__windows_restore_string_view_state(FluxWindowsWindowContext *context); static void flux__windows_release_string_view_state(FluxWindowsWindowContext *context); static void flux__windows_save_control_windows(FluxWindowsWindowContext *context); static void flux__windows_restore_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context); static void flux__windows_release_validation_state(FluxWindowsWindowContext *context); static void flux__windows_release_image_bitmaps(FluxWindowsWindowContext *context); static void flux__windows_release_style_state(FluxWindowsWindowContext *context); static void flux__windows_save_text_fonts(FluxWindowsWindowContext *context); static void flux__windows_restore_text_fonts(FluxWindowsWindowContext *context); static void flux__windows_release_text_fonts(FluxWindowsWindowContext *context); static void flux__windows_save_button_fonts(FluxWindowsWindowContext *context); static void flux__windows_restore_button_fonts(FluxWindowsWindowContext *context); static void flux__windows_release_button_fonts(FluxWindowsWindowContext *context); static void flux__windows_save_text_layouts(FluxWindowsWindowContext *context); static void flux__windows_restore_text_layouts(FluxWindowsWindowContext *context); static void flux__windows_release_text_layouts(FluxWindowsWindowContext *context); static void flux__windows_save_borders(FluxWindowsWindowContext *context); static void flux__windows_restore_borders(FluxWindowsWindowContext *context); static void flux__windows_release_borders(FluxWindowsWindowContext *context); static void flux__windows_save_control_subclasses(FluxWindowsWindowContext *context); static void flux__windows_restore_control_subclasses(FluxWindowsWindowContext *context); static void flux__windows_release_control_subclasses(FluxWindowsWindowContext *context); static void flux__windows_save_control_gestures(FluxWindowsWindowContext *context); static void flux__windows_restore_control_gestures(FluxWindowsWindowContext *context); static void flux__windows_release_control_gestures(FluxWindowsWindowContext *context); static void flux__windows_release_drop_targets(FluxWindowsWindowContext *context);\n");
         if uses_window_open {
             out.push_str("static bool flux__window_open(void);\n");
+        }
+        if uses_window_close {
+            out.push_str("static bool flux__window_close(void) { HWND window = flux__windows_active_window; return window != NULL && PostMessageW(window, WM_CLOSE, 0, 0) != 0; }\n");
         }
         out.push_str("static FluxWindowsWindowContext *flux__windows_context_for(HWND hwnd) { if (hwnd == NULL) return NULL; for (size_t index = 0; index < FLUX_WINDOWS_MAX_WINDOWS; ++index) if (flux__windows_contexts[index].hwnd == hwnd) return &flux__windows_contexts[index]; return NULL; }\n");
         out.push_str("static void flux__windows_save_view_state(FluxWindowsWindowContext *context) { if (context == NULL) return; flux__windows_save_scalar_view_state(context); flux__windows_save_string_view_state(context); flux__windows_save_control_windows(context); flux__windows_save_text_fonts(context); flux__windows_save_button_fonts(context); flux__windows_save_text_layouts(context); flux__windows_save_borders(context); flux__windows_save_control_subclasses(context); flux__windows_save_control_gestures(context); }\n");
@@ -56038,10 +56042,10 @@ fn emit_qualified_call(
         return Ok((format!("{helper}({})", callback.code), Vec::new(), None));
     }
     if namespace == "window" {
-        if !named_args.is_empty() || name != "open" || !args.is_empty() {
+        if !named_args.is_empty() || !matches!(name, "open" | "close") || !args.is_empty() {
             return Err(diag(span, "invalid window call reached code generation"));
         }
-        return Ok(("flux__window_open()".to_string(), Vec::new(), None));
+        return Ok((format!("flux__window_{name}()"), Vec::new(), None));
     }
     if namespace == "focus" {
         if !named_args.is_empty() {
@@ -62013,11 +62017,11 @@ fn emit_cfg_scalar_expr_direct(
             name,
             arguments,
         } if namespace == "window"
-            && name == "open"
+            && matches!(name.as_str(), "open" | "close")
             && arguments.is_empty()
             && ty == Type::Bool =>
         {
-            Some("flux__window_open()".to_string())
+            Some(format!("flux__window_{name}()"))
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,

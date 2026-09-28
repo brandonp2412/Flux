@@ -15426,11 +15426,11 @@ fn check_qualified_call_fallback(
             ));
         }
         match name.as_str() {
-            "open" => {
+            "open" | "close" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,
-                        &format!("window.open expects 0 arguments, got {}", args.len()),
+                        &format!("window.{name} expects 0 arguments, got {}", args.len()),
                     ));
                 }
                 return Ok(vec![Type::Bool]);

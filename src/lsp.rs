@@ -2840,7 +2840,12 @@ fn add_qualified_namespace_completions(
         return true;
     }
     if namespace == "window" {
-        push_completion_item(items, seen, "open", 3, "fn window.open() -> bool");
+        for (label, detail) in [
+            ("open", "fn window.open() -> bool"),
+            ("close", "fn window.close() -> bool"),
+        ] {
+            push_completion_item(items, seen, label, 3, detail);
+        }
         return true;
     }
     if namespace == "focus" {
@@ -6064,9 +6069,9 @@ fn signature_help_for_document_cached(
                 _ => {}
             }
         }
-        if namespace == "window" && implementation_member == "open" {
+        if namespace == "window" && matches!(implementation_member, "open" | "close") {
             return Some(signature_help_for_builtin(
-                "window.open",
+                &format!("window.{member}"),
                 &[],
                 "bool",
                 active_parameter,
@@ -10261,6 +10266,7 @@ mod tests {
         ))
         .to_json();
         assert!(items.contains("fn window.open() -> bool"));
+        assert!(items.contains("fn window.close() -> bool"));
     }
 
     #[test]
@@ -14016,25 +14022,30 @@ fn main() -> i64 {
     #[test]
     fn signature_help_supports_window_root_instance_open() {
         let uri = "file:///tmp/window-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(window.open())\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    print(window.open())\n    print(window.close())\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
-        let line_index = source
-            .lines()
-            .position(|line| line.contains("window.open("))
-            .expect("window.open call line should exist");
-        let line = source.lines().nth(line_index).unwrap();
-        let cursor = line.find("window.open(").unwrap() + "window.open(".len();
-        let help = signature_help_for_document(
-            uri,
-            source,
-            &documents,
-            line_index,
-            cursor,
-            PositionEncoding::Utf8,
-        )
-        .expect("window.open should have signature help")
-        .to_json();
-        assert!(help.contains("fn window.open() -> bool"));
+        for (needle, expected) in [
+            ("window.open(", "fn window.open() -> bool"),
+            ("window.close(", "fn window.close() -> bool"),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("window lifecycle call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("window lifecycle call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
     }
 
     #[test]

@@ -70246,12 +70246,20 @@ fn openSecondary() -> void {
         return
 }
 
+fn closeCurrent() -> void {
+    if window.close():
+        return
+}
+
 view Screen {
     grid columns: 1fr
-    grid rows: auto
+    grid rows: auto auto
     Button open at 1,1
         text: "Open"
         onPress: openSecondary
+    Button close at 2,1
+        text: "Close"
+        onPress: closeCurrent
 }
 app Screen
 "#;
@@ -70277,6 +70285,9 @@ app Screen
     assert!(windows.contains(
         "if (previous != NULL && IsWindow(previous)) flux__windows_activate_context(previous); return true;"
     ));
+    assert!(windows.contains(
+        "static bool flux__window_close(void) { HWND window = flux__windows_active_window; return window != NULL && PostMessageW(window, WM_CLOSE, 0, 0) != 0; }"
+    ));
 
     let linux_error = fluxc::codegen::emit_c_for_target_with_source_paths(
         database.program(),
@@ -70284,11 +70295,11 @@ app Screen
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Linux,
     )
-    .expect_err("window.open is not yet portable beyond Windows");
+    .expect_err("window.* APIs are not yet portable beyond Windows");
     assert!(
         linux_error
             .message
-            .contains("window.open currently requires the Windows target")
+            .contains("window.* APIs currently require the Windows target")
     );
 }
 
