@@ -69787,8 +69787,12 @@ fn menuSelected(index: i64) -> void {
 fn trayActivated() -> void {
     print("tray")
 }
+fn toolsSelected(index: i64) -> void {
+    print(index + 10)
+}
 fn started() -> void {
     menu.show("File", ["Open", "Save", "Quit"], menuSelected)
+    menu.show("Tools", ["Format", "Check"], toolsSelected)
     tray.show("Flux", "application-x-executable", trayActivated)
 }
 view Screen {
@@ -69801,9 +69805,10 @@ app Screen(onStart: started)
     check_source(source).expect("Linux menu/tray APIs should typecheck");
     let linux = compile_to_c(source).expect("Linux menu/tray APIs should lower natively");
     assert!(linux.contains("gtk_popover_menu_bar_new_from_model"));
-    assert!(linux.contains("g_simple_action_new(\"flux-menu-select\", G_VARIANT_TYPE_INT64)"));
-    assert!(linux.contains("g_menu_item_set_action_and_target"));
-    assert!(linux.contains("flux__menu_callback(g_variant_get_int64(parameter))"));
+    assert!(linux.contains("g_simple_action_new(\"flux-menu-select\", G_VARIANT_TYPE(\"(xx)\"))"));
+    assert!(linux.contains("g_menu_item_set_action_and_target_value"));
+    assert!(linux.contains("flux__menu_callbacks[menu_index](item_index)"));
+    assert!(linux.contains("g_menu_append_submenu(flux__menu_root, title"));
     assert!(linux.contains("org.kde.StatusNotifierItem"));
     assert!(linux.contains("RegisterStatusNotifierItem"));
     assert!(linux.contains("g_dbus_connection_register_object"));
@@ -69812,6 +69817,26 @@ app Screen(onStart: started)
         "flux__menu_show(\"File\", (const char *[]){\"Open\", \"Save\", \"Quit\"}, INT64_C(3),"
     ));
     assert!(linux.contains("flux__tray_show(\"Flux\", \"application-x-executable\","));
+    assert!(linux.contains(
+        "flux__menu_show(\"Tools\", (const char *[]){\"Format\", \"Check\"}, INT64_C(2),"
+    ));
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("menu/tray app should analyze for Windows");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("menu bar APIs should lower to native Windows menus");
+    assert!(windows.contains("FLUX_WINDOWS_MENU_MAX_TOP_LEVEL = 8"));
+    assert!(windows.contains("flux__windows_menu_callbacks[menu_index]"));
+    assert!(
+        windows.contains(
+            "command_base = FLUX_WINDOWS_MENU_BASE + menu_index * FLUX_WINDOWS_MENU_STRIDE"
+        )
+    );
+    assert!(windows.contains("AppendMenuW(flux__windows_menu_bar, MF_POPUP"));
     assert!(!linux.contains("method channel"));
     assert!(!linux.contains("plugin registry"));
 

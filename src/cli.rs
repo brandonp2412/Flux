@@ -10883,8 +10883,11 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
     const WEBSOCKET_SESSIONS_LOCK: &str =
         "static atomic_flag flux__websocket_sessions_lock = ATOMIC_FLAG_INIT;";
     const LINUX_SECURE_SCHEMA: &str = "static const SecretSchema flux__linux_secure_schema = { .name = \"app.flux.secure\", .flags = SECRET_SCHEMA_NONE, .attributes = { { \"application\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { \"key\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { NULL, 0 } } };";
-    const MENU_CALLBACK: &str = "static void (*flux__menu_callback)(int64_t) = NULL;";
+    const MENU_CALLBACKS: &str =
+        "static void (*flux__menu_callbacks[FLUX_MENU_MAX_TOP_LEVEL])(int64_t) = {0};";
+    const MENU_COUNT: &str = "static int64_t flux__menu_count = 0;";
     const MENU_BAR: &str = "static GtkWidget *flux__menu_bar = NULL;";
+    const MENU_ROOT: &str = "static GMenu *flux__menu_root = NULL;";
     const MENU_ACTION: &str = "static GSimpleAction *flux__menu_action = NULL;";
     const TRAY_CALLBACK: &str = "static void (*flux__tray_callback)(void) = NULL;";
     const TRAY_CONNECTION: &str = "static GDBusConnection *flux__tray_connection = NULL;";
@@ -11041,17 +11044,24 @@ atomic_flag flux__websocket_sessions_lock = ATOMIC_FLAG_INIT;
         isolated = true;
     }
 
-    if prefix.contains(MENU_CALLBACK) && prefix.contains(MENU_BAR) && prefix.contains(MENU_ACTION) {
+    if prefix.contains(MENU_CALLBACKS)
+        && prefix.contains(MENU_COUNT)
+        && prefix.contains(MENU_BAR)
+        && prefix.contains(MENU_ROOT)
+        && prefix.contains(MENU_ACTION)
+    {
         partition_prefix = partition_prefix
             .replacen(
-                MENU_CALLBACK,
-                "extern void (*flux__menu_callback)(int64_t);",
+                MENU_CALLBACKS,
+                "extern void (*flux__menu_callbacks[FLUX_MENU_MAX_TOP_LEVEL])(int64_t);",
                 1,
             )
+            .replacen(MENU_COUNT, "extern int64_t flux__menu_count;", 1)
             .replacen(MENU_BAR, "extern GtkWidget *flux__menu_bar;", 1)
+            .replacen(MENU_ROOT, "extern GMenu *flux__menu_root;", 1)
             .replacen(MENU_ACTION, "extern GSimpleAction *flux__menu_action;", 1);
         definitions.push_str(
-            "\nvoid (*flux__menu_callback)(int64_t) = NULL;\nGtkWidget *flux__menu_bar = NULL;\nGSimpleAction *flux__menu_action = NULL;\n",
+            "\nvoid (*flux__menu_callbacks[FLUX_MENU_MAX_TOP_LEVEL])(int64_t) = {0};\nint64_t flux__menu_count = 0;\nGtkWidget *flux__menu_bar = NULL;\nGMenu *flux__menu_root = NULL;\nGSimpleAction *flux__menu_action = NULL;\n",
         );
         isolated = true;
     }
