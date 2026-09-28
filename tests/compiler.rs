@@ -70057,13 +70057,15 @@ fn windows_window_runtime_tracks_primary_context_for_multi_window_foundation() {
 view Screen {
     state active: bool = false
     state count: i64 = 7
+    state query: str = "initial"
     grid columns: 1fr
     grid rows: auto auto auto
     Text label at 1,1
         text: "Primary"
         tooltip: "Primary tooltip"
     TextInput field at 2,1
-        text: ""
+        text: query
+        onChange: query, value => value
         validationState: "error"
     Image icon at 3,1
         source: "missing.bmp"
@@ -70098,6 +70100,15 @@ app Screen
     assert!(windows.contains("flux__windows_save_scalar_view_state(flux__windows_active_context)"));
     assert!(windows.contains("flux__windows_restore_scalar_view_state(context)"));
     assert!(windows.contains("flux__windows_release_scalar_view_state(context)"));
+    assert!(windows.contains("char **string_view_state; size_t string_view_state_count;"));
+    assert!(windows.contains("context->string_view_state[0] = flux__ui_state_owned_query;"));
+    assert!(windows.contains("flux__ui_state_owned_query = NULL;"));
+    assert!(windows.contains(
+        "flux__ui_state_query = flux__ui_state_owned_query != NULL ? flux__ui_state_owned_query : \"initial\";"
+    ));
+    assert!(windows.contains("flux__windows_save_string_view_state(flux__windows_active_context)"));
+    assert!(windows.contains("flux__windows_restore_string_view_state(context)"));
+    assert!(windows.contains("flux__windows_release_string_view_state(context)"));
     assert!(windows.contains("HWND *control_windows;"));
     assert!(windows.contains("context->control_windows[0] = flux__ui_label;"));
     assert!(windows.contains("flux__ui_label = context != NULL && context->control_windows != NULL ? context->control_windows[0] : NULL;"));
