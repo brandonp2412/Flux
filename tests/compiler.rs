@@ -68870,9 +68870,10 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
         .map(|offset| destroy_start + offset)
         .expect("destroy dispatch should end before the default case");
     let destroy = &generated[destroy_start..destroy_end];
+    assert!(destroy.contains("bool primary = context != NULL && context->primary; if (primary) {"));
     let stop = destroy
         .find("flux__fn_stopped();")
-        .expect("onStop should run during Windows destruction");
+        .expect("onStop should run during primary Windows destruction");
     let exit = destroy
         .find("flux__fn_exited();")
         .expect("onExit should run during Windows destruction");
@@ -70168,8 +70169,13 @@ app Screen
     assert!(windows.contains("SendMessageW(flux__tooltip_context->tooltip_window, TTM_ADDTOOLW"));
     assert!(windows.contains("flux__windows_register_context(flux__windows_active_window, true)"));
     assert!(windows.contains("flux__windows_activate_context(hwnd)"));
-    assert!(windows.contains("flux__windows_restore_control_gestures(context); flux__windows_restore_metrics(hwnd);"));
-    assert!(!windows.contains("flux__windows_activate_context(hwnd); flux__windows_restore_metrics(hwnd);"));
+    assert!(windows.contains(
+        "flux__windows_restore_control_gestures(context); flux__windows_restore_metrics(hwnd);"
+    ));
+    assert!(
+        !windows
+            .contains("flux__windows_activate_context(hwnd); flux__windows_restore_metrics(hwnd);")
+    );
     assert!(windows.contains(
         "int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi;"
     ));
