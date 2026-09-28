@@ -2829,7 +2829,7 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("GetClientRect(hwnd, &client)"));
     assert!(generated.contains("MoveWindow(flux__ui_title"));
     assert!(generated.contains(
-        "static void flux__win_change_1(HWND control) { if (flux__win_refreshing) return;"
+        "static void flux__win_change_1(HWND control) { if (flux__win_is_refreshing()) return;"
     ));
     assert!(generated.contains("flux__win_change_1"));
     assert!(generated.contains("flux__win_click_2"));
@@ -70082,6 +70082,9 @@ app Screen
     assert!(windows.contains("FLUX_WINDOWS_MAX_WINDOWS = 16"));
     assert!(windows.contains("FluxWindowsWindowContext"));
     assert!(windows.contains("HWND hwnd; HWND tooltip_window;"));
+    assert!(windows.contains("WNDPROC runtime_previous_proc; bool refreshing;"));
+    assert!(windows.contains("flux__windows_active_context->refreshing"));
+    assert!(!windows.contains("static bool flux__win_refreshing"));
     assert!(windows.contains("HWND *control_windows;"));
     assert!(windows.contains("context->control_windows[0] = flux__ui_label;"));
     assert!(windows.contains("flux__ui_label = context != NULL && context->control_windows != NULL ? context->control_windows[0] : NULL;"));
