@@ -3308,7 +3308,6 @@ app Screen
 #[test]
 fn windows_rejects_unimplemented_portable_styles_instead_of_silently_dropping_them() {
     for (property, source_name) in [
-        ("clip: true", "clip"),
         ("shadowColor: \"shadow\"", "shadowColor"),
         ("shadowBlur: 8", "shadowBlur"),
         ("shadowOffsetX: 2", "shadowOffsetX"),
@@ -3999,6 +3998,44 @@ app Screen
             .message
             .contains("translateX must fit within a 32-bit signed integer")
     );
+}
+
+#[test]
+fn windows_clip_uses_native_window_regions_and_refreshes_dynamic_state() {
+    let source = r#"
+view Screen {
+    state clipped: bool = true
+    grid columns: 1fr
+    grid rows: auto auto
+    Text label at 1,1
+        text: "Clip"
+        clip: clipped
+    Button action at 2,1
+        text: "Toggle"
+        onPress: clipped => !clipped
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows clip source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows clip source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows clip should lower through native window regions");
+
+    assert!(windows.contains(
+        "static void flux__win_set_clip(HWND control, int width, int height, bool clip)"
+    ));
+    assert!(windows.contains("HRGN region = CreateRectRgn(0, 0, right, bottom);"));
+    assert!(windows.contains(
+        "flux__win_set_clip(flux__ui_label, control_width, control_height, flux__ui_state_clipped);"
+    ));
+    assert!(windows.contains("SetWindowRgn(control, NULL, TRUE)"));
+    assert!(windows.contains("Flux runtime error: unable to apply Windows control clip"));
 }
 
 #[test]
