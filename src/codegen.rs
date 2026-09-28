@@ -18686,9 +18686,9 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
         let style_slots = view.elements.len().saturating_mul(2).max(1);
         out.push_str(&format!("static bool flux__windows_style_storage(FluxWindowsWindowContext *context, size_t slot, HBRUSH **brush, COLORREF **color, bool **has_color) {{ if (context == NULL || slot >= {style_slots} || brush == NULL || color == NULL || has_color == NULL) return false; if (context->style_brushes == NULL) {{ context->style_brushes = (HBRUSH *)calloc({style_slots}, sizeof(HBRUSH)); context->style_colors = (COLORREF *)calloc({style_slots}, sizeof(COLORREF)); context->style_has_colors = (bool *)calloc({style_slots}, sizeof(bool)); if (context->style_brushes == NULL || context->style_colors == NULL || context->style_has_colors == NULL) abort(); context->style_count = {style_slots}; }} *brush = &context->style_brushes[slot]; *color = &context->style_colors[slot]; *has_color = &context->style_has_colors[slot]; return true; }}\n"));
         out.push_str("static void flux__windows_release_style_state(FluxWindowsWindowContext *context) { if (context == NULL) return; if (context->style_brushes != NULL) for (size_t index = 0; index < context->style_count; ++index) if (context->style_brushes[index] != NULL) DeleteObject(context->style_brushes[index]); free(context->style_brushes); free(context->style_colors); free(context->style_has_colors); context->style_brushes = NULL; context->style_colors = NULL; context->style_has_colors = NULL; context->style_count = 0; }\n");
-        out.push_str("static HBRUSH flux__win_static_brush(size_t slot, COLORREF color) { HBRUSH *brush = NULL; COLORREF *current = NULL; bool *has_color = NULL; if (!flux__windows_style_storage(flux__windows_active_context, slot, &brush, &current, &has_color)) return NULL; if (*brush == NULL || !*has_color || *current != color) { if (*brush != NULL) DeleteObject(*brush); *brush = CreateSolidBrush(color); *current = color; *has_color = *brush != NULL; } return *brush; }\n");
-        out.push_str("static bool flux__win_style_color(size_t slot, COLORREF *result) { HBRUSH *brush = NULL; COLORREF *color = NULL; bool *has_color = NULL; if (result == NULL || !flux__windows_style_storage(flux__windows_active_context, slot, &brush, &color, &has_color) || !*has_color) return false; *result = *color; return true; }\n");
-        out.push_str("static HBRUSH flux__win_style_brush(size_t slot) { HBRUSH *brush = NULL; COLORREF *color = NULL; bool *has_color = NULL; if (!flux__windows_style_storage(flux__windows_active_context, slot, &brush, &color, &has_color) || !*has_color) return NULL; return *brush; }\n");
+        out.push_str("static HBRUSH flux__win_static_brush_for(FluxWindowsWindowContext *context, size_t slot, COLORREF color) { HBRUSH *brush = NULL; COLORREF *current = NULL; bool *has_color = NULL; if (!flux__windows_style_storage(context, slot, &brush, &current, &has_color)) return NULL; if (*brush == NULL || !*has_color || *current != color) { if (*brush != NULL) DeleteObject(*brush); *brush = CreateSolidBrush(color); *current = color; *has_color = *brush != NULL; } return *brush; }\nstatic HBRUSH flux__win_static_brush(size_t slot, COLORREF color) { return flux__win_static_brush_for(flux__windows_active_context, slot, color); }\n");
+        out.push_str("static bool flux__win_style_color_for(FluxWindowsWindowContext *context, size_t slot, COLORREF *result) { HBRUSH *brush = NULL; COLORREF *color = NULL; bool *has_color = NULL; if (result == NULL || !flux__windows_style_storage(context, slot, &brush, &color, &has_color) || !*has_color) return false; *result = *color; return true; }\nstatic bool flux__win_style_color(size_t slot, COLORREF *result) { return flux__win_style_color_for(flux__windows_active_context, slot, result); }\n");
+        out.push_str("static HBRUSH flux__win_style_brush_for(FluxWindowsWindowContext *context, size_t slot) { HBRUSH *brush = NULL; COLORREF *color = NULL; bool *has_color = NULL; if (!flux__windows_style_storage(context, slot, &brush, &color, &has_color) || !*has_color) return NULL; return *brush; }\nstatic HBRUSH flux__win_style_brush(size_t slot) { return flux__win_style_brush_for(flux__windows_active_context, slot); }\n");
     } else {
         out.push_str("static void flux__windows_release_style_state(FluxWindowsWindowContext *context) { (void)context; }\n");
     }
@@ -21017,7 +21017,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         ));
         if element.kind == "TextInput" && view_property(element, "validation_state").is_some() {
             out.push_str(&format!(
-                " FluxWindowsWindowContext *validation_context = flux__windows_active_context; if (validation_context != NULL && validation_context->validation_active != NULL && validation_context->validation_active[{index}]) SetTextColor(dc, validation_context->validation_colors[{index}]); else SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));"
+                " FluxWindowsWindowContext *validation_context = flux__windows_context_for(hwnd); if (validation_context != NULL && validation_context->validation_active != NULL && validation_context->validation_active[{index}]) SetTextColor(dc, validation_context->validation_colors[{index}]); else SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));"
             ));
         }
         if let Some(property) = view_property(element, "color") {
@@ -21027,7 +21027,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     element.name
                 ));
             } else {
-                out.push_str(&format!(" COLORREF flux__win_dynamic_text_color; if (flux__win_style_color({}, &flux__win_dynamic_text_color)) SetTextColor(dc, flux__win_dynamic_text_color);", index * 2 + 1));
+                out.push_str(&format!(" COLORREF flux__win_dynamic_text_color; if (flux__win_style_color_for(flux__windows_context_for(hwnd), {}, &flux__win_dynamic_text_color)) SetTextColor(dc, flux__win_dynamic_text_color);", index * 2 + 1));
             }
         }
         if element.kind != "Image"
@@ -21042,9 +21042,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
         if let Some(property) = view_property(element, "background_color") {
             if static_expr_str(&property.value, signatures).is_some() {
-                out.push_str(&format!(" HBRUSH flux__win_background_brush = flux__win_static_brush({}, flux__win_color_{}_background_color); if (flux__win_background_brush != NULL) return (LRESULT)flux__win_background_brush; }}\n", index * 2, element.name));
+                out.push_str(&format!(" HBRUSH flux__win_background_brush = flux__win_static_brush_for(flux__windows_context_for(hwnd), {}, flux__win_color_{}_background_color); if (flux__win_background_brush != NULL) return (LRESULT)flux__win_background_brush; }}\n", index * 2, element.name));
             } else {
-                out.push_str(&format!(" HBRUSH flux__win_background_brush = flux__win_style_brush({}); if (flux__win_background_brush != NULL) return (LRESULT)flux__win_background_brush; }}\n", index * 2));
+                out.push_str(&format!(" HBRUSH flux__win_background_brush = flux__win_style_brush_for(flux__windows_context_for(hwnd), {}); if (flux__win_background_brush != NULL) return (LRESULT)flux__win_background_brush; }}\n", index * 2));
             }
         } else {
             out.push_str(" return (LRESULT)GetSysColorBrush(COLOR_WINDOW); }\n");

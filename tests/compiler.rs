@@ -2844,7 +2844,7 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("case WM_CTLCOLORSTATIC"));
     assert!(generated.contains("SetTextColor(dc, flux__win_color_title_color)"));
     assert!(
-        generated.contains("flux__win_static_brush(0, flux__win_color_title_background_color)")
+        generated.contains("flux__win_static_brush_for(flux__windows_context_for(hwnd), 0, flux__win_color_title_background_color)")
     );
     assert!(!generated.contains("#include <gtk/gtk.h>"));
     assert!(!generated.contains("android/native_activity.h"));
@@ -70058,10 +70058,13 @@ view Screen {
     state active: bool = false
     state count: i64 = 7
     state query: str = "initial"
+    state shade: str = "accent"
     grid columns: 1fr
     grid rows: auto auto auto
     Text label at 1,1
         text: "Primary"
+        color: shade
+        backgroundColor: shade
         tooltip: "Primary tooltip"
     TextInput field at 2,1
         text: query
@@ -70144,6 +70147,11 @@ app Screen
     assert!(windows.contains("DeleteObject(context->image_bitmaps[index])"));
     assert!(!windows.contains("flux__win_bitmap_icon"));
     assert!(!windows.contains("flux__win_tooltip_text_label"));
+    assert!(windows.contains("flux__windows_context_for(hwnd), 1, &flux__win_dynamic_text_color"));
+    assert!(windows.contains("flux__win_style_brush_for(flux__windows_context_for(hwnd), 0)"));
+    assert!(windows.contains(
+        "FluxWindowsWindowContext *validation_context = flux__windows_context_for(hwnd)"
+    ));
     assert!(windows.contains("flux__tooltip_context->tooltip_window = CreateWindowExW"));
     assert!(!windows.contains("static HWND flux__win_tooltips"));
     assert!(windows.contains("flux__windows_register_context(flux__windows_active_window, true)"));
