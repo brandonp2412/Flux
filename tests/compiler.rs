@@ -5317,8 +5317,13 @@ fn confirmed() -> void {
     print("confirmed")
 }
 
+fn chosen(index: i64) -> void {
+    print(index)
+}
+
 fn stopAfterStart() -> void {
     dialog.confirm("Windows", "Continue?", confirmed, cancelLabel: "Keep", confirmLabel: "Continue")
+    dialog.choose("Windows", "Pick one", ["One", "Two"], chosen, cancelLabel: "Later")
     print(windows.secureStore("session", "secret"))
     print(windows.secureRead("session", secureValue))
     print(windows.secureRemove("session"))
@@ -69388,39 +69393,6 @@ fn main() -> i64 {
 }
 
 #[test]
-fn windows_rejects_unimplemented_choice_dialogs_before_native_compile() {
-    let source = r#"
-fn selected(index: i64) -> void {
-    print(index)
-}
-fn started() -> void {
-    dialog.choose("Pick", "Choose one", ["One", "Two"], selected)
-}
-view Screen {
-    grid columns: 1fr
-    grid rows: auto
-}
-app Screen(onStart: started)
-"#;
-    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
-        .expect("portable confirm/choice source should analyze");
-    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
-        database.program(),
-        database.signatures(),
-        &std::collections::HashMap::new(),
-        fluxc::codegen::NativeTarget::Windows,
-    )
-    .expect_err(
-        "Windows must reject unsupported confirm/choice dialogs before emitting undefined helpers",
-    );
-    assert!(
-        error
-            .message
-            .contains("dialog.choose is not yet supported by the native Windows backend")
-    );
-}
-
-#[test]
 fn portable_confirm_dialogs_dispatch_typed_callbacks_on_native_backends() {
     let source = r#"
 fn confirmed() -> void {
@@ -69600,6 +69572,26 @@ app Screen(onStart: started)
             .contains("(const char *[]){\"Alpha\", \"Beta\", \"Gamma\"}, INT64_C(3), \"Cancel\"")
     );
     assert!(!android.contains("gtk_message_dialog_new"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("portable choice dialog should lower on Windows");
+    assert!(windows.contains("static void flux__dialog_choose("));
+    assert!(windows.contains("L\"FluxChooseDialog\""));
+    assert!(windows.contains("L\"LISTBOX\""));
+    assert!(windows.contains("LB_ADDSTRING"));
+    assert!(windows.contains("LB_GETCURSEL"));
+    assert!(windows.contains("callback(selected)"));
+    assert!(
+        windows
+            .contains("(const char *[]){\"Alpha\", \"Beta\", \"Gamma\"}, INT64_C(3), \"Cancel\"")
+    );
+    assert!(windows.contains("(const char *[]){\"Archive\", \"Delete\"}, INT64_C(2), \"Later\""));
+    assert!(!windows.contains("gtk_message_dialog_new"));
 
     let unused = r#"
 fn chosen(index: i64) -> void {
