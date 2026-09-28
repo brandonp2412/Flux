@@ -73397,6 +73397,40 @@ fn main() -> i64 { 0 }
 }
 
 #[test]
+fn portable_root_grid_scroll_lowers_natively_on_linux_and_android() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    grid scroll: true
+    Text first at 1,1
+        text: "First"
+    Text second at 2,1
+        text: "Second"
+}
+app Screen
+"#;
+
+    check_source(source).expect("portable root-grid scrolling should typecheck");
+    let linux = compile_to_c(source).expect("root-grid scrolling should lower on Linux");
+    assert!(linux.contains("gtk_scrolled_window_new"));
+    assert!(linux.contains("gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroller), grid)"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("scrolling app should analyze for Android");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("root-grid scrolling should lower on Android");
+    assert!(android.contains("android/widget/ScrollView"));
+    assert!(android.contains("setFillViewport"));
+    assert!(android.contains("scroll_add_view, grid"));
+}
+
+#[test]
 fn composes_parameterized_views_through_typed_data_properties() {
     let source = r#"
 view Greeting(name: str, *, selectable: bool = false) {
