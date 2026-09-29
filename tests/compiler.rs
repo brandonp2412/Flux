@@ -71493,6 +71493,7 @@ view Detail {
     state masked: bool = true
     state limit: i64 = 24
     state keyboard: str = "email"
+    state validation: str = "error"
     grid columns: 1fr
     grid rows: auto auto
     TextInput input at 1,1
@@ -71502,6 +71503,7 @@ view Detail {
         password: masked
         maxLength: limit
         keyboardType: keyboard
+        validationState: validation
         submitOnEnter: true
         onChange: query, value => value
         onSubmit: query, value => value
@@ -71567,6 +71569,15 @@ app Screen
     ));
     assert!(windows.contains("close_context->view_identity == UINT32_C(1)"));
     assert!(windows.contains("flux__win_clear_input_scope(close_context->control_windows[0]);"));
+    assert!(windows.contains(
+        "flux__win_set_validation_state(context->control_windows[0], 0, flux__ui_view_1_state_validation);"
+    ));
+    assert!(windows.contains(
+        "secondary_paint_context->view_identity == UINT32_C(1) && control == (secondary_paint_context->control_windows != NULL ? secondary_paint_context->control_windows[0] : NULL)"
+    ));
+    assert!(windows.contains(
+        "secondary_paint_context->validation_active != NULL && secondary_paint_context->validation_active[0]"
+    ));
     assert!(windows.contains(
         "flux__win_set_text_if_changed(context->control_windows[1], flux__ui_view_1_state_query);"
     ));

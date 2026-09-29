@@ -16813,6 +16813,8 @@ fn emit_windows_native_application(
                                 | "maxLength"
                                 | "keyboard_type"
                                 | "keyboardType"
+                                | "validation_state"
+                                | "validationState"
                                 | "multiline"
                                 | "submit_on_enter"
                                 | "submitOnEnter"
@@ -16853,7 +16855,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit, placeholder/readOnly/keyboardType, checked/selected, visible, enabled, and their supported activation/change action",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit, placeholder/readOnly/keyboardType/validationState, checked/selected, visible, enabled, and their supported activation/change action",
                     ));
                 }
                 if data_property {
@@ -16989,7 +16991,20 @@ fn emit_windows_native_application(
     });
     let uses_validation_states = view.elements.iter().any(|element| {
         element.kind == "TextInput" && view_property(element, "validation_state").is_some()
+    }) || secondary_window_views.iter().any(|(_, secondary_view)| {
+        secondary_view.elements.iter().any(|element| {
+            element.kind == "TextInput" && view_property(element, "validation_state").is_some()
+        })
     });
+    let windows_validation_slots = std::iter::once(view.elements.len())
+        .chain(
+            secondary_window_views
+                .iter()
+                .map(|(_, secondary_view)| secondary_view.elements.len()),
+        )
+        .max()
+        .unwrap_or(0)
+        .max(1);
     let uses_text_drag_drop = view.elements.iter().any(|element| {
         view_property(element, "drag_text").is_some() || view_property(element, "on_drop").is_some()
     });
@@ -19175,7 +19190,7 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
     out.push_str("static void flux__win_set_text_if_changed(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; wchar_t *wide = flux__windows_utf8_to_wide(text); if (wide == NULL) return; int length = GetWindowTextLengthW(control); if (length < 0) { free(wide); return; } wchar_t *current = (wchar_t *)malloc(((size_t)length + 1) * sizeof(wchar_t)); if (current == NULL) { free(wide); return; } if (GetWindowTextW(control, current, length + 1) >= 0 && wcscmp(current, wide) != 0) { bool previous = flux__win_is_refreshing(); flux__win_set_refreshing(true); SetWindowTextW(control, wide); flux__win_set_refreshing(previous); } free(current); free(wide); }\n");
     out.push_str("static void flux__win_set_cue(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0); if (length <= 0) return; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return; if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, length) > 0) SendMessageW(control, EM_SETCUEBANNER, TRUE, (LPARAM)wide); free(wide); }\n");
     if uses_validation_states {
-        out.push_str(&format!("static bool flux__windows_validation_storage(FluxWindowsWindowContext *context, size_t slot, COLORREF **color, bool **active) {{ if (context == NULL || color == NULL || active == NULL || slot >= {}) return false; if (context->validation_colors == NULL) {{ context->validation_colors = (COLORREF *)calloc({}, sizeof(COLORREF)); context->validation_active = (bool *)calloc({}, sizeof(bool)); if (context->validation_colors == NULL || context->validation_active == NULL) abort(); context->validation_count = {}; }} *color = &context->validation_colors[slot]; *active = &context->validation_active[slot]; return true; }}\n", view.elements.len(), view.elements.len().max(1), view.elements.len().max(1), view.elements.len()));
+        out.push_str(&format!("static bool flux__windows_validation_storage(FluxWindowsWindowContext *context, size_t slot, COLORREF **color, bool **active) {{ if (context == NULL || color == NULL || active == NULL || slot >= {windows_validation_slots}) return false; if (context->validation_colors == NULL) {{ context->validation_colors = (COLORREF *)calloc({windows_validation_slots}, sizeof(COLORREF)); context->validation_active = (bool *)calloc({windows_validation_slots}, sizeof(bool)); if (context->validation_colors == NULL || context->validation_active == NULL) abort(); context->validation_count = {windows_validation_slots}; }} *color = &context->validation_colors[slot]; *active = &context->validation_active[slot]; return true; }}\n"));
         out.push_str("static void flux__win_set_validation_state(HWND control, size_t slot, const char *value) { COLORREF *color = NULL; bool *active = NULL; if (control == NULL || !flux__windows_validation_storage(flux__windows_active_context, slot, &color, &active)) return; const char *state = flux__ui_validation_state(value); bool next_active = strcmp(state, \"normal\") != 0; COLORREF next_color = 0; if (strcmp(state, \"error\") == 0) next_color = RGB(207, 34, 46); else if (strcmp(state, \"success\") == 0) next_color = RGB(26, 127, 55); else if (strcmp(state, \"warning\") == 0) next_color = RGB(154, 103, 0); if (*active == next_active && (!next_active || *color == next_color)) return; *active = next_active; *color = next_color; InvalidateRect(control, NULL, TRUE); }\n");
     }
     let uses_dynamic_colors = view.elements.iter().any(|element| {
@@ -20422,7 +20437,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
         out.push_str(" }\n");
         out.push_str(&format!(
-            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0;{secondary_subclass_release} flux__windows_release_image_bitmaps(context); free(context->control_windows); context->control_windows = NULL; }}\n"
+            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0;{secondary_subclass_release} flux__windows_release_validation_state(context); flux__windows_release_image_bitmaps(context); free(context->control_windows); context->control_windows = NULL; }}\n"
         ));
         secondary_save_cases.push_str(&format!(
             " case UINT32_C({view_identity}): flux__windows_save_view_{view_identity}_state(context); return;"
@@ -21757,6 +21772,17 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         "int64_t flux__win_view_{view_identity}_max_length_{index} = {value}; if (flux__win_view_{view_identity}_max_length_{index} < 0 || flux__win_view_{view_identity}_max_length_{index} > INT32_MAX) {{ fputs(\"Flux runtime error: TextInput.maxLength must be between 0 and 2147483647\\n\", stderr); abort(); }} SendMessageA(context->control_windows[{index}], EM_LIMITTEXT, (WPARAM)flux__win_view_{view_identity}_max_length_{index}, 0);\n"
                     ));
                 }
+                if let Some(property) = view_property(element, "validation_state") {
+                    let value = ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                    out.push_str(&format!(
+                        "flux__win_set_validation_state(context->control_windows[{index}], {index}, {value});\n"
+                    ));
+                }
             }
             let checked_property_name = match element.kind.as_str() {
                 "Toggle" => Some("checked"),
@@ -21792,7 +21818,17 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             "static bool flux__win_handle_root_view_context_menu(HWND control, LPARAM lparam);\n",
         );
     }
-    out.push_str(&format!("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ switch (message) {{ case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT: {{ HDC dc = (HDC)wparam; HWND control = (HWND)lparam; FluxWindowsWindowContext *paint_context = flux__windows_context_for(hwnd); if (paint_context == NULL || paint_context->view_identity != UINT32_C({root_view_identity})) break;\n"));
+    let mut secondary_validation_paint = String::new();
+    for (view_identity, secondary_view) in &secondary_window_views {
+        for (index, element) in secondary_view.elements.iter().enumerate() {
+            if element.kind == "TextInput" && view_property(element, "validation_state").is_some() {
+                secondary_validation_paint.push_str(&format!(
+                    "if (secondary_paint_context != NULL && secondary_paint_context->view_identity == UINT32_C({view_identity}) && control == (secondary_paint_context->control_windows != NULL ? secondary_paint_context->control_windows[{index}] : NULL)) {{ if (secondary_paint_context->validation_active != NULL && secondary_paint_context->validation_active[{index}]) SetTextColor(dc, secondary_paint_context->validation_colors[{index}]); else SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT)); return (LRESULT)GetSysColorBrush(COLOR_WINDOW); }}\n"
+                ));
+            }
+        }
+    }
+    out.push_str(&format!("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ switch (message) {{ case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT: {{ HDC dc = (HDC)wparam; HWND control = (HWND)lparam; FluxWindowsWindowContext *secondary_paint_context = flux__windows_context_for(hwnd); {secondary_validation_paint} FluxWindowsWindowContext *paint_context = flux__windows_context_for(hwnd); if (paint_context == NULL || paint_context->view_identity != UINT32_C({root_view_identity})) break;\n"));
     for (index, element) in view.elements.iter().enumerate().filter(|(_, element)| {
         let presentation_text_color = element.kind != "Image"
             && view_property(element, "status")
