@@ -1587,19 +1587,44 @@ fn emit_c_for_target_with_source_metadata_impl(
     }
     let mut application_body = String::new();
     let uses_window_open = generated_body.contains("flux__window_open(")
-        || generated_body.contains("flux__window_open_view(");
+        || generated_body.contains("flux__window_open_view(")
+        || generated_body.contains("flux__window_open_view_");
     let window_open_view_identities = program
         .views
         .iter()
         .enumerate()
         .filter_map(|(view_identity, _)| {
-            generated_body
-                .contains(&format!(
-                    "flux__window_open_view(UINT32_C({view_identity}))"
-                ))
-                .then_some(view_identity)
+            (generated_body.contains(&format!(
+                "flux__window_open_view(UINT32_C({view_identity}))"
+            )) || generated_body.contains(&format!("flux__window_open_view_{view_identity}(")))
+            .then_some(view_identity)
         })
         .collect::<Vec<_>>();
+    let window_open_view_prototypes = window_open_view_identities
+        .iter()
+        .filter_map(|view_identity| {
+            let view = program.views.get(*view_identity)?;
+            if view.params.is_empty() {
+                return None;
+            }
+            let params = view
+                .params
+                .iter()
+                .map(|param| {
+                    format!(
+                        "{} {}",
+                        c_type(&param.ty, signatures),
+                        local_c_name(&format!("route_arg_{}", param.name))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(format!(
+                "static bool flux__window_open_view_{view_identity}({params});
+"
+            ))
+        })
+        .collect::<String>();
     let window_open_view_cache_key = window_open_view_identities
         .iter()
         .map(usize::to_string)
@@ -2126,6 +2151,7 @@ fn emit_c_for_target_with_source_metadata_impl(
         &interface_pack_facts,
         &runtime_usage,
     )?;
+    out.push_str(&window_open_view_prototypes);
     out.push_str(&generated_body);
     if let Some(application) = &program.application {
         emit_source_line(&mut out, application.span, source_paths);
@@ -2789,7 +2815,8 @@ fn emit_runtime_prelude(
     let uses_windows_secure_storage =
         uses_windows_secure_store || uses_windows_secure_read || uses_windows_secure_remove;
     let uses_window_open = runtime_usage.contains("flux__window_open(")
-        || runtime_usage.contains("flux__window_open_view(");
+        || runtime_usage.contains("flux__window_open_view(")
+        || runtime_usage.contains("flux__window_open_view_");
     let uses_window_close = runtime_usage.contains("flux__window_close(");
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
@@ -2817,7 +2844,7 @@ fn emit_runtime_prelude(
         } else {
             ""
         };
-        out.push_str(&format!("enum {{ FLUX_WINDOWS_MAX_WINDOWS = 16 }}; typedef struct {{ HWND hwnd; HWND tooltip_window; bool confirm_done; bool confirm_accept; bool choose_done; int64_t choose_selection; HWND choose_list; bool primary; uint32_t view_identity; int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi; int scroll_y; int wheel_delta_remainder; WNDPROC runtime_previous_proc; bool refreshing; void *scalar_view_state; char **string_view_state; size_t string_view_state_count; HWND *control_windows; wchar_t **tooltip_texts; size_t tooltip_text_count; COLORREF *validation_colors; bool *validation_active; size_t validation_count; HBITMAP *image_bitmaps; size_t image_bitmap_count; HBRUSH *style_brushes; COLORREF *style_colors; bool *style_has_colors; size_t style_count; HFONT *text_fonts; char **text_font_families; int64_t *text_font_sizes; bool *text_font_bold; bool *text_font_italic; bool *text_font_underline; bool *text_font_strikethrough; UINT *text_font_dpis; bool *text_font_initialized; size_t text_font_count; HFONT *button_fonts; int64_t *button_font_sizes; UINT *button_font_dpis; size_t button_font_count; void *text_layout_states; size_t text_layout_count; COLORREF *border_colors; int64_t *border_widths; int *border_styles; size_t border_count; WNDPROC *control_subclass_originals; size_t control_subclass_original_count; void *control_gesture_state; void *drop_targets; size_t drop_target_count;{menu_context_fields}{tray_context_fields} }} FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {{0}}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n"));
+        out.push_str(&format!("enum {{ FLUX_WINDOWS_MAX_WINDOWS = 16 }}; typedef struct {{ HWND hwnd; HWND tooltip_window; bool confirm_done; bool confirm_accept; bool choose_done; int64_t choose_selection; HWND choose_list; bool primary; uint32_t view_identity; int64_t logical_width; int64_t logical_height; int64_t display_scale; UINT dpi; int scroll_y; int wheel_delta_remainder; WNDPROC runtime_previous_proc; bool refreshing; void *view_param_state; char **string_view_params; size_t string_view_param_count; void *scalar_view_state; char **string_view_state; size_t string_view_state_count; HWND *control_windows; wchar_t **tooltip_texts; size_t tooltip_text_count; COLORREF *validation_colors; bool *validation_active; size_t validation_count; HBITMAP *image_bitmaps; size_t image_bitmap_count; HBRUSH *style_brushes; COLORREF *style_colors; bool *style_has_colors; size_t style_count; HFONT *text_fonts; char **text_font_families; int64_t *text_font_sizes; bool *text_font_bold; bool *text_font_italic; bool *text_font_underline; bool *text_font_strikethrough; UINT *text_font_dpis; bool *text_font_initialized; size_t text_font_count; HFONT *button_fonts; int64_t *button_font_sizes; UINT *button_font_dpis; size_t button_font_count; void *text_layout_states; size_t text_layout_count; COLORREF *border_colors; int64_t *border_widths; int *border_styles; size_t border_count; WNDPROC *control_subclass_originals; size_t control_subclass_original_count; void *control_gesture_state; void *drop_targets; size_t drop_target_count;{menu_context_fields}{tray_context_fields} }} FluxWindowsWindowContext; static FluxWindowsWindowContext flux__windows_contexts[FLUX_WINDOWS_MAX_WINDOWS] = {{0}}; static FluxWindowsWindowContext *flux__windows_active_context = NULL; static HWND flux__windows_active_window = NULL;\n"));
         out.push_str("static void flux__windows_restore_metrics(HWND hwnd); static void flux__windows_save_view_state(FluxWindowsWindowContext *context); static void flux__windows_restore_view_state(FluxWindowsWindowContext *context, HWND hwnd); static void flux__windows_release_view_state(FluxWindowsWindowContext *context); static void flux__windows_save_scalar_view_state(FluxWindowsWindowContext *context); static void flux__windows_restore_scalar_view_state(FluxWindowsWindowContext *context); static void flux__windows_release_scalar_view_state(FluxWindowsWindowContext *context); static void flux__windows_save_string_view_state(FluxWindowsWindowContext *context); static void flux__windows_restore_string_view_state(FluxWindowsWindowContext *context); static void flux__windows_release_string_view_state(FluxWindowsWindowContext *context); static void flux__windows_save_control_windows(FluxWindowsWindowContext *context); static void flux__windows_restore_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_control_windows(FluxWindowsWindowContext *context); static void flux__windows_release_tooltip_texts(FluxWindowsWindowContext *context); static void flux__windows_release_validation_state(FluxWindowsWindowContext *context); static void flux__windows_release_image_bitmaps(FluxWindowsWindowContext *context); static void flux__windows_release_style_state(FluxWindowsWindowContext *context); static void flux__windows_save_text_fonts(FluxWindowsWindowContext *context); static void flux__windows_restore_text_fonts(FluxWindowsWindowContext *context); static void flux__windows_release_text_fonts(FluxWindowsWindowContext *context); static void flux__windows_save_button_fonts(FluxWindowsWindowContext *context); static void flux__windows_restore_button_fonts(FluxWindowsWindowContext *context); static void flux__windows_release_button_fonts(FluxWindowsWindowContext *context); static void flux__windows_save_text_layouts(FluxWindowsWindowContext *context); static void flux__windows_restore_text_layouts(FluxWindowsWindowContext *context); static void flux__windows_release_text_layouts(FluxWindowsWindowContext *context); static void flux__windows_save_borders(FluxWindowsWindowContext *context); static void flux__windows_restore_borders(FluxWindowsWindowContext *context); static void flux__windows_release_borders(FluxWindowsWindowContext *context); static void flux__windows_save_control_subclasses(FluxWindowsWindowContext *context); static void flux__windows_restore_control_subclasses(FluxWindowsWindowContext *context); static void flux__windows_release_control_subclasses(FluxWindowsWindowContext *context); static void flux__windows_save_control_gestures(FluxWindowsWindowContext *context); static void flux__windows_restore_control_gestures(FluxWindowsWindowContext *context); static void flux__windows_release_control_gestures(FluxWindowsWindowContext *context); static void flux__windows_release_drop_targets(FluxWindowsWindowContext *context);\n");
         if uses_window_open {
             out.push_str("static bool flux__window_open(void); static bool flux__window_open_view(uint32_t view_identity);\n");
@@ -16734,11 +16761,16 @@ fn emit_windows_native_application(
             .iter()
             .any(|(_, secondary_view)| secondary_view.grid.scroll == Some(true));
     for (view_identity, secondary_view) in &secondary_window_views {
-        if !secondary_view.params.is_empty() {
-            return Err(diag(
-                secondary_view.name_span,
-                "Windows secondary window views with parameters are not supported yet",
-            ));
+        for param in &secondary_view.params {
+            if !matches!(
+                signatures.canonical_type(&param.ty),
+                Type::Bool | Type::I64 | Type::Str
+            ) {
+                return Err(diag(
+                    param.type_span,
+                    "Windows parameterized secondary routes currently support bool, i64, and str view parameters",
+                ));
+            }
         }
         for derived in &secondary_view.derived {
             if !matches!(
@@ -18705,6 +18737,19 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
         }
     }
     for (view_identity, secondary_view) in &secondary_window_views {
+        for param in &secondary_view.params {
+            let param_name = ui_param_c_name_for_view_identity(&param.name, *view_identity);
+            let initial = match signatures.canonical_type(&param.ty) {
+                Type::Bool => "false",
+                Type::I64 => "INT64_C(0)",
+                Type::Str => "\"\"",
+                _ => unreachable!("secondary Windows parameter type was validated above"),
+            };
+            out.push_str(&format!(
+                "static {} {param_name} = {initial};\n",
+                c_type(&param.ty, signatures)
+            ));
+        }
         for state in &secondary_view.states {
             let state_name = ui_state_c_name_for_view_identity(&state.name, Some(*view_identity));
             match signatures.canonical_type(&state.ty) {
@@ -20630,6 +20675,16 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     let mut secondary_restore_cases = String::new();
     let mut secondary_release_cases = String::new();
     for (view_identity, secondary_view) in &secondary_window_views {
+        let secondary_scalar_params = secondary_view
+            .params
+            .iter()
+            .filter(|param| matches!(signatures.canonical_type(&param.ty), Type::Bool | Type::I64))
+            .collect::<Vec<_>>();
+        let secondary_string_params = secondary_view
+            .params
+            .iter()
+            .filter(|param| signatures.canonical_type(&param.ty) == Type::Str)
+            .collect::<Vec<_>>();
         let secondary_scalar_states = secondary_view
             .states
             .iter()
@@ -20814,6 +20869,90 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 " free(context->control_gesture_state); context->control_gesture_state = NULL;",
             );
         }
+        let param_type = format!("FluxWindowsView{view_identity}ParamState");
+        if !secondary_scalar_params.is_empty() {
+            out.push_str("typedef struct {");
+            for (index, param) in secondary_scalar_params.iter().enumerate() {
+                let field_type = match signatures.canonical_type(&param.ty) {
+                    Type::Bool => "bool",
+                    Type::I64 => "int64_t",
+                    _ => unreachable!(),
+                };
+                out.push_str(&format!(" {field_type} value_{index};"));
+            }
+            out.push_str(&format!(" }} {param_type};\n"));
+        }
+        if !secondary_view.params.is_empty() {
+            let param_arguments = secondary_view
+                .params
+                .iter()
+                .map(|param| {
+                    format!(
+                        "{} {}",
+                        c_type(&param.ty, signatures),
+                        local_c_name(&format!("route_arg_{}", param.name))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!(
+                "static bool flux__windows_init_view_{view_identity}_params(FluxWindowsWindowContext *context, {param_arguments}) {{ if (context == NULL) return false;"
+            ));
+            if !secondary_scalar_params.is_empty() {
+                out.push_str(&format!(
+                    " context->view_param_state = calloc(1, sizeof({param_type})); if (context->view_param_state == NULL) return false; {param_type} *param_state = ({param_type} *)context->view_param_state;"
+                ));
+                for (index, param) in secondary_scalar_params.iter().enumerate() {
+                    out.push_str(&format!(
+                        " param_state->value_{index} = {};",
+                        local_c_name(&format!("route_arg_{}", param.name))
+                    ));
+                }
+            }
+            if !secondary_string_params.is_empty() {
+                out.push_str(&format!(
+                    " context->string_view_params = (char **)calloc({}, sizeof(char *)); if (context->string_view_params == NULL) return false; context->string_view_param_count = {};",
+                    secondary_string_params.len(),
+                    secondary_string_params.len()
+                ));
+                for (index, param) in secondary_string_params.iter().enumerate() {
+                    let arg_name = local_c_name(&format!("route_arg_{}", param.name));
+                    out.push_str(&format!(
+                        " const char *param_string_{index} = {arg_name} != NULL ? {arg_name} : \"\"; size_t param_string_length_{index} = 0; if (!flux__win_bounded_length(param_string_{index}, 65536, &param_string_length_{index})) return false; char *param_string_copy_{index} = (char *)malloc(param_string_length_{index} + 1); if (param_string_copy_{index} == NULL) return false; memcpy(param_string_copy_{index}, param_string_{index}, param_string_length_{index} + 1); context->string_view_params[{index}] = param_string_copy_{index};"
+                    ));
+                }
+            }
+            out.push_str(" return true; }\n");
+            out.push_str(&format!(
+                "static void flux__windows_restore_view_{view_identity}_params(FluxWindowsWindowContext *context) {{"
+            ));
+            if !secondary_scalar_params.is_empty() {
+                out.push_str(&format!(
+                    " {param_type} *param_state = context != NULL ? ({param_type} *)context->view_param_state : NULL;"
+                ));
+                for (index, param) in secondary_scalar_params.iter().enumerate() {
+                    let param_name = ui_param_c_name_for_view_identity(&param.name, *view_identity);
+                    let fallback = match signatures.canonical_type(&param.ty) {
+                        Type::Bool => "false",
+                        Type::I64 => "INT64_C(0)",
+                        _ => unreachable!(),
+                    };
+                    out.push_str(&format!(
+                        " {param_name} = param_state != NULL ? param_state->value_{index} : {fallback};"
+                    ));
+                }
+            }
+            for (index, param) in secondary_string_params.iter().enumerate() {
+                let param_name = ui_param_c_name_for_view_identity(&param.name, *view_identity);
+                out.push_str(&format!(
+                    " {param_name} = context != NULL && context->string_view_params != NULL && context->string_view_params[{index}] != NULL ? context->string_view_params[{index}] : \"\";"
+                ));
+            }
+            out.push_str(" }\n");
+            out.push_str(&format!(
+                "static void flux__windows_release_view_{view_identity}_params(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->view_param_state); context->view_param_state = NULL; if (context->string_view_params != NULL) for (size_t index = 0; index < context->string_view_param_count; ++index) free(context->string_view_params[index]); free(context->string_view_params); context->string_view_params = NULL; context->string_view_param_count = 0; }}\n"
+            ));
+        }
         let scalar_type = format!("FluxWindowsView{view_identity}ScalarState");
         if !secondary_scalar_states.is_empty() {
             out.push_str("typedef struct {");
@@ -20856,8 +20995,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             }
         }
         out.push_str(" }\n");
+        let restore_params = if secondary_view.params.is_empty() {
+            String::new()
+        } else {
+            format!(" flux__windows_restore_view_{view_identity}_params(context);")
+        };
         out.push_str(&format!(
-            "static void flux__windows_restore_view_{view_identity}_state(FluxWindowsWindowContext *context) {{"
+            "static void flux__windows_restore_view_{view_identity}_state(FluxWindowsWindowContext *context) {{{restore_params}"
         ));
         if !secondary_scalar_states.is_empty() {
             out.push_str(&format!(
@@ -20898,8 +21042,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             ));
         }
         out.push_str(" }\n");
+        let release_params = if secondary_view.params.is_empty() {
+            String::new()
+        } else {
+            format!(" flux__windows_release_view_{view_identity}_params(context);")
+        };
         out.push_str(&format!(
-            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0;{secondary_subclass_release} flux__windows_release_drop_targets(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_image_bitmaps(context); free(context->control_windows); context->control_windows = NULL; }}\n"
+            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0;{release_params}{secondary_subclass_release} flux__windows_release_drop_targets(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_image_bitmaps(context); free(context->control_windows); context->control_windows = NULL; }}\n"
         ));
         secondary_save_cases.push_str(&format!(
             " case UINT32_C({view_identity}): flux__windows_save_view_{view_identity}_state(context); return;"
@@ -24215,6 +24364,44 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             .unwrap_or_default();
         out.push_str(&format!("static void flux__win_autofocus_view(uint32_t view_identity) {{ switch (view_identity) {{{root_autofocus_dispatch}{secondary_autofocus_dispatch} default: return; }} }}\n"));
         out.push_str("static bool flux__win_open_view(uint32_t view_identity) { HWND previous = flux__windows_active_window; HINSTANCE instance = GetModuleHandleW(NULL); if (instance == NULL) return false; HWND window = flux__win_create_view_window(instance, L\"FluxNativeWindow\", false, view_identity); if (window == NULL) { if (previous != NULL && IsWindow(previous)) { flux__windows_activate_context(previous); flux__win_refresh(); } return false; } flux__windows_activate_context(window); flux__win_refresh(); ShowWindow(window, SW_SHOW); UpdateWindow(window); flux__win_autofocus_view(view_identity); if (previous != NULL && IsWindow(previous)) { flux__windows_activate_context(previous); flux__win_refresh(); } return true; }\nstatic bool flux__window_open_view(uint32_t view_identity) { return flux__win_open_view(view_identity); }\nstatic bool flux__window_open(void) { uint32_t view_identity = flux__windows_active_context != NULL ? flux__windows_active_context->view_identity : flux__win_root_view_identity; return flux__window_open_view(view_identity); }\n");
+        for (view_identity, secondary_view) in &secondary_window_views {
+            if secondary_view.params.is_empty() {
+                continue;
+            }
+            let param_arguments = secondary_view
+                .params
+                .iter()
+                .map(|param| {
+                    format!(
+                        "{} {}",
+                        c_type(&param.ty, signatures),
+                        local_c_name(&format!("route_arg_{}", param.name))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let call_arguments = secondary_view
+                .params
+                .iter()
+                .map(|param| local_c_name(&format!("route_arg_{}", param.name)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut stage_params = String::new();
+            for param in &secondary_view.params {
+                let param_name = ui_param_c_name_for_view_identity(&param.name, *view_identity);
+                let arg_name = local_c_name(&format!("route_arg_{}", param.name));
+                if signatures.canonical_type(&param.ty) == Type::Str {
+                    stage_params.push_str(&format!(
+                        " {param_name} = {arg_name} != NULL ? {arg_name} : \"\";"
+                    ));
+                } else {
+                    stage_params.push_str(&format!(" {param_name} = {arg_name};"));
+                }
+            }
+            out.push_str(&format!(
+                "static bool flux__window_open_view_{view_identity}({param_arguments}) {{ HWND previous = flux__windows_active_window; HINSTANCE instance = GetModuleHandleW(NULL); if (instance == NULL) return false;{stage_params} HWND window = flux__win_create_view_window(instance, L\"FluxNativeWindow\", false, UINT32_C({view_identity})); if (window == NULL) {{ if (previous != NULL && IsWindow(previous)) {{ FluxWindowsWindowContext *previous_context = flux__windows_context_for(previous); flux__windows_restore_view_state(previous_context, previous); flux__win_refresh(); }} return false; }} FluxWindowsWindowContext *context = flux__windows_context_for(window); if (context == NULL || !flux__windows_init_view_{view_identity}_params(context, {call_arguments})) {{ if (IsWindow(window)) (void)flux__win_create_view_window_failure(window, false); if (previous != NULL && IsWindow(previous)) {{ FluxWindowsWindowContext *previous_context = flux__windows_context_for(previous); flux__windows_restore_view_state(previous_context, previous); flux__win_refresh(); }} return false; }} flux__windows_activate_context(window); flux__win_refresh(); ShowWindow(window, SW_SHOW); UpdateWindow(window); flux__win_autofocus_view(UINT32_C({view_identity})); if (previous != NULL && IsWindow(previous)) {{ flux__windows_activate_context(previous); flux__win_refresh(); }} return true; }}\n"
+            ));
+        }
     }
     out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness(); flux__win_set_application_id({});{accessibility_init}{tooltip_init}{input_scope_init}{ole_init}{rich_text_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleW(NULL); WNDCLASSW wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = L\"FluxNativeWindow\"; wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512)); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1; HWND flux__win_primary_window = flux__win_create_view_window(instance, wc.lpszClassName, true, flux__win_root_view_identity); if (flux__win_primary_window == NULL) return 1;\n", c_string(&application_id)));
     if on_restore_state.is_some() {
@@ -30362,6 +30549,10 @@ fn ui_state_c_name(name: &str) -> String {
     format!("flux__ui_state_{name}")
 }
 
+fn ui_param_c_name_for_view_identity(name: &str, view_identity: usize) -> String {
+    format!("flux__ui_view_{view_identity}_param_{name}")
+}
+
 fn ui_state_c_name_for_view_identity(name: &str, view_identity: Option<usize>) -> String {
     view_identity
         .map(|view_identity| format!("flux__ui_view_{view_identity}_state_{name}"))
@@ -30972,6 +31163,15 @@ fn ui_expr_c_for_view_identity(
             }
             if let Some(value) = typecheck::semantic_ui_i64_token(name) {
                 return Ok(format!("INT64_C({value})"));
+            }
+            if view.params.iter().any(|param| param.name == *name) {
+                let Some(view_identity) = view_identity else {
+                    return Err(diag(
+                        expr.span,
+                        "bootstrap root UI expressions cannot reference view parameters",
+                    ));
+                };
+                return Ok(ui_param_c_name_for_view_identity(name, view_identity));
             }
             if view.states.iter().any(|state| state.name == *name) {
                 return Ok(ui_state_c_name_for_view_identity(name, view_identity));
@@ -58570,20 +58770,20 @@ fn emit_qualified_call(
         return Ok((format!("{helper}({})", callback.code), Vec::new(), None));
     }
     if namespace == "window" {
-        if !named_args.is_empty() || !matches!(name, "open" | "close") {
+        if !matches!(name, "open" | "close") {
             return Err(diag(span, "invalid window call reached code generation"));
         }
         if name == "close" {
-            if !args.is_empty() {
+            if !args.is_empty() || !named_args.is_empty() {
                 return Err(diag(span, "invalid window call reached code generation"));
             }
             return Ok(("flux__window_close()".to_string(), vec![Type::Bool], None));
         }
         if args.is_empty() {
+            if !named_args.is_empty() {
+                return Err(diag(span, "invalid window call reached code generation"));
+            }
             return Ok(("flux__window_open()".to_string(), vec![Type::Bool], None));
-        }
-        if args.len() != 1 {
-            return Err(diag(span, "invalid window call reached code generation"));
         }
         let ExprKind::Var(route_name) = &args[0].kind else {
             return Err(diag(
@@ -58594,8 +58794,58 @@ fn emit_qualified_call(
         let Some(route) = signatures.route(route_name) else {
             return Err(diag(span, "unknown window route reached code generation"));
         };
+        if route.param_details.is_empty() {
+            if args.len() != 1 || !named_args.is_empty() {
+                return Err(diag(span, "invalid window call reached code generation"));
+            }
+            return Ok((
+                format!("flux__window_open_view(UINT32_C({}))", route.view_identity),
+                vec![Type::Bool],
+                None,
+            ));
+        }
+
+        let route_args = &args[1..];
+        let mut rendered = Vec::with_capacity(route.param_details.len());
+        let mut positional_index = 0usize;
+        for param in &route.param_details {
+            if !param.named_only && positional_index < route_args.len() {
+                rendered.push(emit_expr_for_expected(
+                    &route_args[positional_index],
+                    &param.ty,
+                    env,
+                    signatures,
+                )?);
+                positional_index += 1;
+                continue;
+            }
+            if let Some(named) = named_args.iter().find(|arg| arg.name == param.name) {
+                rendered.push(emit_expr_for_expected(
+                    &named.value,
+                    &param.ty,
+                    env,
+                    signatures,
+                )?);
+                continue;
+            }
+            if let Some(default) = &param.default {
+                rendered.push(constant_c_value(default));
+                continue;
+            }
+            return Err(diag(
+                param.span,
+                &format!(
+                    "missing route parameter '{}' reached code generation after type checking",
+                    param.name
+                ),
+            ));
+        }
         return Ok((
-            format!("flux__window_open_view(UINT32_C({}))", route.view_identity),
+            format!(
+                "flux__window_open_view_{}({})",
+                route.view_identity,
+                rendered.join(", ")
+            ),
             vec![Type::Bool],
             None,
         ));
