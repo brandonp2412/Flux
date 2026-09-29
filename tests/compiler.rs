@@ -72166,6 +72166,124 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_composed_hover_interaction() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+fn gestureAction() -> void {
+    print("gesture")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state hovering: bool = false
+    state query: str = "Ready"
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text hoverOnly at 1,1
+        text: "Hover"
+        onHover: hovering => true
+        onLeave: hovering => false
+    Text composed at 2,1
+        text: "Compose"
+        onHover: gestureAction
+        onLeave: gestureAction
+        onDoubleTap: gestureAction
+        onLongPress: gestureAction
+    TextInput input at 3,1
+        text: query
+        submitOnEnter: true
+        onSubmit: query, value => value
+        onHover: gestureAction
+        onLeave: gestureAction
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary hover source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary Windows hover should lower through composed subclasses");
+
+    assert!(windows.contains(
+        "static LRESULT CALLBACK flux__win_hover_proc_view_1_0(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)"
+    ));
+    assert!(windows.contains(
+        "static LRESULT CALLBACK flux__win_long_press_proc_view_1_1(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)"
+    ));
+    assert!(!windows.contains("flux__win_hover_proc_view_1_1"));
+    assert!(windows.contains(
+        "static LRESULT CALLBACK flux__win_input_proc_view_1_2(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)"
+    ));
+    assert!(!windows.contains("flux__win_hover_proc_view_1_2"));
+    assert!(windows.contains("bool hovering[3]"));
+    assert!(
+        windows
+            .contains("TRACKMOUSEEVENT tracking = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0 }")
+    );
+    assert!(windows.contains("gesture->hovering[0] = true"));
+    assert!(windows.contains("gesture->hovering[0] = false"));
+    assert!(windows.contains("flux__ui_view_1_state_hovering = true; flux__win_refresh();"));
+    assert!(windows.contains("flux__ui_view_1_state_hovering = false; flux__win_refresh();"));
+    assert!(windows.contains("GWLP_WNDPROC, (LONG_PTR)flux__win_hover_proc_view_1_0"));
+    assert!(windows.contains("GWLP_WNDPROC, (LONG_PTR)flux__win_long_press_proc_view_1_1"));
+    assert!(windows.contains("GWLP_WNDPROC, (LONG_PTR)flux__win_input_proc_view_1_2"));
+    assert!(windows.contains("WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOTIFY"));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-hover-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("secondary hover syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary hover C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary hover Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary hover Windows C failed syntax validation:
+{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_composed_double_tap_interaction() {
     let source = r#"
 fn openSecondary() -> void {

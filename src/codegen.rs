@@ -16887,6 +16887,10 @@ fn emit_windows_native_application(
                         property.name.as_str(),
                         "on_double_tap"
                             | "onDoubleTap"
+                            | "on_hover"
+                            | "onHover"
+                            | "on_leave"
+                            | "onLeave"
                             | "on_accessibility_action"
                             | "onAccessibilityAction"
                             | "on_long_press"
@@ -16905,7 +16909,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/tap/double-tap/long-press/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/tap/double-tap/long-press/hover/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -16958,7 +16962,14 @@ fn emit_windows_native_application(
                     ));
                 }
             }
-            if let Some(property) = view_property(element, "on_double_tap") {
+            for (property_name, source_name) in [
+                ("on_double_tap", "onDoubleTap"),
+                ("on_hover", "onHover"),
+                ("on_leave", "onLeave"),
+            ] {
+                let Some(property) = view_property(element, property_name) else {
+                    continue;
+                };
                 if property.transition.is_some() {
                     ui_expr_c_for_view_identity(
                         &property.value,
@@ -16969,7 +16980,9 @@ fn emit_windows_native_application(
                 } else if !matches!(property.value.kind, ExprKind::Var(_)) {
                     return Err(diag(
                         property.value.span,
-                        "Windows distinct secondary onDoubleTap requires a named fn() -> void callback or state transition",
+                        &format!(
+                            "Windows distinct secondary {source_name} requires a named fn() -> void callback or state transition"
+                        ),
                     ));
                 }
             }
@@ -20571,6 +20584,16 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     .then_some(index)
             })
             .collect::<Vec<_>>();
+        let secondary_hover_subclasses = secondary_view
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(index, element)| {
+                (view_property(element, "on_hover").is_some()
+                    || view_property(element, "on_leave").is_some())
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
         let secondary_subclass_indices = secondary_view
             .elements
             .iter()
@@ -20578,25 +20601,40 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             .filter_map(|(index, _)| {
                 (secondary_submit_subclasses.contains(&index)
                     || secondary_long_press_subclasses.contains(&index)
-                    || secondary_double_tap_subclasses.contains(&index))
+                    || secondary_double_tap_subclasses.contains(&index)
+                    || secondary_hover_subclasses.contains(&index))
                 .then_some(index)
             })
             .collect::<Vec<_>>();
         if !secondary_long_press_subclasses.is_empty()
             || !secondary_double_tap_subclasses.is_empty()
+            || !secondary_hover_subclasses.is_empty()
         {
             let slots = secondary_view.elements.len();
-            if secondary_double_tap_subclasses.is_empty() {
-                out.push_str(&format!(
-                    "typedef struct {{ bool armed[{slots}]; bool consumed[{slots}]; POINT start[{slots}]; }} FluxWindowsView{view_identity}GestureState;
-"
-                ));
-            } else {
-                out.push_str(&format!(
-                    "typedef struct {{ bool armed[{slots}]; bool consumed[{slots}]; POINT start[{slots}]; bool double_tap_armed[{slots}]; DWORD double_tap_time[{slots}]; POINT double_tap_start[{slots}]; }} FluxWindowsView{view_identity}GestureState;
-"
+            let mut gesture_fields = String::new();
+            if !secondary_long_press_subclasses.is_empty() {
+                gesture_fields.push_str(&format!(
+                    "bool armed[{slots}]; bool consumed[{slots}]; POINT start[{slots}];"
                 ));
             }
+            if !secondary_double_tap_subclasses.is_empty() {
+                if !gesture_fields.is_empty() {
+                    gesture_fields.push(' ');
+                }
+                gesture_fields.push_str(&format!(
+                    "bool double_tap_armed[{slots}]; DWORD double_tap_time[{slots}]; POINT double_tap_start[{slots}];"
+                ));
+            }
+            if !secondary_hover_subclasses.is_empty() {
+                if !gesture_fields.is_empty() {
+                    gesture_fields.push(' ');
+                }
+                gesture_fields.push_str(&format!("bool hovering[{slots}];"));
+            }
+            out.push_str(&format!(
+                "typedef struct {{ {gesture_fields} }} FluxWindowsView{view_identity}GestureState;
+"
+            ));
         }
         let mut secondary_subclass_release = String::new();
         for index in &secondary_subclass_indices {
@@ -20616,6 +20654,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
         if !secondary_long_press_subclasses.is_empty()
             || !secondary_double_tap_subclasses.is_empty()
+            || !secondary_hover_subclasses.is_empty()
         {
             secondary_subclass_release.push_str(
                 " free(context->control_gesture_state); context->control_gesture_state = NULL;",
@@ -22584,6 +22623,51 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 } else {
                     String::new()
                 };
+                let hover_handler = {
+                    let event_body =
+                        |action: &crate::ast::ViewProperty| -> Result<String, Diagnostic> {
+                            if let Some(transition) = &action.transition {
+                                let next = ui_expr_c_for_view_identity(
+                                    &action.value,
+                                    secondary_view,
+                                    signatures,
+                                    Some(*view_identity),
+                                )?;
+                                Ok(format!(
+                                    "{} = {next}; flux__win_refresh();",
+                                    ui_state_c_name_for_view_identity(
+                                        &transition.state,
+                                        Some(*view_identity)
+                                    )
+                                ))
+                            } else {
+                                let ExprKind::Var(function) = &action.value.kind else {
+                                    unreachable!(
+                                        "secondary hover callback shape was validated before emission"
+                                    );
+                                };
+                                Ok(format!(
+                                    "{}(); flux__win_refresh();",
+                                    function_c_name(function)
+                                ))
+                            }
+                        };
+                    let hover_body = match view_property(element, "on_hover") {
+                        Some(action) => event_body(action)?,
+                        None => String::new(),
+                    };
+                    let leave_body = match view_property(element, "on_leave") {
+                        Some(action) => event_body(action)?,
+                        None => String::new(),
+                    };
+                    if hover_body.is_empty() && leave_body.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "FluxWindowsView{view_identity}GestureState *hover_gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (hover_gesture != NULL) {{ if (message == WM_MOUSEMOVE && !hover_gesture->hovering[{index}]) {{ TRACKMOUSEEVENT tracking = {{ sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0 }}; if (TrackMouseEvent(&tracking)) {{ hover_gesture->hovering[{index}] = true; {hover_body} }} }} else if (message == WM_MOUSELEAVE) {{ hover_gesture->hovering[{index}] = false; {leave_body} }} }} "
+                        )
+                    }
+                };
                 let double_tap_handler = if let Some(action) =
                     view_property(element, "on_double_tap")
                 {
@@ -22654,15 +22738,60 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     String::new()
                 };
                 if !submit_handler.is_empty()
+                    || !hover_handler.is_empty()
                     || !double_tap_handler.is_empty()
                     || !long_press_handler.is_empty()
                 {
                     out.push_str(&format!(
-                        "static LRESULT CALLBACK flux__win_input_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_original_count > {index} && context->control_subclass_originals != NULL ? context->control_subclass_originals[{index}] : NULL; {submit_handler}{double_tap_handler}{long_press_handler}return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); }}\n"
+                        "static LRESULT CALLBACK flux__win_input_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_original_count > {index} && context->control_subclass_originals != NULL ? context->control_subclass_originals[{index}] : NULL; {submit_handler}{hover_handler}{double_tap_handler}{long_press_handler}return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); }}\n"
                     ));
                 }
                 continue;
             }
+            let hover_handler = {
+                let event_body = |action: &crate::ast::ViewProperty| -> Result<String, Diagnostic> {
+                    if let Some(transition) = &action.transition {
+                        let next = ui_expr_c_for_view_identity(
+                            &action.value,
+                            secondary_view,
+                            signatures,
+                            Some(*view_identity),
+                        )?;
+                        Ok(format!(
+                            "{} = {next}; flux__win_refresh();",
+                            ui_state_c_name_for_view_identity(
+                                &transition.state,
+                                Some(*view_identity)
+                            )
+                        ))
+                    } else {
+                        let ExprKind::Var(function) = &action.value.kind else {
+                            unreachable!(
+                                "secondary hover callback shape was validated before emission"
+                            );
+                        };
+                        Ok(format!(
+                            "{}(); flux__win_refresh();",
+                            function_c_name(function)
+                        ))
+                    }
+                };
+                let hover_body = match view_property(element, "on_hover") {
+                    Some(action) => event_body(action)?,
+                    None => String::new(),
+                };
+                let leave_body = match view_property(element, "on_leave") {
+                    Some(action) => event_body(action)?,
+                    None => String::new(),
+                };
+                if hover_body.is_empty() && leave_body.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "if (message == WM_MOUSEMOVE && !gesture->hovering[{index}]) {{ TRACKMOUSEEVENT tracking = {{ sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0 }}; if (TrackMouseEvent(&tracking)) {{ gesture->hovering[{index}] = true; {hover_body} }} }} else if (message == WM_MOUSELEAVE) {{ gesture->hovering[{index}] = false; {leave_body} }} "
+                    )
+                }
+            };
             let double_tap_handler = if let Some(action) = view_property(element, "on_double_tap") {
                 let event_body = if let Some(transition) = &action.transition {
                     let next = ui_expr_c_for_view_identity(
@@ -22718,14 +22847,19 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             } else {
                 String::new()
             };
-            if !double_tap_handler.is_empty() || !long_press_handler.is_empty() {
-                let proc_kind = if long_press_handler.is_empty() {
+            if !hover_handler.is_empty()
+                || !double_tap_handler.is_empty()
+                || !long_press_handler.is_empty()
+            {
+                let proc_kind = if !long_press_handler.is_empty() {
+                    "long_press"
+                } else if !double_tap_handler.is_empty() {
                     "double_tap"
                 } else {
-                    "long_press"
+                    "hover"
                 };
                 out.push_str(&format!(
-                    "static LRESULT CALLBACK flux__win_{proc_kind}_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_originals != NULL && context->control_subclass_original_count > {index} ? context->control_subclass_originals[{index}] : NULL; FluxWindowsView{view_identity}GestureState *gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (gesture == NULL) return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); {double_tap_handler}{long_press_handler}return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); }}
+                    "static LRESULT CALLBACK flux__win_{proc_kind}_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_originals != NULL && context->control_subclass_original_count > {index} ? context->control_subclass_originals[{index}] : NULL; FluxWindowsView{view_identity}GestureState *gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (gesture == NULL) return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); {hover_handler}{double_tap_handler}{long_press_handler}return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); }}
 "
                 ));
             }
@@ -23493,9 +23627,20 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     .then_some(index)
             })
             .collect::<Vec<_>>();
+        let secondary_hover_subclasses = secondary_view
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(index, element)| {
+                (view_property(element, "on_hover").is_some()
+                    || view_property(element, "on_leave").is_some())
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
         if !secondary_submit_subclasses.is_empty()
             || !secondary_long_press_subclasses.is_empty()
             || !secondary_double_tap_subclasses.is_empty()
+            || !secondary_hover_subclasses.is_empty()
         {
             out.push_str(&format!(
                 "context->control_subclass_originals = (WNDPROC *)calloc({}, sizeof(WNDPROC)); if (context->control_subclass_originals == NULL) return flux__win_create_view_window_failure(window, primary); context->control_subclass_original_count = {};\n",
@@ -23505,6 +23650,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
         if !secondary_long_press_subclasses.is_empty()
             || !secondary_double_tap_subclasses.is_empty()
+            || !secondary_hover_subclasses.is_empty()
         {
             out.push_str(&format!(
                 "context->control_gesture_state = calloc(1, sizeof(FluxWindowsView{view_identity}GestureState)); if (context->control_gesture_state == NULL) return flux__win_create_view_window_failure(window, primary);\n"
@@ -23600,7 +23746,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             if class == "STATIC"
                 && (view_property(element, "on_tap").is_some()
                     || view_property(element, "on_double_tap").is_some()
-                    || view_property(element, "on_long_press").is_some())
+                    || view_property(element, "on_long_press").is_some()
+                    || view_property(element, "on_hover").is_some()
+                    || view_property(element, "on_leave").is_some())
                 && !style.contains("SS_NOTIFY")
             {
                 style.push_str(" | SS_NOTIFY");
@@ -23665,7 +23813,8 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             if secondary_submit_subclasses.contains(&index)
                 || (element.kind == "TextInput"
                     && (secondary_long_press_subclasses.contains(&index)
-                        || secondary_double_tap_subclasses.contains(&index)))
+                        || secondary_double_tap_subclasses.contains(&index)
+                        || secondary_hover_subclasses.contains(&index)))
             {
                 out.push_str(&format!(
                     "SetLastError(0); context->control_subclass_originals[{index}] = (WNDPROC)(LONG_PTR)SetWindowLongPtrW(context->control_windows[{index}], GWLP_WNDPROC, (LONG_PTR)flux__win_input_proc_view_{view_identity}_{index}); if (context->control_subclass_originals[{index}] == NULL && GetLastError() != 0) return flux__win_create_view_window_failure(window, primary);\n"
@@ -23673,12 +23822,15 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             }
             if element.kind != "TextInput"
                 && (secondary_long_press_subclasses.contains(&index)
-                    || secondary_double_tap_subclasses.contains(&index))
+                    || secondary_double_tap_subclasses.contains(&index)
+                    || secondary_hover_subclasses.contains(&index))
             {
                 let proc_kind = if secondary_long_press_subclasses.contains(&index) {
                     "long_press"
-                } else {
+                } else if secondary_double_tap_subclasses.contains(&index) {
                     "double_tap"
+                } else {
+                    "hover"
                 };
                 out.push_str(&format!(
                     "SetLastError(0); context->control_subclass_originals[{index}] = (WNDPROC)(LONG_PTR)SetWindowLongPtrW(context->control_windows[{index}], GWLP_WNDPROC, (LONG_PTR)flux__win_{proc_kind}_proc_view_{view_identity}_{index}); if (context->control_subclass_originals[{index}] == NULL && GetLastError() != 0) return flux__win_create_view_window_failure(window, primary);\n"
