@@ -73291,6 +73291,118 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_scrollable_grids() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto auto
+    grid gap: 12
+    grid padding: 20
+    grid scroll: true
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+    Text second at 2,1
+        text: "Second"
+    Text third at 3,1
+        text: "Third"
+    Text fourth at 4,1
+        text: "Fourth"
+}
+
+view Detail {
+    grid columns: 1fr
+    grid rows: auto auto auto auto
+    grid gap: 10
+    grid padding: 16
+    grid scroll: true
+    Text first at 1,1
+        text: "One"
+    Text second at 2,1
+        text: "Two"
+    Text third at 3,1
+        text: "Three"
+    Text fourth at 4,1
+        text: "Four"
+}
+
+route detail = Detail
+app Screen(width: 320, height: 120)
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("scrollable Windows routes should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("scrollable root and secondary views should lower for Windows");
+
+    assert!(windows.contains("int scroll_y; int wheel_delta_remainder;"));
+    assert!(windows.contains("static void flux__win_update_vertical_scroll"));
+    assert!(windows.contains("static bool flux__win_scroll_to"));
+    assert!(windows.contains("case WM_VSCROLL:"));
+    assert!(windows.contains("case WM_MOUSEWHEEL:"));
+    assert!(windows.contains("scroll_context->wheel_delta_remainder += wheel_delta"));
+    assert!(windows.contains(
+        "flux__win_update_vertical_scroll(flux__windows_active_context, flux__windows_active_window"
+    ));
+    assert!(windows.contains("static void flux__win_layout_view_1"));
+    assert!(windows.contains(
+        "flux__win_update_vertical_scroll(context, context->hwnd, content_height, height)"
+    ));
+    assert!(windows.matches("int minimum_row_extent = ").count() >= 2);
+    assert!(
+        windows
+            .matches("int y = scaled_padding + 3 * row_height - scroll_y;")
+            .count()
+            >= 2
+    );
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-scrollable-routes-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)
+            .expect("scrollable Windows route syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("scrollable Windows route C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate scrollable Win32 C");
+        assert!(
+            result.status.success(),
+            "scrollable Windows C failed syntax validation:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_overlay_layouts() {
     let source = r#"
 fn openSecondary() -> void {
