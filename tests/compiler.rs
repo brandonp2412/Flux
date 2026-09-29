@@ -71490,12 +71490,16 @@ view Screen {
 view Detail {
     state query: str = "Ready"
     state locked: bool = false
+    state masked: bool = true
+    state limit: i64 = 24
     grid columns: 1fr
     grid rows: auto auto
     TextInput input at 1,1
         text: query
         placeholder: "Type here"
         readOnly: locked
+        password: masked
+        maxLength: limit
         onChange: query, value => value
     Text echo at 2,1
         text: query
@@ -71529,6 +71533,15 @@ app Screen
     assert!(windows.contains(r#"flux__win_set_cue(context->control_windows[0], "Type here");"#));
     assert!(windows.contains(
         "SendMessageA(context->control_windows[0], EM_SETREADONLY, (flux__ui_view_1_state_locked) ? TRUE : FALSE, 0);"
+    ));
+    assert!(windows.contains(
+        "bool flux__win_view_1_password_0 = (flux__ui_view_1_state_masked); SendMessageA(context->control_windows[0], EM_SETPASSWORDCHAR, flux__win_view_1_password_0 ? (WPARAM)'*' : 0, 0);"
+    ));
+    assert!(windows.contains(
+        "int64_t flux__win_view_1_max_length_0 = flux__ui_view_1_state_limit; if (flux__win_view_1_max_length_0 < 0 || flux__win_view_1_max_length_0 > INT32_MAX)"
+    ));
+    assert!(windows.contains(
+        "SendMessageA(context->control_windows[0], EM_LIMITTEXT, (WPARAM)flux__win_view_1_max_length_0, 0);"
     ));
     assert!(windows.contains(
         "flux__win_set_text_if_changed(context->control_windows[1], flux__ui_view_1_state_query);"

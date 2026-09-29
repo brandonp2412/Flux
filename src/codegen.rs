@@ -16808,6 +16808,9 @@ fn emit_windows_native_application(
                                 | "placeholder"
                                 | "read_only"
                                 | "readOnly"
+                                | "password"
+                                | "max_length"
+                                | "maxLength"
                                 | "visible"
                                 | "enabled"
                         )
@@ -21628,6 +21631,28 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     )?;
                     out.push_str(&format!(
                         "SendMessageA(context->control_windows[{index}], EM_SETREADONLY, ({value}) ? TRUE : FALSE, 0);\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "password") {
+                    let value = ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                    out.push_str(&format!(
+                        "bool flux__win_view_{view_identity}_password_{index} = ({value}); SendMessageA(context->control_windows[{index}], EM_SETPASSWORDCHAR, flux__win_view_{view_identity}_password_{index} ? (WPARAM)'*' : 0, 0); InvalidateRect(context->control_windows[{index}], NULL, TRUE);\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "max_length") {
+                    let value = ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                    out.push_str(&format!(
+                        "int64_t flux__win_view_{view_identity}_max_length_{index} = {value}; if (flux__win_view_{view_identity}_max_length_{index} < 0 || flux__win_view_{view_identity}_max_length_{index} > INT32_MAX) {{ fputs(\"Flux runtime error: TextInput.maxLength must be between 0 and 2147483647\\n\", stderr); abort(); }} SendMessageA(context->control_windows[{index}], EM_LIMITTEXT, (WPARAM)flux__win_view_{view_identity}_max_length_{index}, 0);\n"
                     ));
                 }
             }
