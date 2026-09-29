@@ -71262,6 +71262,119 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_toggle_and_radio_controls() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state enabled: bool = false
+    state choice: i64 = 0
+    derived canChoose: bool = enabled
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Toggle toggle at 1,1
+        label: "Enabled"
+        checked: enabled
+        onChange: enabled => !enabled
+    Radio first at 2,1
+        label: "First"
+        selected: choice == 0
+        enabled: canChoose
+        onSelect: choice => 0
+    Radio second at 3,1
+        label: "Second"
+        selected: choice == 1
+        onSelect: choice => 1
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary Toggle/Radio route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary Toggle/Radio route should lower for Windows");
+
+    assert!(windows.contains(
+        r#"context->control_windows[0] = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX"#
+    ));
+    assert!(windows.contains(
+        r#"context->control_windows[1] = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON"#
+    ));
+    assert!(windows.contains(
+        r#"context->control_windows[2] = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON"#
+    ));
+    assert!(windows.contains(
+        "SendMessageA(context->control_windows[0], BM_SETCHECK, (flux__ui_view_1_state_enabled) ? BST_CHECKED : BST_UNCHECKED, 0);"
+    ));
+    assert!(windows.contains(
+        "EnableWindow(context->control_windows[1], (flux__ui_view_1_derived_canChoose) ? TRUE : FALSE);"
+    ));
+    assert!(windows.contains(
+        "flux__ui_view_1_state_enabled = (!(flux__ui_view_1_state_enabled)); flux__win_refresh();"
+    ));
+    assert!(windows.contains(
+        "flux__windows_activate_context(window); flux__win_refresh(); ShowWindow(window, SW_SHOW);"
+    ));
+    assert!(windows.contains(
+        "if (SendMessageA(context->control_windows[2], BM_GETCHECK, 0, 0) != BST_CHECKED) return 0; flux__ui_view_1_state_choice = INT64_C(1); flux__win_refresh();"
+    ));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-checkables-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)
+            .expect("secondary checkables syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary checkables C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary checkables Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary checkables Windows C failed syntax validation:
+{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_window_route_identity_invalidates_application_codegen_cache() {
     let first_source = r#"
 fn openSecondary() -> void {

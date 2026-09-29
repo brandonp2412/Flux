@@ -16763,24 +16763,51 @@ fn emit_windows_native_application(
             ));
         }
         for element in &secondary_view.elements {
-            if !matches!(element.kind.as_str(), "Text" | "Button") {
-                return Err(diag(
-                    element.kind_span,
-                    "Windows distinct secondary window views currently support Text and Button elements only",
-                ));
-            }
-            let on_press_source = internal_name_to_source("on_press");
-            for property in &element.properties {
-                let supported = matches!(property.name.as_str(), "text" | "visible" | "enabled")
-                    || (element.kind == "Button"
-                        && (property.name == "on_press" || property.name == on_press_source));
-                if !supported {
+            let action_name = match element.kind.as_str() {
+                "Text" => None,
+                "Button" => Some("on_press"),
+                "Toggle" => Some("on_change"),
+                "Radio" => Some("on_select"),
+                _ => {
                     return Err(diag(
-                        property.name_span,
-                        "Windows distinct secondary window elements currently support text, visible, enabled, and Button.onPress only",
+                        element.kind_span,
+                        "Windows distinct secondary window views currently support Text, Button, Toggle, and Radio elements only",
                     ));
                 }
-                if matches!(property.name.as_str(), "text" | "visible" | "enabled") {
+            };
+            let action_source = action_name.map(internal_name_to_source);
+            for property in &element.properties {
+                let data_property = match element.kind.as_str() {
+                    "Text" | "Button" => {
+                        matches!(property.name.as_str(), "text" | "visible" | "enabled")
+                    }
+                    "Toggle" => {
+                        matches!(
+                            property.name.as_str(),
+                            "label" | "checked" | "visible" | "enabled"
+                        )
+                    }
+                    "Radio" => {
+                        matches!(
+                            property.name.as_str(),
+                            "label" | "selected" | "visible" | "enabled"
+                        )
+                    }
+                    _ => unreachable!("secondary element kind was validated above"),
+                };
+                let action_property = action_name.is_some_and(|action_name| {
+                    property.name == action_name
+                        || action_source
+                            .as_deref()
+                            .is_some_and(|source| property.name == source)
+                });
+                if !data_property && !action_property {
+                    return Err(diag(
+                        property.name_span,
+                        "Windows distinct secondary window elements currently support text/label, checked/selected, visible, enabled, and their primary activation action",
+                    ));
+                }
+                if data_property {
                     ui_expr_c_for_view_identity(
                         &property.value,
                         secondary_view,
@@ -16789,7 +16816,9 @@ fn emit_windows_native_application(
                     )?;
                 }
             }
-            if let Some(property) = view_property(element, "on_press") {
+            if let Some(action_name) = action_name
+                && let Some(property) = view_property(element, action_name)
+            {
                 if property.transition.is_some() {
                     ui_expr_c_for_view_identity(
                         &property.value,
@@ -16800,7 +16829,7 @@ fn emit_windows_native_application(
                 } else if !matches!(property.value.kind, ExprKind::Var(_)) {
                     return Err(diag(
                         property.value.span,
-                        "Windows distinct secondary window Button.onPress requires a named fn() -> void callback or state transition",
+                        "Windows distinct secondary window activation requires a named fn() -> void callback or state transition",
                     ));
                 }
             }
@@ -21440,7 +21469,12 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             ));
         }
         for (index, element) in secondary_view.elements.iter().enumerate() {
-            if let Some(property) = view_property(element, "text") {
+            let text_property_name = if matches!(element.kind.as_str(), "Toggle" | "Radio") {
+                "label"
+            } else {
+                "text"
+            };
+            if let Some(property) = view_property(element, text_property_name) {
                 let value = ui_expr_c_for_view_identity(
                     &property.value,
                     secondary_view,
@@ -21471,6 +21505,24 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 )?;
                 out.push_str(&format!(
                     "EnableWindow(context->control_windows[{index}], ({value}) ? TRUE : FALSE);\n"
+                ));
+            }
+            let checked_property_name = match element.kind.as_str() {
+                "Toggle" => Some("checked"),
+                "Radio" => Some("selected"),
+                _ => None,
+            };
+            if let Some(property_name) = checked_property_name
+                && let Some(property) = view_property(element, property_name)
+            {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                out.push_str(&format!(
+                    "SendMessageA(context->control_windows[{index}], BM_SETCHECK, ({value}) ? BST_CHECKED : BST_UNCHECKED, 0);\n"
                 ));
             }
         }
@@ -21703,11 +21755,24 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     for (view_identity, secondary_view) in &secondary_window_views {
         let mut secondary_command_messages = String::new();
         for (index, element) in secondary_view.elements.iter().enumerate() {
-            if element.kind != "Button" {
+            let action_name = match element.kind.as_str() {
+                "Button" => Some("on_press"),
+                "Toggle" => Some("on_change"),
+                "Radio" => Some("on_select"),
+                _ => None,
+            };
+            let Some(action_name) = action_name else {
                 continue;
-            }
-            let Some(action) = view_property(element, "on_press") else {
+            };
+            let Some(action) = view_property(element, action_name) else {
                 continue;
+            };
+            let active_guard = if element.kind == "Radio" {
+                format!(
+                    "if (SendMessageA(context->control_windows[{index}], BM_GETCHECK, 0, 0) != BST_CHECKED) return 0; "
+                )
+            } else {
+                String::new()
             };
             if let Some(transition) = &action.transition {
                 let next = ui_expr_c_for_view_identity(
@@ -21717,22 +21782,22 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     Some(*view_identity),
                 )?;
                 secondary_command_messages.push_str(&format!(
-                    "case {}: if (HIWORD(wparam) == BN_CLICKED) {{ {} = {next}; flux__win_refresh(); }} return 0;\n",
+                    "case {}: if (HIWORD(wparam) == BN_CLICKED) {{ {active_guard}{} = {next}; flux__win_refresh(); }} return 0;\n",
                     1000 + index,
                     ui_state_c_name_for_view_identity(&transition.state, Some(*view_identity))
                 ));
                 continue;
             }
             let ExprKind::Var(function) = &action.value.kind else {
-                unreachable!("secondary Button.onPress shape was validated before emission");
+                unreachable!("secondary activation shape was validated before emission");
             };
             secondary_command_messages.push_str(&format!(
-                "case {}: if (HIWORD(wparam) == BN_CLICKED) {{ {}(); flux__win_refresh(); }} return 0;\n",
+                "case {}: if (HIWORD(wparam) == BN_CLICKED) {{ {active_guard}{}(); flux__win_refresh(); }} return 0;\n",
                 1000 + index,
                 function_c_name(function)
             ));
         }
-        out.push_str(&format!("static int flux__win_handle_view_{view_identity}_command(WPARAM wparam, LPARAM lparam) {{ (void)lparam; switch (LOWORD(wparam)) {{ {secondary_command_messages} default: return -1; }} }}\n"));
+        out.push_str(&format!("static int flux__win_handle_view_{view_identity}_command(WPARAM wparam, LPARAM lparam) {{ (void)lparam; FluxWindowsWindowContext *context = flux__windows_active_context; if (context == NULL || context->view_identity != UINT32_C({view_identity}) || context->control_windows == NULL) return -1; switch (LOWORD(wparam)) {{ {secondary_command_messages} default: return -1; }} }}\n"));
     }
     if uses_context_menus {
         out.push_str(&format!("static bool flux__win_handle_root_view_context_menu(HWND control, LPARAM lparam) {{ {context_menu_handler} return false; }}\n"));
@@ -22265,17 +22330,41 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             out.push_str(&format!("context->control_windows = (HWND *)calloc({}, sizeof(HWND)); if (context->control_windows == NULL) return flux__win_create_view_window_failure(window, primary);\n", secondary_view.elements.len()));
         }
         for (index, element) in secondary_view.elements.iter().enumerate() {
-            let text = view_property(element, "text")
+            let text_property_name = if matches!(element.kind.as_str(), "Toggle" | "Radio") {
+                "label"
+            } else {
+                "text"
+            };
+            let text = view_property(element, text_property_name)
                 .and_then(|property| static_expr_str(&property.value, signatures))
                 .unwrap_or_else(|| element.name.clone());
-            let (class, style, id) = if element.kind == "Button" {
-                (
+            let (class, style, id) = match element.kind.as_str() {
+                "Button" => (
                     "BUTTON",
                     "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON",
                     (1000 + index).to_string(),
-                )
-            } else {
-                ("STATIC", "WS_CHILD | WS_VISIBLE | SS_LEFT", "0".to_string())
+                ),
+                "Toggle" => (
+                    "BUTTON",
+                    "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX",
+                    (1000 + index).to_string(),
+                ),
+                "Radio" => {
+                    let starts_group = !secondary_view.elements[..index]
+                        .iter()
+                        .any(|candidate| candidate.kind == "Radio");
+                    (
+                        "BUTTON",
+                        if starts_group {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON"
+                        } else {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON"
+                        },
+                        (1000 + index).to_string(),
+                    )
+                }
+                "Text" => ("STATIC", "WS_CHILD | WS_VISIBLE | SS_LEFT", "0".to_string()),
+                _ => unreachable!("secondary element kind was validated above"),
             };
             out.push_str(&format!("context->control_windows[{index}] = CreateWindowExW(0, L\"{class}\", L\"\", {style}, 0, 0, 1, 1, window, (HMENU)(INT_PTR){id}, instance, NULL); if (context->control_windows[{index}] == NULL) return flux__win_create_view_window_failure(window, primary); SendMessageW(context->control_windows[{index}], WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE); flux__win_set_text_if_changed(context->control_windows[{index}], {});\n", c_string(&text)));
         }
@@ -22284,7 +22373,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     }
     out.push_str(&format!("static HWND flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary, uint32_t view_identity) {{ if (view_identity >= flux__win_view_count) return NULL; switch (view_identity) {{ case UINT32_C({root_view_identity}): return flux__win_create_root_view_window(instance, class_name, primary, view_identity);{secondary_constructor_dispatch} default: return NULL; }} }}\n"));
     if uses_window_open {
-        out.push_str("static bool flux__win_open_view(uint32_t view_identity) { HWND previous = flux__windows_active_window; HINSTANCE instance = GetModuleHandleW(NULL); if (instance == NULL) return false; HWND window = flux__win_create_view_window(instance, L\"FluxNativeWindow\", false, view_identity); if (window == NULL) { if (previous != NULL && IsWindow(previous)) { flux__windows_activate_context(previous); flux__win_refresh(); } return false; } ShowWindow(window, SW_SHOW); UpdateWindow(window); if (previous != NULL && IsWindow(previous)) { flux__windows_activate_context(previous); flux__win_refresh(); } return true; }\nstatic bool flux__window_open_view(uint32_t view_identity) { return flux__win_open_view(view_identity); }\nstatic bool flux__window_open(void) { uint32_t view_identity = flux__windows_active_context != NULL ? flux__windows_active_context->view_identity : flux__win_root_view_identity; return flux__window_open_view(view_identity); }\n");
+        out.push_str("static bool flux__win_open_view(uint32_t view_identity) { HWND previous = flux__windows_active_window; HINSTANCE instance = GetModuleHandleW(NULL); if (instance == NULL) return false; HWND window = flux__win_create_view_window(instance, L\"FluxNativeWindow\", false, view_identity); if (window == NULL) { if (previous != NULL && IsWindow(previous)) { flux__windows_activate_context(previous); flux__win_refresh(); } return false; } flux__windows_activate_context(window); flux__win_refresh(); ShowWindow(window, SW_SHOW); UpdateWindow(window); if (previous != NULL && IsWindow(previous)) { flux__windows_activate_context(previous); flux__win_refresh(); } return true; }\nstatic bool flux__window_open_view(uint32_t view_identity) { return flux__win_open_view(view_identity); }\nstatic bool flux__window_open(void) { uint32_t view_identity = flux__windows_active_context != NULL ? flux__windows_active_context->view_identity : flux__win_root_view_identity; return flux__window_open_view(view_identity); }\n");
     }
     out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness(); flux__win_set_application_id({});{accessibility_init}{tooltip_init}{input_scope_init}{ole_init}{rich_text_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleW(NULL); WNDCLASSW wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = L\"FluxNativeWindow\"; wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512)); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1; HWND flux__win_primary_window = flux__win_create_view_window(instance, wc.lpszClassName, true, flux__win_root_view_identity); if (flux__win_primary_window == NULL) return 1;\n", c_string(&application_id)));
     if on_restore_state.is_some() {
