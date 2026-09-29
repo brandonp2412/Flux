@@ -70847,6 +70847,15 @@ app Screen
             .contains("if (dialog_window != NULL) flux__windows_activate_context(dialog_window);")
     );
     assert!(windows.contains("case WM_COMMAND: flux__windows_activate_context(hwnd);"));
+    assert!(
+        windows.contains(
+            "static int flux__win_handle_root_view_command(WPARAM wparam, LPARAM lparam)"
+        )
+    );
+    assert!(windows.contains("flux__windows_active_context->view_identity == UINT32_C(0)"));
+    assert!(windows.contains(
+        "int flux__win_command_result = flux__win_handle_root_view_command(wparam, lparam);"
+    ));
     assert!(windows.contains("bool destroyed_primary = flux__windows_unregister_context(hwnd);"));
     assert!(windows.contains("if (destroyed_primary) PostQuitMessage(0); else if (flux__windows_active_context != NULL) flux__win_refresh();"));
     assert!(!windows.contains("flux__windows_active_window = NULL; PostQuitMessage(0)"));

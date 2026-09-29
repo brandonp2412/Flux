@@ -21117,7 +21117,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
     }
     out.push_str(&format!("flux__win_set_refreshing(previous_refreshing); }}\nstatic void flux__win_refresh(void) {{ if (flux__windows_active_context == NULL) return; switch (flux__windows_active_context->view_identity) {{ case UINT32_C({root_view_identity}): flux__win_refresh_root_view(); return; default: return; }} }}\n"));
-    out.push_str("static bool flux__windows_app_foreground = false;\n");
+    out.push_str("static bool flux__windows_app_foreground = false;\nstatic int flux__win_handle_root_view_command(WPARAM wparam, LPARAM lparam);\n");
     out.push_str("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { switch (message) { case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT: { HDC dc = (HDC)wparam; HWND control = (HWND)lparam;\n");
     for (index, element) in view.elements.iter().enumerate().filter(|(_, element)| {
         let presentation_text_color = element.kind != "Image"
@@ -21168,7 +21168,8 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             out.push_str(" return (LRESULT)GetSysColorBrush(COLOR_WINDOW); }\n");
         }
     }
-    out.push_str("return (LRESULT)GetSysColorBrush(COLOR_WINDOW); } break; case WM_COMMAND: flux__windows_activate_context(hwnd); switch (LOWORD(wparam)) {\n");
+    out.push_str(&format!("return (LRESULT)GetSysColorBrush(COLOR_WINDOW); }} break; case WM_COMMAND: flux__windows_activate_context(hwnd); if (flux__windows_active_context != NULL && flux__windows_active_context->view_identity == UINT32_C({root_view_identity})) {{ int flux__win_command_result = flux__win_handle_root_view_command(wparam, lparam); if (flux__win_command_result >= 0) return (LRESULT)flux__win_command_result; }} break;\n"));
+    let mut command_messages = String::new();
     for (index, element) in view.elements.iter().enumerate() {
         let click_action = match element.kind.as_str() {
             "Button" => view_property(element, "on_press"),
@@ -21184,7 +21185,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             if view_property(element, "on_swipe").is_some() {
                 consume_pointer_gesture.push_str(&format!("if (flux__win_swipe_consumed_{index}) {{ flux__win_swipe_consumed_{index} = false; flux__win_refresh(); return 0; }} "));
             }
-            out.push_str(&format!(
+            command_messages.push_str(&format!(
                 "case {}: if (HIWORD(wparam) == BN_CLICKED) {{ {consume_pointer_gesture}flux__win_click_{index}(); }} return 0;\n",
                 1000 + index,
             ));
@@ -21195,13 +21196,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 "on_select"
             };
             if view_property(element, action_name).is_some() {
-                out.push_str(&format!(
+                command_messages.push_str(&format!(
                     "case {}: if (HIWORD(wparam) == BN_CLICKED) flux__win_check_{index}((HWND)lparam); return 0;\n",
                     1000 + index
                 ));
             }
         } else if element.kind == "TextInput" && view_property(element, "on_change").is_some() {
-            out.push_str(&format!("case {}: if (HIWORD(wparam) == EN_CHANGE) flux__win_change_{index}((HWND)lparam); return 0;\n", 1000 + index));
+            command_messages.push_str(&format!("case {}: if (HIWORD(wparam) == EN_CHANGE) flux__win_change_{index}((HWND)lparam); return 0;\n", 1000 + index));
         } else if view_property(element, "on_tap").is_some()
             && !(element.kind == "Text"
                 && (view_property(element, "selectable")
@@ -21224,7 +21225,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             if view_property(element, "on_swipe").is_some() {
                 consume_pointer_gesture.push_str(&format!("if (flux__win_swipe_consumed_{index}) {{ flux__win_swipe_consumed_{index} = false; flux__win_refresh(); return 0; }} "));
             }
-            out.push_str(&format!("case {}: if (HIWORD(wparam) == {notification}) {{ {consume_pointer_gesture}flux__win_tap_{index}(); }} return 0;\n", 1000 + index));
+            command_messages.push_str(&format!("case {}: if (HIWORD(wparam) == {notification}) {{ {consume_pointer_gesture}flux__win_tap_{index}(); }} return 0;\n", 1000 + index));
         }
     }
     let mut context_menu_messages = String::new();
@@ -21315,10 +21316,11 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     } else {
         String::new()
     };
-    out.push_str(&format!("default: break; }} break;{context_menu_messages}{input_scope_close}{activation_messages} case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); UINT message_dpi = context != NULL && context->dpi > 0 ? context->dpi : flux__win_query_dpi(hwnd); int64_t logical_width = flux__win_unscale_for_dpi(physical_width, message_dpi); int64_t logical_height = flux__win_unscale_for_dpi(physical_height, message_dpi); flux__windows_store_metrics(hwnd, logical_width, logical_height, message_dpi); if (context != NULL && context == flux__windows_active_context) {{ flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} }} return 0; case WM_DPICHANGED: {{ FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); UINT next_dpi = HIWORD(wparam); if (next_dpi == 0) next_dpi = context != NULL && context->dpi > 0 ? context->dpi : 96; RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER); RECT client = {{0}}; int physical_width = 0; int physical_height = 0; if (GetClientRect(hwnd, &client)) {{ physical_width = client.right - client.left; physical_height = client.bottom - client.top; int64_t logical_width = flux__win_unscale_for_dpi(physical_width, next_dpi); int64_t logical_height = flux__win_unscale_for_dpi(physical_height, next_dpi); flux__windows_store_metrics(hwnd, logical_width, logical_height, next_dpi); }} if (context != NULL && context == flux__windows_active_context) {{ {dpi_font_refresh} if (physical_width > 0 && physical_height > 0) flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} }}{configuration_messages}{low_memory_messages} return 0; case WM_DESTROY: {{ FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); bool primary = context != NULL && context->primary; if (primary) {{ {save} {stop_callback} {exit} }} bool destroyed_primary = flux__windows_unregister_context(hwnd); if (destroyed_primary) PostQuitMessage(0); else if (flux__windows_active_context != NULL) flux__win_refresh(); return 0; }} default: break; }} return DefWindowProcW(hwnd, message, wparam, lparam); }}\n",
+    out.push_str(&format!("{context_menu_messages}{input_scope_close}{activation_messages} case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); UINT message_dpi = context != NULL && context->dpi > 0 ? context->dpi : flux__win_query_dpi(hwnd); int64_t logical_width = flux__win_unscale_for_dpi(physical_width, message_dpi); int64_t logical_height = flux__win_unscale_for_dpi(physical_height, message_dpi); flux__windows_store_metrics(hwnd, logical_width, logical_height, message_dpi); if (context != NULL && context == flux__windows_active_context) {{ flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} }} return 0; case WM_DPICHANGED: {{ FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); UINT next_dpi = HIWORD(wparam); if (next_dpi == 0) next_dpi = context != NULL && context->dpi > 0 ? context->dpi : 96; RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER); RECT client = {{0}}; int physical_width = 0; int physical_height = 0; if (GetClientRect(hwnd, &client)) {{ physical_width = client.right - client.left; physical_height = client.bottom - client.top; int64_t logical_width = flux__win_unscale_for_dpi(physical_width, next_dpi); int64_t logical_height = flux__win_unscale_for_dpi(physical_height, next_dpi); flux__windows_store_metrics(hwnd, logical_width, logical_height, next_dpi); }} if (context != NULL && context == flux__windows_active_context) {{ {dpi_font_refresh} if (physical_width > 0 && physical_height > 0) flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} }}{configuration_messages}{low_memory_messages} return 0; case WM_DESTROY: {{ FluxWindowsWindowContext *context = flux__windows_context_for(hwnd); bool primary = context != NULL && context->primary; if (primary) {{ {save} {stop_callback} {exit} }} bool destroyed_primary = flux__windows_unregister_context(hwnd); if (destroyed_primary) PostQuitMessage(0); else if (flux__windows_active_context != NULL) flux__win_refresh(); return 0; }} default: break; }} return DefWindowProcW(hwnd, message, wparam, lparam); }}\n",
         save = save_callback,
         exit = exit_callback,
     ));
+    out.push_str(&format!("static int flux__win_handle_root_view_command(WPARAM wparam, LPARAM lparam) {{ switch (LOWORD(wparam)) {{ {command_messages} default: return -1; }} }}\n"));
     let accessibility_init = if uses_accessibility {
         " flux__win_accessibility_init();"
     } else {
