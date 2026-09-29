@@ -16844,7 +16844,15 @@ fn emit_windows_native_application(
                     }
                     _ => unreachable!("secondary element kind was validated above"),
                 };
-                let data_property = data_property || property.name == "tooltip";
+                let data_property = data_property
+                    || property.name == "tooltip"
+                    || matches!(
+                        property.name.as_str(),
+                        "accessibility_label"
+                            | "accessibilityLabel"
+                            | "accessibility_description"
+                            | "accessibilityDescription"
+                    );
                 let action_property = action_name.is_some_and(|action_name| {
                     property.name == action_name
                         || action_source
@@ -16858,7 +16866,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, and their supported activation/change action",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, and their supported activation/change action",
                     ));
                 }
                 if data_property {
@@ -16976,7 +16984,10 @@ fn emit_windows_native_application(
     });
     let secondary_uses_accessibility = secondary_window_views.iter().any(|(_, secondary_view)| {
         secondary_view.elements.iter().any(|element| {
-            (element.kind == "TextInput" && view_property(element, "validation_message").is_some())
+            view_property(element, "accessibility_label").is_some()
+                || view_property(element, "accessibility_description").is_some()
+                || (element.kind == "TextInput"
+                    && view_property(element, "validation_message").is_some())
                 || (element.kind == "Image" && view_property(element, "alt").is_some())
         })
     });
@@ -21720,6 +21731,18 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     ));
                 }
             }
+            if let Some(property) = view_property(element, "accessibility_label") {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                out.push_str(&format!(
+                    "flux__win_accessibility_set_name(context->control_windows[{index}], {value});
+"
+                ));
+            }
             if let Some(property) = view_property(element, "visible") {
                 let value = ui_expr_c_for_view_identity(
                     &property.value,
@@ -21840,6 +21863,18 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         "const char *flux__win_view_{view_identity}_validation_message_{index} = {value}; flux__win_set_tooltip(context->control_windows[{index}], {index}, (flux__win_view_{view_identity}_validation_message_{index} != NULL && flux__win_view_{view_identity}_validation_message_{index}[0] != '\\0') ? flux__win_view_{view_identity}_validation_message_{index} : {fallback}); flux__win_accessibility_set_description(context->control_windows[{index}], {value});\n"
                     ));
                 }
+            }
+            if let Some(property) = view_property(element, "accessibility_description") {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                out.push_str(&format!(
+                    "flux__win_accessibility_set_description(context->control_windows[{index}], {value});
+"
+                ));
             }
             if let Some(property) = view_property(element, "tooltip")
                 && !(element.kind == "TextInput"

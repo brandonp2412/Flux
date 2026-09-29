@@ -71506,6 +71506,7 @@ view Detail {
         keyboardType: keyboard
         validationState: validation
         validationMessage: message
+        accessibilityDescription: "Explicit detail"
         tooltip: "Fallback help"
         submitOnEnter: true
         onChange: query, value => value
@@ -71591,6 +71592,9 @@ app Screen
     assert!(windows.contains(r#"? flux__win_view_1_validation_message_0 : "Fallback help""#));
     assert!(windows.contains(
         "flux__win_accessibility_set_description(context->control_windows[0], flux__ui_view_1_state_message);"
+    ));
+    assert!(windows.contains(
+        r#"flux__win_accessibility_set_description(context->control_windows[0], "Explicit detail");"#
     ));
     assert!(
         windows.contains("flux__win_view_1_toolinfo_0.uId = (UINT_PTR)context->control_windows[0]")
@@ -71749,6 +71753,7 @@ view Detail {
         source: imageSource
         fit: imageFit
         alt: imageAlt
+        accessibilityLabel: "Hero cover"
         tooltip: "Image help"
     Image backup at 2,1
         source: "backup.bmp"
@@ -71782,6 +71787,9 @@ app Screen
     ));
     assert!(windows.contains(
         "flux__win_accessibility_set_name(context->control_windows[0], flux__ui_view_1_state_imageAlt);"
+    ));
+    assert!(windows.contains(
+        r#"flux__win_accessibility_set_name(context->control_windows[0], "Hero cover");"#
     ));
     assert!(
         windows.contains(r#"flux__win_set_tooltip(context->control_windows[0], 0, "Image help");"#)
