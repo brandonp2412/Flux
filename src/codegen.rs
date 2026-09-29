@@ -16764,14 +16764,14 @@ fn emit_windows_native_application(
         }
         for element in &secondary_view.elements {
             let action_name = match element.kind.as_str() {
-                "Text" | "Nav" | "Chart" | "Card" | "Header" | "Content" => None,
+                "Text" | "TextInput" | "Nav" | "Chart" | "Card" | "Header" | "Content" => None,
                 "Button" => Some("on_press"),
                 "Toggle" => Some("on_change"),
                 "Radio" => Some("on_select"),
                 _ => {
                     return Err(diag(
                         element.kind_span,
-                        "Windows distinct secondary window views currently support Text, Button, Toggle, Radio, Nav, Chart, Card, Header, and Content elements only",
+                        "Windows distinct secondary window views currently support Text, TextInput, Button, Toggle, Radio, Nav, Chart, Card, Header, and Content elements only",
                     ));
                 }
             };
@@ -16786,6 +16786,17 @@ fn emit_windows_native_application(
                     }
                     "Card" => {
                         matches!(property.name.as_str(), "title" | "visible" | "enabled")
+                    }
+                    "TextInput" => {
+                        matches!(
+                            property.name.as_str(),
+                            "text"
+                                | "placeholder"
+                                | "read_only"
+                                | "readOnly"
+                                | "visible"
+                                | "enabled"
+                        )
                     }
                     "Toggle" => {
                         matches!(
@@ -16806,11 +16817,13 @@ fn emit_windows_native_application(
                         || action_source
                             .as_deref()
                             .is_some_and(|source| property.name == source)
-                });
+                }) || (element.kind == "TextInput"
+                    && (property.name == "on_change"
+                        || property.name == internal_name_to_source("on_change")));
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title, checked/selected, visible, enabled, and their primary activation action",
+                        "Windows distinct secondary window elements currently support text/label/title, placeholder/readOnly, checked/selected, visible, enabled, and their supported activation/change action",
                     ));
                 }
                 if data_property {
@@ -16836,6 +16849,23 @@ fn emit_windows_native_application(
                     return Err(diag(
                         property.value.span,
                         "Windows distinct secondary window activation requires a named fn() -> void callback or state transition",
+                    ));
+                }
+            }
+            if element.kind == "TextInput"
+                && let Some(property) = view_property(element, "on_change")
+            {
+                if let Some(transition) = &property.transition {
+                    if transition.event_value.is_none() {
+                        return Err(diag(
+                            property.value.span,
+                            "Windows distinct secondary TextInput.onChange state transitions require the text event value",
+                        ));
+                    }
+                } else if !matches!(property.value.kind, ExprKind::Var(_)) {
+                    return Err(diag(
+                        property.value.span,
+                        "Windows distinct secondary TextInput.onChange requires a named fn(str) -> void callback or state transition",
                     ));
                 }
             }
@@ -18376,6 +18406,24 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
                 }
                 _ => unreachable!("secondary Windows state type was validated above"),
             }
+        }
+        let secondary_string_states = secondary_view
+            .states
+            .iter()
+            .filter(|state| signatures.canonical_type(&state.ty) == Type::Str)
+            .collect::<Vec<_>>();
+        for (string_index, state) in secondary_string_states.iter().enumerate() {
+            if !view_state_accepts_text_input_value(secondary_view, &state.name) {
+                continue;
+            }
+            let state_name = ui_state_c_name_for_view_identity(&state.name, Some(*view_identity));
+            let setter_name =
+                ui_set_state_c_name_for_view_identity(&state.name, Some(*view_identity));
+            out.push_str(&format!(
+                "static void {setter_name}(const char *value) {{ if (value == NULL) value = \"\"; size_t length = 0; if (!flux__win_bounded_length(value, 65536, &length)) {{ fputs(\"Flux runtime error: TextInput state exceeds 65536 bytes\\n\", stderr); abort(); }} char *copy = malloc(length + 1); if (copy == NULL) {{ fputs(\"Flux runtime error: unable to store TextInput state\\n\", stderr); abort(); }} memcpy(copy, value, length + 1); FluxWindowsWindowContext *context = flux__windows_active_context; if (context == NULL || context->view_identity != UINT32_C({view_identity})) {{ free(copy); return; }} if (context->string_view_state == NULL) {{ context->string_view_state = (char **)calloc({}, sizeof(char *)); if (context->string_view_state == NULL) abort(); context->string_view_state_count = {}; }} free(context->string_view_state[{string_index}]); context->string_view_state[{string_index}] = copy; {state_name} = copy; }}\n",
+                secondary_string_states.len(),
+                secondary_string_states.len()
+            ));
         }
         for derived in &secondary_view.derived {
             let derived_name =
@@ -21513,6 +21561,30 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     "EnableWindow(context->control_windows[{index}], ({value}) ? TRUE : FALSE);\n"
                 ));
             }
+            if element.kind == "TextInput" {
+                if let Some(property) = view_property(element, "placeholder") {
+                    let value = ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                    out.push_str(&format!(
+                        "flux__win_set_cue(context->control_windows[{index}], {value});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "read_only") {
+                    let value = ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                    out.push_str(&format!(
+                        "SendMessageA(context->control_windows[{index}], EM_SETREADONLY, ({value}) ? TRUE : FALSE, 0);\n"
+                    ));
+                }
+            }
             let checked_property_name = match element.kind.as_str() {
                 "Toggle" => Some("checked"),
                 "Radio" => Some("selected"),
@@ -21761,6 +21833,33 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     for (view_identity, secondary_view) in &secondary_window_views {
         let mut secondary_command_messages = String::new();
         for (index, element) in secondary_view.elements.iter().enumerate() {
+            if element.kind == "TextInput" {
+                let Some(action) = view_property(element, "on_change") else {
+                    continue;
+                };
+                let action_body = if let Some(transition) = &action.transition {
+                    let setter = ui_set_state_c_name_for_view_identity(
+                        &transition.state,
+                        Some(*view_identity),
+                    );
+                    format!("{setter}(text);")
+                } else {
+                    let ExprKind::Var(function) = &action.value.kind else {
+                        unreachable!(
+                            "secondary TextInput.onChange shape was validated before emission"
+                        );
+                    };
+                    format!("{}(text);", function_c_name(function))
+                };
+                out.push_str(&format!(
+                    "static void flux__win_change_view_{view_identity}_{index}(HWND control) {{ if (flux__win_is_refreshing()) return; int length = GetWindowTextLengthW(control); if (length < 0) return; wchar_t *wide = (wchar_t *)malloc(((size_t)length + 1) * sizeof(wchar_t)); if (wide == NULL) return; if (GetWindowTextW(control, wide, length + 1) > 0 || length == 0) {{ char *text = flux__windows_wide_to_utf8(wide); if (text != NULL) {{ {action_body} }} free(text); }} free(wide); flux__win_refresh(); }}\n"
+                ));
+                secondary_command_messages.push_str(&format!(
+                    "case {}: if (HIWORD(wparam) == EN_CHANGE) flux__win_change_view_{view_identity}_{index}((HWND)lparam); return 0;\n",
+                    1000 + index
+                ));
+                continue;
+            }
             let action_name = match element.kind.as_str() {
                 "Button" => Some("on_press"),
                 "Toggle" => Some("on_change"),
@@ -22369,6 +22468,11 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         (1000 + index).to_string(),
                     )
                 }
+                "TextInput" => (
+                    "EDIT",
+                    "WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_LEFT | ES_AUTOHSCROLL",
+                    (1000 + index).to_string(),
+                ),
                 "Text" | "Nav" | "Chart" | "Card" | "Header" | "Content" => {
                     ("STATIC", "WS_CHILD | WS_VISIBLE | SS_LEFT", "0".to_string())
                 }
@@ -28547,6 +28651,12 @@ fn ui_owned_state_c_name(name: &str) -> String {
 
 fn ui_set_state_c_name(name: &str) -> String {
     format!("flux__ui_set_state_{name}")
+}
+
+fn ui_set_state_c_name_for_view_identity(name: &str, view_identity: Option<usize>) -> String {
+    view_identity
+        .map(|view_identity| format!("flux__ui_view_{view_identity}_set_state_{name}"))
+        .unwrap_or_else(|| ui_set_state_c_name(name))
 }
 
 fn view_state_accepts_text_input_value(view: &crate::ast::ViewDef, state_name: &str) -> bool {
