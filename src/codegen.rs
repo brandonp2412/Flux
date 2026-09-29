@@ -16769,13 +16769,10 @@ fn emit_windows_native_application(
                 ));
             }
         }
-        if secondary_view.grid.flow.is_some()
-            || secondary_view.grid.scroll == Some(true)
-            || secondary_view.grid.overlay == Some(true)
-        {
+        if secondary_view.grid.scroll == Some(true) || secondary_view.grid.overlay == Some(true) {
             return Err(diag(
                 secondary_view.name_span,
-                "Windows distinct secondary window views do not yet support grid flow, scrolling, or overlay layout",
+                "Windows distinct secondary window views do not yet support grid scrolling or overlay layout",
             ));
         }
         for element in &secondary_view.elements {

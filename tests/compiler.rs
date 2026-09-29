@@ -71669,6 +71669,114 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_flow_layouts() {
+    let source = r#"
+fn openHorizontal() -> void {
+    window.open(horizontal)
+}
+
+fn openVertical() -> void {
+    window.open(vertical)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Button horizontalButton at 1,1
+        text: "Horizontal"
+        onPress: openHorizontal
+    Button verticalButton at 2,1
+        text: "Vertical"
+        onPress: openVertical
+}
+
+view Horizontal {
+    flow: horizontal
+    Text first
+        text: "First"
+    Button second
+        text: "Second"
+}
+
+view Vertical {
+    flow: vertical
+    Text first
+        text: "First"
+    Button second
+        text: "Second"
+}
+
+route horizontal = Horizontal
+route vertical = Vertical
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary flow routes should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary flow routes should lower for Windows");
+
+    assert!(windows.contains(
+        "static void flux__win_layout_view_1(FluxWindowsWindowContext *context, int width, int height)"
+    ));
+    assert!(windows.contains(
+        "int column_width = (width - scaled_padding * 2 + scaled_gap) / 2; int row_height = (height - scaled_padding * 2 + scaled_gap) / 1;"
+    ));
+    assert!(windows.contains(
+        "static void flux__win_layout_view_2(FluxWindowsWindowContext *context, int width, int height)"
+    ));
+    assert!(windows.contains(
+        "int column_width = (width - scaled_padding * 2 + scaled_gap) / 1; int row_height = (height - scaled_padding * 2 + scaled_gap) / 2;"
+    ));
+    assert!(windows.contains(
+        "int x = scaled_padding + 1 * column_width; int y = scaled_padding + 0 * row_height;"
+    ));
+    assert!(windows.contains(
+        "int x = scaled_padding + 0 * column_width; int y = scaled_padding + 1 * row_height;"
+    ));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-flow-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("secondary flow syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary flow C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary flow Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary flow Windows C failed syntax validation:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_window_route_identity_invalidates_application_codegen_cache() {
     let first_source = r#"
 fn openSecondary() -> void {
