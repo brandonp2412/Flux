@@ -72190,6 +72190,161 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_text_spacing_state() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state tracking: i64 = 2
+    state leading: i64 = 130
+    state inset: i64 = 4
+    state trailing: i64 = 6
+    grid columns: 1fr
+    grid rows: auto auto
+    Text dynamic at 1,1
+        text: "Dynamic spacing"
+        letterSpacing: tracking
+        lineHeightPercent: leading
+        padding: inset
+        paddingTop: 2
+        paddingEnd: trailing
+    Text fixed at 2,1
+        text: "Fixed spacing"
+        letterSpacing: 1
+        lineHeightPercent: 125
+        padding: 3
+        paddingBottom: 5
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary text-spacing route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary text spacing should lower for Windows");
+
+    assert!(windows.contains(
+        "static const flux__win_text_layout_state flux__win_view_1_text_layout_initial_0"
+    ));
+    assert!(windows.contains(
+        "static const flux__win_text_layout_state flux__win_view_1_text_layout_initial_1"
+    ));
+    assert!(
+        windows.contains("flux__win_view_1_next_letter_spacing_0 = flux__ui_view_1_state_tracking")
+    );
+    assert!(
+        windows.contains("flux__win_view_1_next_line_height_0 = flux__ui_view_1_state_leading")
+    );
+    assert!(windows.contains("flux__win_view_1_next_padding_top_0 = INT64_C(2)"));
+    assert!(
+        windows.contains("flux__win_view_1_next_padding_bottom_0 = flux__ui_view_1_state_inset")
+    );
+    assert!(
+        windows.contains("flux__win_view_1_next_padding_start_0 = flux__ui_view_1_state_inset")
+    );
+    assert!(
+        windows.contains("flux__win_view_1_next_padding_end_0 = flux__ui_view_1_state_trailing")
+    );
+    assert!(windows.contains(
+        "flux__win_view_1_text_layout_0->letter_spacing = flux__win_view_1_next_letter_spacing_0"
+    ));
+    assert!(windows.contains(
+        "flux__win_view_1_text_layout_0->line_height_percent = flux__win_view_1_next_line_height_0"
+    ));
+    assert!(windows.contains(
+        "flux__win_view_1_text_layout_0->padding_bottom = flux__win_view_1_next_padding_bottom_0"
+    ));
+
+    for (needle, replacement, expected) in [
+        (
+            "letterSpacing: 1",
+            "letterSpacing: 2097152",
+            "Text.letterSpacing is outside the supported native range",
+        ),
+        (
+            "lineHeightPercent: 125",
+            "lineHeightPercent: 0",
+            "Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer",
+        ),
+        (
+            "paddingBottom: 5",
+            "paddingBottom: -1",
+            "paddingBottom must be non-negative and fit within a 32-bit signed integer",
+        ),
+    ] {
+        let invalid = source.replace(needle, replacement);
+        let invalid_database =
+            fluxc::semantic::SemanticDatabase::analyze(&invalid, SourceId::UNKNOWN)
+                .expect("invalid static secondary text spacing should analyze before lowering");
+        let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+            invalid_database.program(),
+            invalid_database.signatures(),
+            &std::collections::HashMap::new(),
+            fluxc::codegen::NativeTarget::Windows,
+        )
+        .expect_err("invalid static secondary text spacing must fail lowering");
+        assert!(
+            error.message.contains(expected),
+            "expected {expected:?}, got {:?}",
+            error.message
+        );
+    }
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-text-spacing-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)
+            .expect("secondary text-spacing syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary text-spacing C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary text-spacing Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary text-spacing Windows C failed syntax validation:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_semantic_text_controls() {
     let source = r#"
 fn openSecondary() -> void {

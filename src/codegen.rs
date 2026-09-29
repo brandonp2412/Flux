@@ -16901,6 +16901,19 @@ fn emit_windows_native_application(
                                 | "strikethrough"
                                 | "font_family"
                                 | "fontFamily"
+                                | "letter_spacing"
+                                | "letterSpacing"
+                                | "line_height_percent"
+                                | "lineHeightPercent"
+                                | "padding"
+                                | "padding_top"
+                                | "paddingTop"
+                                | "padding_bottom"
+                                | "paddingBottom"
+                                | "padding_start"
+                                | "paddingStart"
+                                | "padding_end"
+                                | "paddingEnd"
                         ))
                     || (element.kind == "Button"
                         && matches!(property.name.as_str(), "primary" | "size"))
@@ -16977,7 +16990,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.padding/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -17013,6 +17026,54 @@ fn emit_windows_native_application(
                         return Err(diag(
                             property.value.span,
                             "Text.font_family cannot be empty",
+                        ));
+                    }
+                    if element.kind == "Text"
+                        && matches!(property.name.as_str(), "letter_spacing" | "letterSpacing")
+                        && let Some(value) = static_expr_i64(&property.value, signatures)
+                        && !(i64::from(i32::MIN) / 1024..=i64::from(i32::MAX) / 1024)
+                            .contains(&value)
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.letterSpacing is outside the supported native range",
+                        ));
+                    }
+                    if element.kind == "Text"
+                        && matches!(
+                            property.name.as_str(),
+                            "line_height_percent" | "lineHeightPercent"
+                        )
+                        && let Some(value) = static_expr_i64(&property.value, signatures)
+                        && (value <= 0 || value > i64::from(i32::MAX))
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer",
+                        ));
+                    }
+                    if element.kind == "Text"
+                        && matches!(
+                            property.name.as_str(),
+                            "padding"
+                                | "padding_top"
+                                | "paddingTop"
+                                | "padding_bottom"
+                                | "paddingBottom"
+                                | "padding_start"
+                                | "paddingStart"
+                                | "padding_end"
+                                | "paddingEnd"
+                        )
+                        && let Some(value) = static_expr_i64(&property.value, signatures)
+                        && !(0..=i64::from(i32::MAX)).contains(&value)
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            &format!(
+                                "{} must be non-negative and fit within a 32-bit signed integer",
+                                internal_name_to_source(&property.name)
+                            ),
                         ));
                     }
                     if element.kind == "Button"
@@ -22788,6 +22849,23 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             if element.kind == "Text"
                 && windows_element_uses_custom_text_layout(element, signatures)
             {
+                let dynamic_letter_spacing = view_property(element, "letter_spacing")
+                    .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none());
+                let dynamic_line_height = view_property(element, "line_height_percent")
+                    .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none());
+                let dynamic_padding = [
+                    "padding",
+                    "padding_top",
+                    "padding_bottom",
+                    "padding_start",
+                    "padding_end",
+                ]
+                .iter()
+                .any(|property_name| {
+                    view_property(element, property_name).is_some_and(|property| {
+                        static_expr_i64(&property.value, signatures).is_none()
+                    })
+                });
                 let dynamic_wrap = view_property(element, "wrap").is_some_and(|property| {
                     static_expr_bool(&property.value, signatures).is_none()
                 });
@@ -22795,7 +22873,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     .is_some_and(|property| static_expr_str(&property.value, signatures).is_none());
                 let dynamic_ellipsize = view_property(element, "ellipsize")
                     .is_some_and(|property| static_expr_str(&property.value, signatures).is_none());
-                if dynamic_wrap || dynamic_wrap_mode || dynamic_ellipsize {
+                if dynamic_letter_spacing
+                    || dynamic_line_height
+                    || dynamic_padding
+                    || dynamic_wrap
+                    || dynamic_wrap_mode
+                    || dynamic_ellipsize
+                {
                     let text_layout_slot = secondary_view.elements[..index]
                         .iter()
                         .filter(|candidate| {
@@ -22805,6 +22889,67 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     out.push_str(&format!(
                         "flux__win_text_layout_state *flux__win_view_{view_identity}_text_layout_{index} = context->text_layout_states != NULL && context->text_layout_count > {text_layout_slot} ? &((flux__win_text_layout_state *)context->text_layout_states)[{text_layout_slot}] : NULL;\n"
                     ));
+                    if dynamic_letter_spacing {
+                        let property = view_property(element, "letter_spacing")
+                            .expect("dynamic secondary Text.letterSpacing property exists");
+                        let value = ui_expr_c_for_view_identity(
+                            &property.value,
+                            secondary_view,
+                            signatures,
+                            Some(*view_identity),
+                        )?;
+                        out.push_str(&format!(
+                            "int64_t flux__win_view_{view_identity}_next_letter_spacing_{index} = {value}; if (flux__win_view_{view_identity}_next_letter_spacing_{index} < INT32_MIN / INT64_C(1024) || flux__win_view_{view_identity}_next_letter_spacing_{index} > INT32_MAX / INT64_C(1024)) {{ fputs(\"Flux runtime error: Text.letterSpacing is outside the supported native range\\n\", stderr); abort(); }} if (flux__win_view_{view_identity}_text_layout_{index} != NULL && flux__win_view_{view_identity}_text_layout_{index}->letter_spacing != flux__win_view_{view_identity}_next_letter_spacing_{index}) {{ flux__win_view_{view_identity}_text_layout_{index}->letter_spacing = flux__win_view_{view_identity}_next_letter_spacing_{index}; InvalidateRect(context->control_windows[{index}], NULL, TRUE); }}\n"
+                        ));
+                    }
+                    if dynamic_line_height {
+                        let property = view_property(element, "line_height_percent")
+                            .expect("dynamic secondary Text.lineHeightPercent property exists");
+                        let value = ui_expr_c_for_view_identity(
+                            &property.value,
+                            secondary_view,
+                            signatures,
+                            Some(*view_identity),
+                        )?;
+                        out.push_str(&format!(
+                            "int64_t flux__win_view_{view_identity}_next_line_height_{index} = {value}; if (flux__win_view_{view_identity}_next_line_height_{index} <= 0 || flux__win_view_{view_identity}_next_line_height_{index} > INT32_MAX) {{ fputs(\"Flux runtime error: Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (flux__win_view_{view_identity}_text_layout_{index} != NULL && flux__win_view_{view_identity}_text_layout_{index}->line_height_percent != flux__win_view_{view_identity}_next_line_height_{index}) {{ flux__win_view_{view_identity}_text_layout_{index}->line_height_percent = flux__win_view_{view_identity}_next_line_height_{index}; InvalidateRect(context->control_windows[{index}], NULL, TRUE); }}\n"
+                        ));
+                    }
+                    if dynamic_padding {
+                        let padding_property = view_property(element, "padding");
+                        let padding_value = |property_name: &str| -> Result<String, Diagnostic> {
+                            if let Some(property) = view_property(element, property_name) {
+                                if let Some(value) = static_expr_i64(&property.value, signatures) {
+                                    return Ok(format!("INT64_C({value})"));
+                                }
+                                return ui_expr_c_for_view_identity(
+                                    &property.value,
+                                    secondary_view,
+                                    signatures,
+                                    Some(*view_identity),
+                                );
+                            }
+                            if let Some(property) = padding_property {
+                                if let Some(value) = static_expr_i64(&property.value, signatures) {
+                                    return Ok(format!("INT64_C({value})"));
+                                }
+                                return ui_expr_c_for_view_identity(
+                                    &property.value,
+                                    secondary_view,
+                                    signatures,
+                                    Some(*view_identity),
+                                );
+                            }
+                            Ok("INT64_C(0)".to_string())
+                        };
+                        let padding_top = padding_value("padding_top")?;
+                        let padding_bottom = padding_value("padding_bottom")?;
+                        let padding_start = padding_value("padding_start")?;
+                        let padding_end = padding_value("padding_end")?;
+                        out.push_str(&format!(
+                            "int64_t flux__win_view_{view_identity}_next_padding_top_{index} = {padding_top}; int64_t flux__win_view_{view_identity}_next_padding_bottom_{index} = {padding_bottom}; int64_t flux__win_view_{view_identity}_next_padding_start_{index} = {padding_start}; int64_t flux__win_view_{view_identity}_next_padding_end_{index} = {padding_end}; if (flux__win_view_{view_identity}_next_padding_top_{index} < 0 || flux__win_view_{view_identity}_next_padding_top_{index} > INT32_MAX || flux__win_view_{view_identity}_next_padding_bottom_{index} < 0 || flux__win_view_{view_identity}_next_padding_bottom_{index} > INT32_MAX || flux__win_view_{view_identity}_next_padding_start_{index} < 0 || flux__win_view_{view_identity}_next_padding_start_{index} > INT32_MAX || flux__win_view_{view_identity}_next_padding_end_{index} < 0 || flux__win_view_{view_identity}_next_padding_end_{index} > INT32_MAX) {{ fputs(\"Flux runtime error: Text padding must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (flux__win_view_{view_identity}_text_layout_{index} != NULL && (flux__win_view_{view_identity}_text_layout_{index}->padding_top != flux__win_view_{view_identity}_next_padding_top_{index} || flux__win_view_{view_identity}_text_layout_{index}->padding_bottom != flux__win_view_{view_identity}_next_padding_bottom_{index} || flux__win_view_{view_identity}_text_layout_{index}->padding_start != flux__win_view_{view_identity}_next_padding_start_{index} || flux__win_view_{view_identity}_text_layout_{index}->padding_end != flux__win_view_{view_identity}_next_padding_end_{index})) {{ flux__win_view_{view_identity}_text_layout_{index}->padding_top = flux__win_view_{view_identity}_next_padding_top_{index}; flux__win_view_{view_identity}_text_layout_{index}->padding_bottom = flux__win_view_{view_identity}_next_padding_bottom_{index}; flux__win_view_{view_identity}_text_layout_{index}->padding_start = flux__win_view_{view_identity}_next_padding_start_{index}; flux__win_view_{view_identity}_text_layout_{index}->padding_end = flux__win_view_{view_identity}_next_padding_end_{index}; InvalidateRect(context->control_windows[{index}], NULL, TRUE); }}\n"
+                        ));
+                    }
                     if dynamic_wrap {
                         let property = view_property(element, "wrap")
                             .expect("dynamic secondary Text.wrap property exists");
