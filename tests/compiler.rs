@@ -70714,6 +70714,16 @@ app Screen
     );
     assert!(windows.contains("flux__windows_save_scalar_view_state(context); flux__windows_save_string_view_state(context); flux__windows_save_control_windows(context);"));
     assert!(windows.contains(
+        "static void flux__windows_save_root_view_state(FluxWindowsWindowContext *context)"
+    ));
+    assert!(windows.contains("switch (context->view_identity) { case UINT32_C(0): flux__windows_save_root_view_state(context); return; default: return; }"));
+    assert!(windows.contains("switch (context->view_identity) { case UINT32_C(0): flux__windows_restore_root_view_state(context); break; default: return; }"));
+    assert!(windows.contains("switch (context->view_identity) { case UINT32_C(0): flux__windows_release_root_view_state(context); return; default: return; }"));
+    assert!(windows.contains(
+        "flux__windows_release_view_state(context); *context = (FluxWindowsWindowContext){0};"
+    ));
+    assert!(windows.contains("flux__windows_save_view_state(flux__windows_active_context); for (size_t flux__windows_index = 0; flux__windows_index < FLUX_WINDOWS_MAX_WINDOWS; ++flux__windows_index) flux__windows_release_view_state(&flux__windows_contexts[flux__windows_index]);"));
+    assert!(windows.contains(
         "static void flux__windows_restore_view_state(FluxWindowsWindowContext *context, HWND hwnd)"
     ));
     assert!(windows.contains("flux__windows_restore_scalar_view_state(context); flux__windows_restore_string_view_state(context); flux__windows_restore_control_windows(context);"));
