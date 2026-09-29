@@ -72842,6 +72842,122 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_scale_transforms() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state horizontalScale: i64 = 125
+    grid columns: 1fr
+    grid rows: auto auto
+    Button dynamic at 1,1
+        text: "Dynamic"
+        scaleXPercent: horizontalScale
+        scaleYPercent: 80
+        transformOriginXPercent: 25
+        transformOriginYPercent: 75
+    Text fixed at 2,1
+        text: "Fixed"
+        scalePercent: 90
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary scale-transform route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary scale transforms should lower for Windows");
+
+    assert!(windows.contains(
+        "requested_scale_x = flux__ui_view_1_state_horizontalScale; int64_t requested_scale_y = INT64_C(80);"
+    ));
+    assert!(windows.contains(
+        "requested_transform_origin_x = INT64_C(25); int64_t requested_transform_origin_y = INT64_C(75);"
+    ));
+    assert!(
+        windows
+            .contains("requested_scale_x = INT64_C(90); int64_t requested_scale_y = INT64_C(90);")
+    );
+    assert!(windows.contains(
+        "int64_t scaled_control_width = ((int64_t)previous_control_width * requested_scale_x) / INT64_C(100);"
+    ));
+    assert!(windows.contains(
+        "flux__win_layout_view_1(context, flux__win_view_1_refresh_client.right - flux__win_view_1_refresh_client.left"
+    ));
+
+    let invalid = source.replace("scalePercent: 90", "scalePercent: -1");
+    let invalid_database = fluxc::semantic::SemanticDatabase::analyze(&invalid, SourceId::UNKNOWN)
+        .expect("invalid static secondary scale should analyze before lowering");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        invalid_database.program(),
+        invalid_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("negative secondary scale must fail lowering");
+    assert!(
+        error
+            .message
+            .contains("scalePercent must be non-negative and fit within a 32-bit signed integer"),
+        "unexpected scale diagnostic: {:?}",
+        error.message
+    );
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-scale-transform-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)
+            .expect("secondary scale-transform syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary scale-transform C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary scale-transform Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary scale-transform Windows C failed syntax validation:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_alignment_constraints() {
     let source = r#"
 fn openSecondary() -> void {
