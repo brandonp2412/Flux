@@ -71492,6 +71492,7 @@ view Detail {
     state locked: bool = false
     state masked: bool = true
     state limit: i64 = 24
+    state keyboard: str = "email"
     grid columns: 1fr
     grid rows: auto auto
     TextInput input at 1,1
@@ -71500,6 +71501,7 @@ view Detail {
         readOnly: locked
         password: masked
         maxLength: limit
+        keyboardType: keyboard
         submitOnEnter: true
         onChange: query, value => value
         onSubmit: query, value => value
@@ -71560,6 +71562,11 @@ app Screen
     assert!(windows.contains(
         "SendMessageA(context->control_windows[0], EM_LIMITTEXT, (WPARAM)flux__win_view_1_max_length_0, 0);"
     ));
+    assert!(windows.contains(
+        "flux__win_set_input_scope(context->control_windows[0], flux__ui_view_1_state_keyboard);"
+    ));
+    assert!(windows.contains("close_context->view_identity == UINT32_C(1)"));
+    assert!(windows.contains("flux__win_clear_input_scope(close_context->control_windows[0]);"));
     assert!(windows.contains(
         "flux__win_set_text_if_changed(context->control_windows[1], flux__ui_view_1_state_query);"
     ));

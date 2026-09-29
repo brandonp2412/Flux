@@ -16811,6 +16811,8 @@ fn emit_windows_native_application(
                                 | "password"
                                 | "max_length"
                                 | "maxLength"
+                                | "keyboard_type"
+                                | "keyboardType"
                                 | "multiline"
                                 | "submit_on_enter"
                                 | "submitOnEnter"
@@ -16851,7 +16853,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit, placeholder/readOnly, checked/selected, visible, enabled, and their supported activation/change action",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit, placeholder/readOnly/keyboardType, checked/selected, visible, enabled, and their supported activation/change action",
                     ));
                 }
                 if data_property {
@@ -16980,6 +16982,10 @@ fn emit_windows_native_application(
     });
     let uses_input_scopes = view.elements.iter().any(|element| {
         element.kind == "TextInput" && view_property(element, "keyboard_type").is_some()
+    }) || secondary_window_views.iter().any(|(_, secondary_view)| {
+        secondary_view.elements.iter().any(|element| {
+            element.kind == "TextInput" && view_property(element, "keyboard_type").is_some()
+        })
     });
     let uses_validation_states = view.elements.iter().any(|element| {
         element.kind == "TextInput" && view_property(element, "validation_state").is_some()
@@ -17006,6 +17012,11 @@ fn emit_windows_native_application(
         for element in view
             .elements
             .iter()
+            .chain(
+                secondary_window_views
+                    .iter()
+                    .flat_map(|(_, secondary_view)| secondary_view.elements.iter()),
+            )
             .filter(|element| element.kind == "TextInput")
         {
             if let Some(property) = view_property(element, "keyboard_type")
@@ -21692,6 +21703,17 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         "flux__win_set_cue(context->control_windows[{index}], {value});\n"
                     ));
                 }
+                if let Some(property) = view_property(element, "keyboard_type") {
+                    let value = ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                    out.push_str(&format!(
+                        "flux__win_set_input_scope(context->control_windows[{index}], {value});\n"
+                    ));
+                }
                 if let Some(property) = view_property(element, "read_only") {
                     let value = ui_expr_c_for_view_identity(
                         &property.value,
@@ -21947,19 +21969,54 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         String::new()
     };
     let input_scope_close = if uses_input_scopes || uses_text_drag_drop {
-        let mut cleanup = format!(
-            " case WM_CLOSE: {{ FluxWindowsWindowContext *close_context = flux__windows_context_for(hwnd); if (close_context != NULL && close_context->view_identity == UINT32_C({root_view_identity})) {{"
-        );
+        let mut cleanup =
+            " case WM_CLOSE: { FluxWindowsWindowContext *close_context = flux__windows_context_for(hwnd);"
+                .to_string();
         if uses_input_scopes {
-            for (index, _) in view.elements.iter().enumerate().filter(|(_, element)| {
+            if view.elements.iter().any(|element| {
                 element.kind == "TextInput" && view_property(element, "keyboard_type").is_some()
             }) {
                 cleanup.push_str(&format!(
-                    " if (close_context->control_windows != NULL) flux__win_clear_input_scope(close_context->control_windows[{index}]);"
+                    " if (close_context != NULL && close_context->view_identity == UINT32_C({root_view_identity})) {{"
                 ));
+                for (index, _) in view.elements.iter().enumerate().filter(|(_, element)| {
+                    element.kind == "TextInput" && view_property(element, "keyboard_type").is_some()
+                }) {
+                    cleanup.push_str(&format!(
+                        " if (close_context->control_windows != NULL) flux__win_clear_input_scope(close_context->control_windows[{index}]);"
+                    ));
+                }
+                cleanup.push_str(" }");
+            }
+            for (view_identity, secondary_view) in &secondary_window_views {
+                if secondary_view.elements.iter().any(|element| {
+                    element.kind == "TextInput" && view_property(element, "keyboard_type").is_some()
+                }) {
+                    cleanup.push_str(&format!(
+                        " if (close_context != NULL && close_context->view_identity == UINT32_C({view_identity})) {{"
+                    ));
+                    for (index, _) in
+                        secondary_view
+                            .elements
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, element)| {
+                                element.kind == "TextInput"
+                                    && view_property(element, "keyboard_type").is_some()
+                            })
+                    {
+                        cleanup.push_str(&format!(
+                            " if (close_context->control_windows != NULL) flux__win_clear_input_scope(close_context->control_windows[{index}]);"
+                        ));
+                    }
+                    cleanup.push_str(" }");
+                }
             }
         }
         if uses_text_drag_drop {
+            cleanup.push_str(&format!(
+                " if (close_context != NULL && close_context->view_identity == UINT32_C({root_view_identity})) {{"
+            ));
             for (index, _) in view
                 .elements
                 .iter()
@@ -21970,8 +22027,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     " if (close_context->control_windows != NULL) flux__win_revoke_drop_target(close_context->control_windows[{index}]);"
                 ));
             }
+            cleanup.push_str(" }");
         }
-        cleanup.push_str(" } DestroyWindow(hwnd); return 0; }");
+        cleanup.push_str(" DestroyWindow(hwnd); return 0; }");
         cleanup
     } else {
         String::new()
