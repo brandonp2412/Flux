@@ -16895,6 +16895,8 @@ fn emit_windows_native_application(
                             | "onScale"
                             | "on_drag"
                             | "onDrag"
+                            | "on_swipe"
+                            | "onSwipe"
                             | "on_accessibility_action"
                             | "onAccessibilityAction"
                             | "on_long_press"
@@ -16913,7 +16915,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/tap/double-tap/long-press/hover/drag/scale/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/tap/double-tap/long-press/hover/drag/swipe/scale/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -16996,6 +16998,15 @@ fn emit_windows_native_application(
                     return Err(diag(
                         property.value.span,
                         "Windows distinct secondary onDrag requires a named fn(i64, i64) -> void callback",
+                    ));
+                }
+            }
+            if let Some(property) = view_property(element, "on_swipe") {
+                if property.transition.is_some() || !matches!(property.value.kind, ExprKind::Var(_))
+                {
+                    return Err(diag(
+                        property.value.span,
+                        "Windows distinct secondary onSwipe requires a named fn(i64, i64) -> void callback",
                     ));
                 }
             }
@@ -20624,6 +20635,16 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 view_property(element, "on_drag").is_some().then_some(index)
             })
             .collect::<Vec<_>>();
+        let secondary_swipe_subclasses = secondary_view
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(index, element)| {
+                view_property(element, "on_swipe")
+                    .is_some()
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
         let secondary_scale_subclasses = secondary_view
             .elements
             .iter()
@@ -20644,6 +20665,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     || secondary_double_tap_subclasses.contains(&index)
                     || secondary_hover_subclasses.contains(&index)
                     || secondary_drag_subclasses.contains(&index)
+                    || secondary_swipe_subclasses.contains(&index)
                     || secondary_scale_subclasses.contains(&index))
                 .then_some(index)
             })
@@ -20652,6 +20674,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             || !secondary_double_tap_subclasses.is_empty()
             || !secondary_hover_subclasses.is_empty()
             || !secondary_drag_subclasses.is_empty()
+            || !secondary_swipe_subclasses.is_empty()
             || !secondary_scale_subclasses.is_empty()
         {
             let slots = secondary_view.elements.len();
@@ -20681,6 +20704,14 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 }
                 gesture_fields.push_str(&format!(
                     "bool dragging[{slots}]; LONG drag_start_screen_x[{slots}]; LONG drag_start_screen_y[{slots}];"
+                ));
+            }
+            if !secondary_swipe_subclasses.is_empty() {
+                if !gesture_fields.is_empty() {
+                    gesture_fields.push(' ');
+                }
+                gesture_fields.push_str(&format!(
+                    "bool swipe_tracking[{slots}]; bool swipe_moved[{slots}]; bool swipe_consumed[{slots}]; int swipe_start_x[{slots}]; int swipe_start_y[{slots}]; DWORD swipe_start_time[{slots}];"
                 ));
             }
             if !secondary_scale_subclasses.is_empty() {
@@ -20714,6 +20745,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             || !secondary_double_tap_subclasses.is_empty()
             || !secondary_hover_subclasses.is_empty()
             || !secondary_drag_subclasses.is_empty()
+            || !secondary_swipe_subclasses.is_empty()
             || !secondary_scale_subclasses.is_empty()
         {
             secondary_subclass_release.push_str(
@@ -22629,13 +22661,24 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     for (view_identity, secondary_view) in &secondary_window_views {
         let mut secondary_command_messages = String::new();
         for (index, element) in secondary_view.elements.iter().enumerate() {
+            let swipe_handler = if let Some(action) = view_property(element, "on_swipe") {
+                let ExprKind::Var(function) = &action.value.kind else {
+                    unreachable!("secondary swipe callback shape was validated before emission");
+                };
+                let callback = function_c_name(function);
+                format!(
+                    "FluxWindowsView{view_identity}GestureState *swipe_gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (swipe_gesture != NULL) {{ if (message == WM_LBUTTONDOWN) {{ swipe_gesture->swipe_tracking[{index}] = true; swipe_gesture->swipe_moved[{index}] = false; swipe_gesture->swipe_consumed[{index}] = false; swipe_gesture->swipe_start_x[{index}] = (int)(short)LOWORD(lparam); swipe_gesture->swipe_start_y[{index}] = (int)(short)HIWORD(lparam); swipe_gesture->swipe_start_time[{index}] = (DWORD)GetMessageTime(); SetCapture(hwnd); }} if (message == WM_MOUSEMOVE && swipe_gesture->swipe_tracking[{index}]) {{ if ((wparam & MK_LBUTTON) == 0) {{ swipe_gesture->swipe_tracking[{index}] = false; swipe_gesture->swipe_moved[{index}] = false; if (GetCapture() == hwnd) ReleaseCapture(); }} else {{ int dx = (int)(short)LOWORD(lparam) - swipe_gesture->swipe_start_x[{index}]; int dy = (int)(short)HIWORD(lparam) - swipe_gesture->swipe_start_y[{index}]; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) swipe_gesture->swipe_moved[{index}] = true; }} }} if (message == WM_LBUTTONUP && swipe_gesture->swipe_tracking[{index}]) {{ int delta_x = (int)(short)LOWORD(lparam) - swipe_gesture->swipe_start_x[{index}]; int delta_y = (int)(short)HIWORD(lparam) - swipe_gesture->swipe_start_y[{index}]; DWORD elapsed = (DWORD)((DWORD)GetMessageTime() - swipe_gesture->swipe_start_time[{index}]); int abs_x = delta_x < 0 ? -delta_x : delta_x; int abs_y = delta_y < 0 ? -delta_y : delta_y; if (abs_x > GetSystemMetrics(SM_CXDRAG) || abs_y > GetSystemMetrics(SM_CYDRAG)) swipe_gesture->swipe_moved[{index}] = true; swipe_gesture->swipe_consumed[{index}] = swipe_gesture->swipe_moved[{index}]; if (swipe_gesture->swipe_moved[{index}] && elapsed > 0) {{ int64_t logical_x = flux__win_unscale(delta_x); int64_t logical_y = flux__win_unscale(delta_y); int64_t velocity_x = logical_x * INT64_C(1000) / (int64_t)elapsed; int64_t velocity_y = logical_y * INT64_C(1000) / (int64_t)elapsed; UINT interval = GetDoubleClickTime(); if (interval == 0) interval = 1; int64_t minimum_x = (flux__win_unscale(GetSystemMetrics(SM_CXDRAG)) * INT64_C(1000) + (int64_t)interval - 1) / (int64_t)interval; int64_t minimum_y = (flux__win_unscale(GetSystemMetrics(SM_CYDRAG)) * INT64_C(1000) + (int64_t)interval - 1) / (int64_t)interval; int64_t speed_x = velocity_x < 0 ? -velocity_x : velocity_x; int64_t speed_y = velocity_y < 0 ? -velocity_y : velocity_y; if (speed_x >= minimum_x || speed_y >= minimum_y) {{ {callback}(velocity_x, velocity_y); flux__win_refresh(); }} }} swipe_gesture->swipe_tracking[{index}] = false; swipe_gesture->swipe_moved[{index}] = false; }} if (message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ swipe_gesture->swipe_tracking[{index}] = false; swipe_gesture->swipe_moved[{index}] = false; }} }} "
+                )
+            } else {
+                String::new()
+            };
             let drag_handler = if let Some(action) = view_property(element, "on_drag") {
                 let ExprKind::Var(function) = &action.value.kind else {
                     unreachable!("secondary drag callback shape was validated before emission");
                 };
                 let callback = function_c_name(function);
                 format!(
-                    "FluxWindowsView{view_identity}GestureState *drag_gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (drag_gesture != NULL) {{ if (message == WM_LBUTTONDOWN) {{ POINT drag_start = {{ (LONG)(short)LOWORD(lparam), (LONG)(short)HIWORD(lparam) }}; if (ClientToScreen(hwnd, &drag_start)) {{ drag_gesture->dragging[{index}] = true; drag_gesture->drag_start_screen_x[{index}] = drag_start.x; drag_gesture->drag_start_screen_y[{index}] = drag_start.y; SetCapture(hwnd); }} }} if (message == WM_MOUSEMOVE && drag_gesture->dragging[{index}]) {{ if ((wparam & MK_LBUTTON) == 0) {{ drag_gesture->dragging[{index}] = false; if (GetCapture() == hwnd) ReleaseCapture(); }} else {{ POINT cursor; if (GetCursorPos(&cursor)) {{ int64_t physical_offset_x_wide = (int64_t)cursor.x - (int64_t)drag_gesture->drag_start_screen_x[{index}]; int64_t physical_offset_y_wide = (int64_t)cursor.y - (int64_t)drag_gesture->drag_start_screen_y[{index}]; int offset_x = physical_offset_x_wide < INT32_MIN ? INT32_MIN : (physical_offset_x_wide > INT32_MAX ? INT32_MAX : (int)physical_offset_x_wide); int offset_y = physical_offset_y_wide < INT32_MIN ? INT32_MIN : (physical_offset_y_wide > INT32_MAX ? INT32_MAX : (int)physical_offset_y_wide); {callback}(flux__win_unscale(offset_x), flux__win_unscale(offset_y)); flux__win_refresh(); }} }} }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ drag_gesture->dragging[{index}] = false; if (GetCapture() == hwnd) ReleaseCapture(); }} }} "
+                    "FluxWindowsView{view_identity}GestureState *drag_gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (drag_gesture != NULL) {{ if (message == WM_LBUTTONDOWN) {{ POINT drag_start = {{ (LONG)(short)LOWORD(lparam), (LONG)(short)HIWORD(lparam) }}; if (ClientToScreen(hwnd, &drag_start)) {{ drag_gesture->dragging[{index}] = true; drag_gesture->drag_start_screen_x[{index}] = drag_start.x; drag_gesture->drag_start_screen_y[{index}] = drag_start.y; SetCapture(hwnd); }} }} if (message == WM_MOUSEMOVE && drag_gesture->dragging[{index}]) {{ if ((wparam & MK_LBUTTON) == 0) {{ drag_gesture->dragging[{index}] = false; if (GetCapture() == hwnd) ReleaseCapture(); }} else {{ POINT cursor; if (GetCursorPos(&cursor)) {{ int64_t physical_offset_x_wide = (int64_t)cursor.x - (int64_t)drag_gesture->drag_start_screen_x[{index}]; int64_t physical_offset_y_wide = (int64_t)cursor.y - (int64_t)drag_gesture->drag_start_screen_y[{index}]; int offset_x = physical_offset_x_wide < INT32_MIN ? INT32_MIN : (physical_offset_x_wide > INT32_MAX ? INT32_MAX : (int)physical_offset_x_wide); int offset_y = physical_offset_y_wide < INT32_MIN ? INT32_MIN : (physical_offset_y_wide > INT32_MAX ? INT32_MAX : (int)physical_offset_y_wide); {callback}(flux__win_unscale(offset_x), flux__win_unscale(offset_y)); flux__win_refresh(); }} }} }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ drag_gesture->dragging[{index}] = false; }} }} "
                 )
             } else {
                 String::new()
@@ -22650,6 +22693,20 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 )
             } else {
                 String::new()
+            };
+            let capture_release_after_previous = if view_property(element, "on_drag").is_some()
+                || view_property(element, "on_swipe").is_some()
+            {
+                "if (message == WM_LBUTTONUP && GetCapture() == hwnd) ReleaseCapture(); "
+            } else {
+                ""
+            };
+            let final_previous_dispatch = if capture_release_after_previous.is_empty() {
+                "return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam);".to_string()
+            } else {
+                format!(
+                    "LRESULT result = previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); {capture_release_after_previous}return result;"
+                )
             };
             if element.kind == "TextInput" {
                 for (property_name, callback_name) in
@@ -22782,8 +22839,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     } else {
                         "bool long_press_consumed = false; ".to_string()
                     };
+                    let swipe_cancel = if view_property(element, "on_swipe").is_some() {
+                        format!("bool swipe_consumed = gesture->swipe_consumed[{index}]; ")
+                    } else {
+                        "bool swipe_consumed = false; ".to_string()
+                    };
                     format!(
-                        "FluxWindowsView{view_identity}GestureState *double_tap_gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (double_tap_gesture != NULL && message == WM_LBUTTONUP) {{ FluxWindowsView{view_identity}GestureState *gesture = double_tap_gesture; {long_press_cancel}LRESULT result = previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); if (long_press_consumed) {{ gesture->double_tap_armed[{index}] = false; return result; }} DWORD now = (DWORD)GetMessageTime(); POINT point = {{ (int)(short)LOWORD(lparam), (int)(short)HIWORD(lparam) }}; int dx = point.x - gesture->double_tap_start[{index}].x; int dy = point.y - gesture->double_tap_start[{index}].y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; int max_dx = (GetSystemMetrics(SM_CXDOUBLECLK) + 1) / 2; int max_dy = (GetSystemMetrics(SM_CYDOUBLECLK) + 1) / 2; if (gesture->double_tap_armed[{index}] && (DWORD)(now - gesture->double_tap_time[{index}]) <= GetDoubleClickTime() && dx <= max_dx && dy <= max_dy) {{ gesture->double_tap_armed[{index}] = false; {event_body} }} else {{ gesture->double_tap_armed[{index}] = true; gesture->double_tap_time[{index}] = now; gesture->double_tap_start[{index}] = point; }} return result; }} "
+                        "FluxWindowsView{view_identity}GestureState *double_tap_gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (double_tap_gesture != NULL && message == WM_LBUTTONUP) {{ FluxWindowsView{view_identity}GestureState *gesture = double_tap_gesture; {long_press_cancel}{swipe_cancel}LRESULT result = previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); {capture_release_after_previous}if (long_press_consumed || swipe_consumed) {{ if (swipe_consumed) gesture->swipe_consumed[{index}] = false; gesture->double_tap_armed[{index}] = false; return result; }} DWORD now = (DWORD)GetMessageTime(); POINT point = {{ (int)(short)LOWORD(lparam), (int)(short)HIWORD(lparam) }}; int dx = point.x - gesture->double_tap_start[{index}].x; int dy = point.y - gesture->double_tap_start[{index}].y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; int max_dx = (GetSystemMetrics(SM_CXDOUBLECLK) + 1) / 2; int max_dy = (GetSystemMetrics(SM_CYDOUBLECLK) + 1) / 2; if (gesture->double_tap_armed[{index}] && (DWORD)(now - gesture->double_tap_time[{index}]) <= GetDoubleClickTime() && dx <= max_dx && dy <= max_dy) {{ gesture->double_tap_armed[{index}] = false; {event_body} }} else {{ gesture->double_tap_armed[{index}] = true; gesture->double_tap_time[{index}] = now; gesture->double_tap_start[{index}] = point; }} return result; }} "
                     )
                 } else {
                     String::new()
@@ -22814,12 +22876,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         format!("{}(); flux__win_refresh();", function_c_name(function))
                     };
                     format!(
-                        "FluxWindowsView{view_identity}GestureState *gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (gesture != NULL) {{ const UINT_PTR timer_id = (UINT_PTR)(0xF500u + {index}u); if (message == WM_LBUTTONDOWN) {{ LRESULT result = previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); POINT point = {{ (int)(short)LOWORD(lparam), (int)(short)HIWORD(lparam) }}; ClientToScreen(hwnd, &point); gesture->start[{index}] = point; gesture->consumed[{index}] = false; gesture->armed[{index}] = SetTimer(hwnd, timer_id, GetDoubleClickTime(), NULL) != 0; return result; }} if (message == WM_MOUSEMOVE && gesture->armed[{index}]) {{ POINT point = {{0}}; if (GetCursorPos(&point)) {{ int dx = point.x - gesture->start[{index}].x; int dy = point.y - gesture->start[{index}].y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) {{ KillTimer(hwnd, timer_id); gesture->armed[{index}] = false; }} }} }} if (message == WM_TIMER && wparam == timer_id) {{ KillTimer(hwnd, timer_id); bool pressed = (GetKeyState(VK_LBUTTON) & 0x8000) != 0; POINT point = {{0}}; bool inside_threshold = false; if (pressed && GetCursorPos(&point)) {{ int dx = point.x - gesture->start[{index}].x; int dy = point.y - gesture->start[{index}].y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; inside_threshold = dx <= GetSystemMetrics(SM_CXDRAG) && dy <= GetSystemMetrics(SM_CYDRAG); }} if (gesture->armed[{index}] && inside_threshold) {{ gesture->consumed[{index}] = true; {event_body} }} gesture->armed[{index}] = false; return 0; }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ KillTimer(hwnd, timer_id); gesture->armed[{index}] = false; LRESULT result = previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); return result; }} if (message == WM_NCDESTROY) {{ KillTimer(hwnd, timer_id); gesture->armed[{index}] = false; }} }} "
+                        "FluxWindowsView{view_identity}GestureState *gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (gesture != NULL) {{ const UINT_PTR timer_id = (UINT_PTR)(0xF500u + {index}u); if (message == WM_LBUTTONDOWN) {{ LRESULT result = previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); POINT point = {{ (int)(short)LOWORD(lparam), (int)(short)HIWORD(lparam) }}; ClientToScreen(hwnd, &point); gesture->start[{index}] = point; gesture->consumed[{index}] = false; gesture->armed[{index}] = SetTimer(hwnd, timer_id, GetDoubleClickTime(), NULL) != 0; return result; }} if (message == WM_MOUSEMOVE && gesture->armed[{index}]) {{ POINT point = {{0}}; if (GetCursorPos(&point)) {{ int dx = point.x - gesture->start[{index}].x; int dy = point.y - gesture->start[{index}].y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) {{ KillTimer(hwnd, timer_id); gesture->armed[{index}] = false; }} }} }} if (message == WM_TIMER && wparam == timer_id) {{ KillTimer(hwnd, timer_id); bool pressed = (GetKeyState(VK_LBUTTON) & 0x8000) != 0; POINT point = {{0}}; bool inside_threshold = false; if (pressed && GetCursorPos(&point)) {{ int dx = point.x - gesture->start[{index}].x; int dy = point.y - gesture->start[{index}].y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; inside_threshold = dx <= GetSystemMetrics(SM_CXDRAG) && dy <= GetSystemMetrics(SM_CYDRAG); }} if (gesture->armed[{index}] && inside_threshold) {{ gesture->consumed[{index}] = true; {event_body} }} gesture->armed[{index}] = false; return 0; }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ KillTimer(hwnd, timer_id); gesture->armed[{index}] = false; LRESULT result = previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); {capture_release_after_previous}return result; }} if (message == WM_NCDESTROY) {{ KillTimer(hwnd, timer_id); gesture->armed[{index}] = false; }} }} "
                     )
                 } else {
                     String::new()
                 };
                 if !submit_handler.is_empty()
+                    || !swipe_handler.is_empty()
                     || !drag_handler.is_empty()
                     || !hover_handler.is_empty()
                     || !double_tap_handler.is_empty()
@@ -22827,7 +22890,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     || !scale_handler.is_empty()
                 {
                     out.push_str(&format!(
-                        "static LRESULT CALLBACK flux__win_input_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_original_count > {index} && context->control_subclass_originals != NULL ? context->control_subclass_originals[{index}] : NULL; {submit_handler}{drag_handler}{hover_handler}{double_tap_handler}{long_press_handler}{scale_handler}return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); }}\n"
+                        "static LRESULT CALLBACK flux__win_input_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_original_count > {index} && context->control_subclass_originals != NULL ? context->control_subclass_originals[{index}] : NULL; {submit_handler}{swipe_handler}{drag_handler}{hover_handler}{double_tap_handler}{long_press_handler}{scale_handler}{final_previous_dispatch} }}\n"
                     ));
                 }
                 continue;
@@ -22901,8 +22964,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 } else {
                     "bool long_press_consumed = false; ".to_string()
                 };
+                let swipe_cancel = if view_property(element, "on_swipe").is_some() {
+                    format!("bool swipe_consumed = gesture->swipe_consumed[{index}]; ")
+                } else {
+                    "bool swipe_consumed = false; ".to_string()
+                };
                 format!(
-                    "if (message == WM_LBUTTONUP) {{ {long_press_cancel}LRESULT result = previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); if (long_press_consumed) {{ gesture->double_tap_armed[{index}] = false; return result; }} DWORD now = (DWORD)GetMessageTime(); POINT point = {{ (int)(short)LOWORD(lparam), (int)(short)HIWORD(lparam) }}; int dx = point.x - gesture->double_tap_start[{index}].x; int dy = point.y - gesture->double_tap_start[{index}].y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; int max_dx = (GetSystemMetrics(SM_CXDOUBLECLK) + 1) / 2; int max_dy = (GetSystemMetrics(SM_CYDOUBLECLK) + 1) / 2; if (gesture->double_tap_armed[{index}] && (DWORD)(now - gesture->double_tap_time[{index}]) <= GetDoubleClickTime() && dx <= max_dx && dy <= max_dy) {{ gesture->double_tap_armed[{index}] = false; {event_body} }} else {{ gesture->double_tap_armed[{index}] = true; gesture->double_tap_time[{index}] = now; gesture->double_tap_start[{index}] = point; }} return result; }} "
+                    "if (message == WM_LBUTTONUP) {{ {long_press_cancel}{swipe_cancel}LRESULT result = previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); {capture_release_after_previous}if (long_press_consumed || swipe_consumed) {{ if (swipe_consumed) gesture->swipe_consumed[{index}] = false; gesture->double_tap_armed[{index}] = false; return result; }} DWORD now = (DWORD)GetMessageTime(); POINT point = {{ (int)(short)LOWORD(lparam), (int)(short)HIWORD(lparam) }}; int dx = point.x - gesture->double_tap_start[{index}].x; int dy = point.y - gesture->double_tap_start[{index}].y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; int max_dx = (GetSystemMetrics(SM_CXDOUBLECLK) + 1) / 2; int max_dy = (GetSystemMetrics(SM_CYDOUBLECLK) + 1) / 2; if (gesture->double_tap_armed[{index}] && (DWORD)(now - gesture->double_tap_time[{index}]) <= GetDoubleClickTime() && dx <= max_dx && dy <= max_dy) {{ gesture->double_tap_armed[{index}] = false; {event_body} }} else {{ gesture->double_tap_armed[{index}] = true; gesture->double_tap_time[{index}] = now; gesture->double_tap_start[{index}] = point; }} return result; }} "
                 )
             } else {
                 String::new()
@@ -22926,12 +22994,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     format!("{}(); flux__win_refresh();", function_c_name(function))
                 };
                 format!(
-                    "const UINT_PTR timer_id = (UINT_PTR)(0xF500u + {index}u); if (message == WM_LBUTTONDOWN) {{ LRESULT result = previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); POINT point = {{ (int)(short)LOWORD(lparam), (int)(short)HIWORD(lparam) }}; ClientToScreen(hwnd, &point); gesture->start[{index}] = point; gesture->consumed[{index}] = false; gesture->armed[{index}] = SetTimer(hwnd, timer_id, GetDoubleClickTime(), NULL) != 0; return result; }} if (message == WM_MOUSEMOVE && gesture->armed[{index}]) {{ POINT point = {{0}}; if (GetCursorPos(&point)) {{ int dx = point.x - gesture->start[{index}].x; int dy = point.y - gesture->start[{index}].y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) {{ KillTimer(hwnd, timer_id); gesture->armed[{index}] = false; }} }} }} if (message == WM_TIMER && wparam == timer_id) {{ KillTimer(hwnd, timer_id); bool pressed = (GetKeyState(VK_LBUTTON) & 0x8000) != 0; POINT point = {{0}}; bool inside_threshold = false; if (pressed && GetCursorPos(&point)) {{ int dx = point.x - gesture->start[{index}].x; int dy = point.y - gesture->start[{index}].y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; inside_threshold = dx <= GetSystemMetrics(SM_CXDRAG) && dy <= GetSystemMetrics(SM_CYDRAG); }} if (gesture->armed[{index}] && inside_threshold) {{ gesture->consumed[{index}] = true; {event_body} }} gesture->armed[{index}] = false; return 0; }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ KillTimer(hwnd, timer_id); gesture->armed[{index}] = false; LRESULT result = previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); return result; }} if (message == WM_NCDESTROY) {{ KillTimer(hwnd, timer_id); gesture->armed[{index}] = false; }} "
+                    "const UINT_PTR timer_id = (UINT_PTR)(0xF500u + {index}u); if (message == WM_LBUTTONDOWN) {{ LRESULT result = previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); POINT point = {{ (int)(short)LOWORD(lparam), (int)(short)HIWORD(lparam) }}; ClientToScreen(hwnd, &point); gesture->start[{index}] = point; gesture->consumed[{index}] = false; gesture->armed[{index}] = SetTimer(hwnd, timer_id, GetDoubleClickTime(), NULL) != 0; return result; }} if (message == WM_MOUSEMOVE && gesture->armed[{index}]) {{ POINT point = {{0}}; if (GetCursorPos(&point)) {{ int dx = point.x - gesture->start[{index}].x; int dy = point.y - gesture->start[{index}].y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) {{ KillTimer(hwnd, timer_id); gesture->armed[{index}] = false; }} }} }} if (message == WM_TIMER && wparam == timer_id) {{ KillTimer(hwnd, timer_id); bool pressed = (GetKeyState(VK_LBUTTON) & 0x8000) != 0; POINT point = {{0}}; bool inside_threshold = false; if (pressed && GetCursorPos(&point)) {{ int dx = point.x - gesture->start[{index}].x; int dy = point.y - gesture->start[{index}].y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; inside_threshold = dx <= GetSystemMetrics(SM_CXDRAG) && dy <= GetSystemMetrics(SM_CYDRAG); }} if (gesture->armed[{index}] && inside_threshold) {{ gesture->consumed[{index}] = true; {event_body} }} gesture->armed[{index}] = false; return 0; }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ KillTimer(hwnd, timer_id); gesture->armed[{index}] = false; LRESULT result = previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); {capture_release_after_previous}return result; }} if (message == WM_NCDESTROY) {{ KillTimer(hwnd, timer_id); gesture->armed[{index}] = false; }} "
                 )
             } else {
                 String::new()
             };
-            if !drag_handler.is_empty()
+            if !swipe_handler.is_empty()
+                || !drag_handler.is_empty()
                 || !hover_handler.is_empty()
                 || !double_tap_handler.is_empty()
                 || !long_press_handler.is_empty()
@@ -22943,13 +23012,15 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     "double_tap"
                 } else if !hover_handler.is_empty() {
                     "hover"
+                } else if !swipe_handler.is_empty() {
+                    "swipe"
                 } else if !drag_handler.is_empty() {
                     "drag"
                 } else {
                     "scale"
                 };
                 out.push_str(&format!(
-                    "static LRESULT CALLBACK flux__win_{proc_kind}_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_originals != NULL && context->control_subclass_original_count > {index} ? context->control_subclass_originals[{index}] : NULL; FluxWindowsView{view_identity}GestureState *gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (gesture == NULL) return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); {drag_handler}{hover_handler}{double_tap_handler}{long_press_handler}{scale_handler}return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); }}
+                    "static LRESULT CALLBACK flux__win_{proc_kind}_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_originals != NULL && context->control_subclass_original_count > {index} ? context->control_subclass_originals[{index}] : NULL; FluxWindowsView{view_identity}GestureState *gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (gesture == NULL) return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); {swipe_handler}{drag_handler}{hover_handler}{double_tap_handler}{long_press_handler}{scale_handler}{final_previous_dispatch} }}
 "
                 ));
             }
@@ -22975,8 +23046,15 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     } else {
                         String::new()
                     };
+                    let swipe_guard = if view_property(element, "on_swipe").is_some() {
+                        format!(
+                            "FluxWindowsView{view_identity}GestureState *swipe_state = (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state; if (swipe_state != NULL && swipe_state->swipe_consumed[{index}]) {{ swipe_state->swipe_consumed[{index}] = false; flux__win_refresh(); return 0; }} "
+                        )
+                    } else {
+                        String::new()
+                    };
                     secondary_command_messages.push_str(&format!(
-                        "case {}: if (HIWORD(wparam) == {notification}) {{ {long_press_guard}flux__win_tap_view_{view_identity}_{index}(); }} return 0;\n",
+                        "case {}: if (HIWORD(wparam) == {notification}) {{ {long_press_guard}{swipe_guard}flux__win_tap_view_{view_identity}_{index}(); }} return 0;\n",
                         1000 + index
                     ));
                 }
@@ -22986,6 +23064,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             let long_press_guard = if view_property(element, "on_long_press").is_some() {
                 format!(
                     "FluxWindowsView{view_identity}GestureState *gesture_state = (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state; if (gesture_state != NULL && gesture_state->consumed[{index}]) {{ gesture_state->consumed[{index}] = false; flux__win_refresh(); return 0; }} "
+                )
+            } else {
+                String::new()
+            };
+            let swipe_guard = if view_property(element, "on_swipe").is_some() {
+                format!(
+                    "FluxWindowsView{view_identity}GestureState *swipe_state = (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state; if (swipe_state != NULL && swipe_state->swipe_consumed[{index}]) {{ swipe_state->swipe_consumed[{index}] = false; flux__win_refresh(); return 0; }} "
                 )
             } else {
                 String::new()
@@ -23005,7 +23090,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     Some(*view_identity),
                 )?;
                 secondary_command_messages.push_str(&format!(
-                    "case {}: if (HIWORD(wparam) == BN_CLICKED) {{ {long_press_guard}{active_guard}{} = {next}; flux__win_refresh(); }} return 0;\n",
+                    "case {}: if (HIWORD(wparam) == BN_CLICKED) {{ {long_press_guard}{swipe_guard}{active_guard}{} = {next}; flux__win_refresh(); }} return 0;\n",
                     1000 + index,
                     ui_state_c_name_for_view_identity(&transition.state, Some(*view_identity))
                 ));
@@ -23015,7 +23100,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 unreachable!("secondary activation shape was validated before emission");
             };
             secondary_command_messages.push_str(&format!(
-                "case {}: if (HIWORD(wparam) == BN_CLICKED) {{ {long_press_guard}{active_guard}{}(); flux__win_refresh(); }} return 0;\n",
+                "case {}: if (HIWORD(wparam) == BN_CLICKED) {{ {long_press_guard}{swipe_guard}{active_guard}{}(); flux__win_refresh(); }} return 0;\n",
                 1000 + index,
                 function_c_name(function)
             ));
@@ -23735,6 +23820,16 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 view_property(element, "on_drag").is_some().then_some(index)
             })
             .collect::<Vec<_>>();
+        let secondary_swipe_subclasses = secondary_view
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(index, element)| {
+                view_property(element, "on_swipe")
+                    .is_some()
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
         let secondary_scale_subclasses = secondary_view
             .elements
             .iter()
@@ -23750,6 +23845,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             || !secondary_double_tap_subclasses.is_empty()
             || !secondary_hover_subclasses.is_empty()
             || !secondary_drag_subclasses.is_empty()
+            || !secondary_swipe_subclasses.is_empty()
             || !secondary_scale_subclasses.is_empty()
         {
             out.push_str(&format!(
@@ -23762,6 +23858,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             || !secondary_double_tap_subclasses.is_empty()
             || !secondary_hover_subclasses.is_empty()
             || !secondary_drag_subclasses.is_empty()
+            || !secondary_swipe_subclasses.is_empty()
             || !secondary_scale_subclasses.is_empty()
         {
             out.push_str(&format!(
@@ -23861,7 +23958,8 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     || view_property(element, "on_long_press").is_some()
                     || view_property(element, "on_hover").is_some()
                     || view_property(element, "on_leave").is_some()
-                    || view_property(element, "on_drag").is_some())
+                    || view_property(element, "on_drag").is_some()
+                    || view_property(element, "on_swipe").is_some())
                 && !style.contains("SS_NOTIFY")
             {
                 style.push_str(" | SS_NOTIFY");
@@ -23929,6 +24027,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         || secondary_double_tap_subclasses.contains(&index)
                         || secondary_hover_subclasses.contains(&index)
                         || secondary_drag_subclasses.contains(&index)
+                        || secondary_swipe_subclasses.contains(&index)
                         || secondary_scale_subclasses.contains(&index)))
             {
                 out.push_str(&format!(
@@ -23940,6 +24039,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     || secondary_double_tap_subclasses.contains(&index)
                     || secondary_hover_subclasses.contains(&index)
                     || secondary_drag_subclasses.contains(&index)
+                    || secondary_swipe_subclasses.contains(&index)
                     || secondary_scale_subclasses.contains(&index))
             {
                 let proc_kind = if secondary_long_press_subclasses.contains(&index) {
@@ -23948,6 +24048,8 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     "double_tap"
                 } else if secondary_hover_subclasses.contains(&index) {
                     "hover"
+                } else if secondary_swipe_subclasses.contains(&index) {
+                    "swipe"
                 } else if secondary_drag_subclasses.contains(&index) {
                     "drag"
                 } else {

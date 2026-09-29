@@ -72166,6 +72166,134 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_composed_swipe_interaction() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+fn swiped(x: i64, y: i64) -> void {
+    print(x)
+    print(y)
+}
+
+fn gestureAction() -> void {
+    print("gesture")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state query: str = "Ready"
+    grid columns: 1fr
+    grid rows: auto auto auto auto
+    Text swipeOnly at 1,1
+        text: "Swipe"
+        onSwipe: swiped
+    Text composed at 2,1
+        text: "Compose"
+        onTap: gestureAction
+        onDoubleTap: gestureAction
+        onLongPress: gestureAction
+        onSwipe: swiped
+    Button action at 3,1
+        text: "Action"
+        onPress: gestureAction
+        onSwipe: swiped
+    TextInput input at 4,1
+        text: query
+        submitOnEnter: true
+        onSubmit: query, value => value
+        onSwipe: swiped
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary swipe source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary Windows swipe should lower through composed subclasses");
+
+    assert!(windows.contains(
+        "static LRESULT CALLBACK flux__win_swipe_proc_view_1_0(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)"
+    ));
+    assert!(windows.contains(
+        "static LRESULT CALLBACK flux__win_long_press_proc_view_1_1(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)"
+    ));
+    assert!(windows.contains(
+        "static LRESULT CALLBACK flux__win_swipe_proc_view_1_2(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)"
+    ));
+    assert!(windows.contains(
+        "static LRESULT CALLBACK flux__win_input_proc_view_1_3(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)"
+    ));
+    assert!(windows.contains("bool swipe_tracking[4]"));
+    assert!(windows.contains("bool swipe_moved[4]"));
+    assert!(windows.contains("bool swipe_consumed[4]"));
+    assert!(windows.contains("DWORD swipe_start_time[4]"));
+    assert!(windows.contains("swipe_gesture->swipe_consumed[0] = swipe_gesture->swipe_moved[0]"));
+    assert!(windows.contains("flux__fn_swiped(velocity_x, velocity_y); flux__win_refresh();"));
+    assert!(windows.contains("bool swipe_consumed = gesture->swipe_consumed[1]"));
+    assert!(windows.contains("swipe_state->swipe_consumed[1]"));
+    assert!(windows.contains("swipe_state->swipe_consumed[2]"));
+    assert!(windows.contains(
+        "if (message == WM_LBUTTONUP && GetCapture() == hwnd) ReleaseCapture(); return result;"
+    ));
+    assert!(windows.contains("GWLP_WNDPROC, (LONG_PTR)flux__win_swipe_proc_view_1_0"));
+    assert!(windows.contains("GWLP_WNDPROC, (LONG_PTR)flux__win_long_press_proc_view_1_1"));
+    assert!(windows.contains("GWLP_WNDPROC, (LONG_PTR)flux__win_swipe_proc_view_1_2"));
+    assert!(windows.contains("GWLP_WNDPROC, (LONG_PTR)flux__win_input_proc_view_1_3"));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-swipe-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("secondary swipe syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary swipe C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary swipe Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary swipe Windows C failed syntax validation:
+{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_composed_drag_interaction() {
     let source = r#"
 fn openSecondary() -> void {
