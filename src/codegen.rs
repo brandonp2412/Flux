@@ -16881,6 +16881,11 @@ fn emit_windows_native_application(
                     || property.name == "tooltip"
                     || matches!(
                         property.name.as_str(),
+                        "background_color" | "backgroundColor"
+                    )
+                    || (element.kind == "Text" && property.name == "color")
+                    || matches!(
+                        property.name.as_str(),
                         "accessibility_label"
                             | "accessibilityLabel"
                             | "accessibility_description"
@@ -16952,10 +16957,24 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
+                    if matches!(
+                        property.name.as_str(),
+                        "background_color" | "backgroundColor" | "color"
+                    ) && let Some(value) = static_expr_str(&property.value, signatures)
+                        && windows_colorref(&value).is_none()
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            &format!(
+                                "{} must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token",
+                                internal_name_to_source(&property.name)
+                            ),
+                        ));
+                    }
                     if matches!(
                         property.name.as_str(),
                         "accessibility_actions" | "accessibilityActions"
@@ -19300,12 +19319,26 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
     } else {
         out.push_str("static void flux__windows_release_image_bitmaps(FluxWindowsWindowContext *context) { (void)context; }\n");
     }
-    let styled_elements = view.elements.iter().filter(|element| {
+    let uses_styled_elements = view.elements.iter().any(|element| {
         view_property(element, "background_color").is_some()
             || (element.kind == "Text" && view_property(element, "color").is_some())
+    }) || secondary_window_views.iter().any(|(_, secondary_view)| {
+        secondary_view.elements.iter().any(|element| {
+            view_property(element, "background_color").is_some()
+                || (element.kind == "Text" && view_property(element, "color").is_some())
+        })
     });
-    if styled_elements.clone().next().is_some() {
-        let style_slots = view.elements.len().saturating_mul(2).max(1);
+    if uses_styled_elements {
+        let style_slots = std::iter::once(view.elements.len())
+            .chain(
+                secondary_window_views
+                    .iter()
+                    .map(|(_, secondary_view)| secondary_view.elements.len()),
+            )
+            .max()
+            .unwrap_or(0)
+            .saturating_mul(2)
+            .max(1);
         out.push_str(&format!("static bool flux__windows_style_storage(FluxWindowsWindowContext *context, size_t slot, HBRUSH **brush, COLORREF **color, bool **has_color) {{ if (context == NULL || slot >= {style_slots} || brush == NULL || color == NULL || has_color == NULL) return false; if (context->style_brushes == NULL) {{ context->style_brushes = (HBRUSH *)calloc({style_slots}, sizeof(HBRUSH)); context->style_colors = (COLORREF *)calloc({style_slots}, sizeof(COLORREF)); context->style_has_colors = (bool *)calloc({style_slots}, sizeof(bool)); if (context->style_brushes == NULL || context->style_colors == NULL || context->style_has_colors == NULL) abort(); context->style_count = {style_slots}; }} *brush = &context->style_brushes[slot]; *color = &context->style_colors[slot]; *has_color = &context->style_has_colors[slot]; return true; }}\n"));
         out.push_str("static void flux__windows_release_style_state(FluxWindowsWindowContext *context) { if (context == NULL) return; if (context->style_brushes != NULL) for (size_t index = 0; index < context->style_count; ++index) if (context->style_brushes[index] != NULL) DeleteObject(context->style_brushes[index]); free(context->style_brushes); free(context->style_colors); free(context->style_has_colors); context->style_brushes = NULL; context->style_colors = NULL; context->style_has_colors = NULL; context->style_count = 0; }\n");
         out.push_str("static HBRUSH flux__win_static_brush_for(FluxWindowsWindowContext *context, size_t slot, COLORREF color) { HBRUSH *brush = NULL; COLORREF *current = NULL; bool *has_color = NULL; if (!flux__windows_style_storage(context, slot, &brush, &current, &has_color)) return NULL; if (*brush == NULL || !*has_color || *current != color) { if (*brush != NULL) DeleteObject(*brush); *brush = CreateSolidBrush(color); *current = color; *has_color = *brush != NULL; } return *brush; }\nstatic HBRUSH flux__win_static_brush(size_t slot, COLORREF color) { return flux__win_static_brush_for(flux__windows_active_context, slot, color); }\n");
@@ -19528,6 +19561,15 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
             (property_name == &"background_color" || element.kind == "Text")
                 && view_property(element, property_name)
                     .is_some_and(|property| static_expr_str(&property.value, signatures).is_none())
+        })
+    }) || secondary_window_views.iter().any(|(_, secondary_view)| {
+        secondary_view.elements.iter().any(|element| {
+            ["background_color", "color"].iter().any(|property_name| {
+                (property_name == &"background_color" || element.kind == "Text")
+                    && view_property(element, property_name).is_some_and(|property| {
+                        static_expr_str(&property.value, signatures).is_none()
+                    })
+            })
         })
     });
     if uses_dynamic_colors {
@@ -21065,7 +21107,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             format!(" flux__windows_release_view_{view_identity}_params(context);")
         };
         out.push_str(&format!(
-            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0;{release_params}{secondary_subclass_release} flux__windows_release_drop_targets(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_image_bitmaps(context); free(context->control_windows); context->control_windows = NULL; }}\n"
+            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0;{release_params}{secondary_subclass_release} flux__windows_release_drop_targets(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_image_bitmaps(context); flux__windows_release_style_state(context); free(context->control_windows); context->control_windows = NULL; }}\n"
         ));
         secondary_save_cases.push_str(&format!(
             " case UINT32_C({view_identity}): flux__windows_save_view_{view_identity}_state(context); return;"
@@ -22436,6 +22478,37 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     "EnableWindow(context->control_windows[{index}], ({value}) ? TRUE : FALSE);\n"
                 ));
             }
+            if let Some(property) = view_property(element, "background_color")
+                && static_expr_str(&property.value, signatures).is_none()
+            {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                out.push_str(&format!(
+                    "flux__win_set_dynamic_background(context->control_windows[{index}], {}, {value});
+",
+                    index * 2
+                ));
+            }
+            if element.kind == "Text"
+                && let Some(property) = view_property(element, "color")
+                && static_expr_str(&property.value, signatures).is_none()
+            {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                out.push_str(&format!(
+                    "flux__win_set_dynamic_text_color(context->control_windows[{index}], {}, {value});
+",
+                    index * 2 + 1
+                ));
+            }
             if let Some(property) = view_property(element, "focusable") {
                 let value = ui_expr_c_for_view_identity(
                     &property.value,
@@ -22668,17 +22741,59 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             ));
         }
     }
-    let mut secondary_validation_paint = String::new();
+    let mut secondary_paint = String::new();
     for (view_identity, secondary_view) in &secondary_window_views {
         for (index, element) in secondary_view.elements.iter().enumerate() {
-            if element.kind == "TextInput" && view_property(element, "validation_state").is_some() {
-                secondary_validation_paint.push_str(&format!(
-                    "if (secondary_paint_context != NULL && secondary_paint_context->view_identity == UINT32_C({view_identity}) && control == (secondary_paint_context->control_windows != NULL ? secondary_paint_context->control_windows[{index}] : NULL)) {{ if (secondary_paint_context->validation_active != NULL && secondary_paint_context->validation_active[{index}]) SetTextColor(dc, secondary_paint_context->validation_colors[{index}]); else SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT)); return (LRESULT)GetSysColorBrush(COLOR_WINDOW); }}\n"
+            let validation =
+                element.kind == "TextInput" && view_property(element, "validation_state").is_some();
+            let background = view_property(element, "background_color");
+            let text_color = if element.kind == "Text" {
+                view_property(element, "color")
+            } else {
+                None
+            };
+            if !validation && background.is_none() && text_color.is_none() {
+                continue;
+            }
+            secondary_paint.push_str(&format!(
+                "if (secondary_paint_context != NULL && secondary_paint_context->view_identity == UINT32_C({view_identity}) && control == (secondary_paint_context->control_windows != NULL ? secondary_paint_context->control_windows[{index}] : NULL)) {{"
+            ));
+            if validation {
+                secondary_paint.push_str(&format!(
+                    " if (secondary_paint_context->validation_active != NULL && secondary_paint_context->validation_active[{index}]) SetTextColor(dc, secondary_paint_context->validation_colors[{index}]); else SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));"
                 ));
             }
+            if let Some(property) = text_color {
+                if let Some(value) = static_expr_str(&property.value, signatures) {
+                    let color = windows_colorref(&value)
+                        .expect("secondary Windows static Text.color was validated above");
+                    secondary_paint.push_str(&format!(" SetTextColor(dc, {color});"));
+                } else {
+                    secondary_paint.push_str(&format!(
+                        " COLORREF flux__win_view_{view_identity}_text_color_{index}; if (flux__win_style_color_for(secondary_paint_context, {}, &flux__win_view_{view_identity}_text_color_{index})) SetTextColor(dc, flux__win_view_{view_identity}_text_color_{index});",
+                        index * 2 + 1
+                    ));
+                }
+            }
+            if let Some(property) = background {
+                if let Some(value) = static_expr_str(&property.value, signatures) {
+                    let color = windows_colorref(&value)
+                        .expect("secondary Windows static backgroundColor was validated above");
+                    secondary_paint.push_str(&format!(
+                        " HBRUSH flux__win_view_{view_identity}_background_{index} = flux__win_static_brush_for(secondary_paint_context, {}, {color}); if (flux__win_view_{view_identity}_background_{index} != NULL) return (LRESULT)flux__win_view_{view_identity}_background_{index};",
+                        index * 2
+                    ));
+                } else {
+                    secondary_paint.push_str(&format!(
+                        " HBRUSH flux__win_view_{view_identity}_background_{index} = flux__win_style_brush_for(secondary_paint_context, {}); if (flux__win_view_{view_identity}_background_{index} != NULL) return (LRESULT)flux__win_view_{view_identity}_background_{index};",
+                        index * 2
+                    ));
+                }
+            }
+            secondary_paint.push_str(" return (LRESULT)GetSysColorBrush(COLOR_WINDOW); }\n");
         }
     }
-    out.push_str(&format!("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ switch (message) {{ case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT: {{ HDC dc = (HDC)wparam; HWND control = (HWND)lparam; FluxWindowsWindowContext *secondary_paint_context = flux__windows_context_for(hwnd); {secondary_validation_paint} FluxWindowsWindowContext *paint_context = flux__windows_context_for(hwnd); if (paint_context == NULL || paint_context->view_identity != UINT32_C({root_view_identity})) break;\n"));
+    out.push_str(&format!("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ switch (message) {{ case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT: {{ HDC dc = (HDC)wparam; HWND control = (HWND)lparam; FluxWindowsWindowContext *secondary_paint_context = flux__windows_context_for(hwnd); {secondary_paint} FluxWindowsWindowContext *paint_context = flux__windows_context_for(hwnd); if (paint_context == NULL || paint_context->view_identity != UINT32_C({root_view_identity})) break;\n"));
     for (index, element) in view.elements.iter().enumerate().filter(|(_, element)| {
         let presentation_text_color = element.kind != "Image"
             && view_property(element, "status")
