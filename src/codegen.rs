@@ -21135,8 +21135,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             || presentation_text_color
     }) {
         out.push_str(&format!(
-            "if (control == {}) {{",
-            ui_widget_c_name(&element.name)
+            "if (control == (paint_context->control_windows != NULL ? paint_context->control_windows[{index}] : NULL)) {{"
         ));
         if element.kind == "TextInput" && view_property(element, "validation_state").is_some() {
             out.push_str(&format!(
@@ -21299,24 +21298,23 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             " case WM_CLOSE: {{ FluxWindowsWindowContext *close_context = flux__windows_context_for(hwnd); if (close_context != NULL && close_context->view_identity == UINT32_C({root_view_identity})) {{"
         );
         if uses_input_scopes {
-            for element in view.elements.iter().filter(|element| {
+            for (index, _) in view.elements.iter().enumerate().filter(|(_, element)| {
                 element.kind == "TextInput" && view_property(element, "keyboard_type").is_some()
             }) {
                 cleanup.push_str(&format!(
-                    " flux__win_clear_input_scope({});",
-                    ui_widget_c_name(&element.name)
+                    " if (close_context->control_windows != NULL) flux__win_clear_input_scope(close_context->control_windows[{index}]);"
                 ));
             }
         }
         if uses_text_drag_drop {
-            for element in view
+            for (index, _) in view
                 .elements
                 .iter()
-                .filter(|element| view_property(element, "on_drop").is_some())
+                .enumerate()
+                .filter(|(_, element)| view_property(element, "on_drop").is_some())
             {
                 cleanup.push_str(&format!(
-                    " flux__win_revoke_drop_target({});",
-                    ui_widget_c_name(&element.name)
+                    " if (close_context->control_windows != NULL) flux__win_revoke_drop_target(close_context->control_windows[{index}]);"
                 ));
             }
         }

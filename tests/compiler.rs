@@ -6039,7 +6039,7 @@ app Screen
     assert!(
         generated.contains("case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT:")
     );
-    assert!(generated.contains("if (control == flux__ui_input)"));
+    assert!(generated.contains("if (control == (paint_context->control_windows != NULL ? paint_context->control_windows[1] : NULL))"));
 }
 
 #[test]
@@ -6434,8 +6434,8 @@ app Screen
     );
     assert!(generated.contains("flux__win_set_input_scope(flux__ui_phone, \"phone\")"));
     assert!(generated.contains("case WM_CLOSE: { FluxWindowsWindowContext *close_context = flux__windows_context_for(hwnd); if (close_context != NULL && close_context->view_identity == UINT32_C(0)) {"));
-    assert!(generated.contains("flux__win_clear_input_scope(flux__ui_dynamic);"));
-    assert!(generated.contains("flux__win_clear_input_scope(flux__ui_phone);"));
+    assert!(generated.contains("if (close_context->control_windows != NULL) flux__win_clear_input_scope(close_context->control_windows[0]);"));
+    assert!(generated.contains("if (close_context->control_windows != NULL) flux__win_clear_input_scope(close_context->control_windows[1]);"));
     assert!(generated.contains("flux__win_input_scope_shutdown();"));
 
     let header_root = PathBuf::from("/usr/include/wine/windows");
@@ -64952,10 +64952,10 @@ app Statuses
         windows.contains("SetLayeredWindowAttributes(flux__ui_loading, 0, (BYTE)173, LWA_ALPHA)")
     );
     assert!(
-        windows.contains("if (control == flux__ui_empty) { SetTextColor(dc, RGB(87, 96, 106));")
+        windows.contains("if (control == (paint_context->control_windows != NULL ? paint_context->control_windows[1] : NULL)) { SetTextColor(dc, RGB(87, 96, 106));")
     );
     assert!(
-        windows.contains("if (control == flux__ui_failed) { SetTextColor(dc, RGB(207, 34, 46));")
+        windows.contains("if (control == (paint_context->control_windows != NULL ? paint_context->control_windows[2] : NULL)) { SetTextColor(dc, RGB(207, 34, 46));")
     );
 
     let invalid = r#"
@@ -68066,7 +68066,7 @@ app DragDrop
         "flux__win_register_drop_target(flux__ui_target, flux__win_drop_target_1, flux__fn_dropped)"
     ));
     assert!(windows.contains("flux__windows_release_drop_targets(context)"));
-    assert!(windows.contains("flux__win_revoke_drop_target(flux__ui_target)"));
+    assert!(windows.contains("if (close_context->control_windows != NULL) flux__win_revoke_drop_target(close_context->control_windows[1]);"));
     assert!(windows.contains("WideCharToMultiByte("));
     assert!(windows.contains("self->callback(utf8);"));
     assert!(windows.contains("flux__win_ole_shutdown();"));
@@ -70852,6 +70852,8 @@ app Screen
             .contains("if (dialog_window != NULL) flux__windows_activate_context(dialog_window);")
     );
     assert!(windows.contains("FluxWindowsWindowContext *paint_context = flux__windows_context_for(hwnd); if (paint_context == NULL || paint_context->view_identity != UINT32_C(0)) break;"));
+    assert!(windows.contains("control == (paint_context->control_windows != NULL ? paint_context->control_windows[0] : NULL)"));
+    assert!(windows.contains("control == (paint_context->control_windows != NULL ? paint_context->control_windows[1] : NULL)"));
     assert!(windows.contains(
         "if (context != NULL && context->view_identity == UINT32_C(0)) flux__win_apply_fonts();"
     ));
