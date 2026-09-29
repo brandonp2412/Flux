@@ -16883,7 +16883,8 @@ fn emit_windows_native_application(
                         property.name.as_str(),
                         "background_color" | "backgroundColor"
                     )
-                    || (element.kind == "Text" && property.name == "color")
+                    || (element.kind == "Text"
+                        && matches!(property.name.as_str(), "color" | "text_align" | "textAlign"))
                     || matches!(
                         property.name.as_str(),
                         "accessibility_label"
@@ -16957,7 +16958,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -16973,6 +16974,16 @@ fn emit_windows_native_application(
                                 "{} must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token",
                                 internal_name_to_source(&property.name)
                             ),
+                        ));
+                    }
+                    if element.kind == "Text"
+                        && matches!(property.name.as_str(), "text_align" | "textAlign")
+                        && let Some(value) = static_expr_str(&property.value, signatures)
+                        && !matches!(value.as_str(), "left" | "center" | "right" | "fill")
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.textAlign must be one of 'left', 'center', 'right', or 'fill'",
                         ));
                     }
                     if matches!(
@@ -19889,6 +19900,12 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
         element.kind == "Text"
             && view_property(element, "text_align")
                 .is_some_and(|property| static_expr_str(&property.value, signatures).is_none())
+    }) || secondary_window_views.iter().any(|(_, secondary_view)| {
+        secondary_view.elements.iter().any(|element| {
+            element.kind == "Text"
+                && view_property(element, "text_align")
+                    .is_some_and(|property| static_expr_str(&property.value, signatures).is_none())
+        })
     }) {
         out.push_str("static void flux__win_set_text_alignment(HWND control, const char *value) { if (control == NULL || value == NULL) return; LONG_PTR style = GetWindowLongPtrW(control, GWL_STYLE); style &= ~((LONG_PTR)SS_TYPEMASK); if (strcmp(value, \"center\") == 0) style |= SS_CENTER; else if (strcmp(value, \"right\") == 0) style |= SS_RIGHT; else if (strcmp(value, \"left\") == 0) style |= SS_LEFT; else if (strcmp(value, \"fill\") == 0) style |= SS_LEFT | SS_NOPREFIX; else { fputs(\"Flux runtime error: Text.textAlign must be one of 'left', 'center', 'right', or 'fill'\\n\", stderr); abort(); } SetWindowLongPtrW(control, GWL_STYLE, style); InvalidateRect(control, NULL, TRUE); }\n");
         out.push_str("static void flux__win_set_selectable_text_alignment(HWND control, const char *value) { if (control == NULL || value == NULL) return; LONG_PTR style = GetWindowLongPtrW(control, GWL_STYLE); style &= ~((LONG_PTR)(ES_CENTER | ES_RIGHT)); if (strcmp(value, \"left\") == 0 || strcmp(value, \"fill\") == 0) style |= ES_LEFT; else if (strcmp(value, \"center\") == 0) style |= ES_CENTER; else if (strcmp(value, \"right\") == 0) style |= ES_RIGHT; else { fputs(\"Flux runtime error: Text.textAlign must be one of 'left', 'center', 'right', or 'fill'\\n\", stderr); abort(); } SetWindowLongPtrW(control, GWL_STYLE, style); SetWindowPos(control, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED); InvalidateRect(control, NULL, TRUE); }\n");
@@ -22509,6 +22526,21 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     index * 2 + 1
                 ));
             }
+            if element.kind == "Text"
+                && let Some(property) = view_property(element, "text_align")
+                && static_expr_str(&property.value, signatures).is_none()
+            {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                out.push_str(&format!(
+                    "flux__win_set_text_alignment(context->control_windows[{index}], {value});
+"
+                ));
+            }
             if let Some(property) = view_property(element, "focusable") {
                 let value = ui_expr_c_for_view_identity(
                     &property.value,
@@ -24313,7 +24345,30 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         "0".to_string()
                     },
                 ),
-                "Text" | "Nav" | "Chart" | "Card" | "Header" | "Content" => (
+                "Text" => {
+                    let alignment = match view_property(element, "text_align") {
+                        Some(property) => static_expr_str(&property.value, signatures)
+                            .unwrap_or_else(|| "left".to_string()),
+                        None => "left".to_string(),
+                    };
+                    let style = match alignment.as_str() {
+                        "left" => "WS_CHILD | WS_VISIBLE | SS_LEFT",
+                        "center" => "WS_CHILD | WS_VISIBLE | SS_CENTER",
+                        "right" => "WS_CHILD | WS_VISIBLE | SS_RIGHT",
+                        "fill" => "WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX",
+                        _ => unreachable!("secondary Text.textAlign was validated before emission"),
+                    };
+                    (
+                        "STATIC",
+                        style,
+                        if view_property(element, "on_tap").is_some() {
+                            (1000 + index).to_string()
+                        } else {
+                            "0".to_string()
+                        },
+                    )
+                }
+                "Nav" | "Chart" | "Card" | "Header" | "Content" => (
                     "STATIC",
                     "WS_CHILD | WS_VISIBLE | SS_LEFT",
                     if view_property(element, "on_tap").is_some() {
