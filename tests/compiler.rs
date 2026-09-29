@@ -71500,7 +71500,9 @@ view Detail {
         readOnly: locked
         password: masked
         maxLength: limit
+        submitOnEnter: true
         onChange: query, value => value
+        onSubmit: query, value => value
     Text echo at 2,1
         text: query
 }
@@ -71530,6 +71532,21 @@ app Screen
         "case 1000: if (HIWORD(wparam) == EN_CHANGE) flux__win_change_view_1_0((HWND)lparam); return 0;"
     ));
     assert!(windows.contains("flux__ui_view_1_set_state_query(text);"));
+    assert!(windows.contains("static void flux__win_submit_view_1_0(HWND control)"));
+    assert!(windows.contains(
+        "static LRESULT CALLBACK flux__win_input_proc_view_1_0(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)"
+    ));
+    assert!(
+        windows.contains(
+            "context->control_subclass_originals = (WNDPROC *)calloc(2, sizeof(WNDPROC));"
+        )
+    );
+    assert!(windows.contains(
+        "context->control_subclass_originals[0] = (WNDPROC)(LONG_PTR)SetWindowLongPtrW(context->control_windows[0], GWLP_WNDPROC, (LONG_PTR)flux__win_input_proc_view_1_0);"
+    ));
+    assert!(windows.contains(
+        "SetWindowLongPtrW(context->control_windows[0], GWLP_WNDPROC, (LONG_PTR)context->control_subclass_originals[0]);"
+    ));
     assert!(windows.contains(r#"flux__win_set_cue(context->control_windows[0], "Type here");"#));
     assert!(windows.contains(
         "SendMessageA(context->control_windows[0], EM_SETREADONLY, (flux__ui_view_1_state_locked) ? TRUE : FALSE, 0);"

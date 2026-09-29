@@ -16811,6 +16811,8 @@ fn emit_windows_native_application(
                                 | "password"
                                 | "max_length"
                                 | "maxLength"
+                                | "submit_on_enter"
+                                | "submitOnEnter"
                                 | "visible"
                                 | "enabled"
                         )
@@ -16841,8 +16843,10 @@ fn emit_windows_native_application(
                             .as_deref()
                             .is_some_and(|source| property.name == source)
                 }) || (element.kind == "TextInput"
-                    && (property.name == "on_change"
-                        || property.name == internal_name_to_source("on_change")));
+                    && ["on_change", "on_submit"].iter().any(|property_name| {
+                        property.name == *property_name
+                            || property.name == internal_name_to_source(property_name)
+                    }));
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
@@ -16875,20 +16879,37 @@ fn emit_windows_native_application(
                     ));
                 }
             }
-            if element.kind == "TextInput"
-                && let Some(property) = view_property(element, "on_change")
-            {
-                if let Some(transition) = &property.transition {
-                    if transition.event_value.is_none() {
+            if element.kind == "TextInput" {
+                for (property_name, source_name) in
+                    [("on_change", "onChange"), ("on_submit", "onSubmit")]
+                {
+                    let Some(property) = view_property(element, property_name) else {
+                        continue;
+                    };
+                    if let Some(transition) = &property.transition {
+                        if transition.event_value.is_none() {
+                            return Err(diag(
+                                property.value.span,
+                                &format!(
+                                    "Windows distinct secondary TextInput.{source_name} state transitions require the text event value"
+                                ),
+                            ));
+                        }
+                    } else if !matches!(property.value.kind, ExprKind::Var(_)) {
                         return Err(diag(
                             property.value.span,
-                            "Windows distinct secondary TextInput.onChange state transitions require the text event value",
+                            &format!(
+                                "Windows distinct secondary TextInput.{source_name} requires a named fn(str) -> void callback or state transition"
+                            ),
                         ));
                     }
-                } else if !matches!(property.value.kind, ExprKind::Var(_)) {
+                }
+                if let Some(property) = view_property(element, "submit_on_enter")
+                    && static_expr_bool(&property.value, signatures).is_none()
+                {
                     return Err(diag(
                         property.value.span,
-                        "Windows distinct secondary TextInput.onChange requires a named fn(str) -> void callback or state transition",
+                        "Windows distinct secondary TextInput.submitOnEnter must be a compile-time bool value",
                     ));
                 }
             }
@@ -20256,6 +20277,31 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             .iter()
             .filter(|state| signatures.canonical_type(&state.ty) == Type::Str)
             .collect::<Vec<_>>();
+        let secondary_submit_subclasses = secondary_view
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(index, element)| {
+                if element.kind != "TextInput" || view_property(element, "on_submit").is_none() {
+                    return None;
+                }
+                let submit_on_enter = view_property(element, "submit_on_enter")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    .unwrap_or(true);
+                submit_on_enter.then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let mut secondary_subclass_release = String::new();
+        for index in &secondary_submit_subclasses {
+            secondary_subclass_release.push_str(&format!(
+                " if (context->control_windows != NULL && context->control_subclass_originals != NULL && context->control_subclass_original_count > {index} && context->control_windows[{index}] != NULL && context->control_subclass_originals[{index}] != NULL && IsWindow(context->control_windows[{index}])) SetWindowLongPtrW(context->control_windows[{index}], GWLP_WNDPROC, (LONG_PTR)context->control_subclass_originals[{index}]);"
+            ));
+        }
+        if !secondary_submit_subclasses.is_empty() {
+            secondary_subclass_release.push_str(
+                " free(context->control_subclass_originals); context->control_subclass_originals = NULL; context->control_subclass_original_count = 0;",
+            );
+        }
         let scalar_type = format!("FluxWindowsView{view_identity}ScalarState");
         if !secondary_scalar_states.is_empty() {
             out.push_str("typedef struct {");
@@ -20341,7 +20387,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
         out.push_str(" }\n");
         out.push_str(&format!(
-            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0; flux__windows_release_image_bitmaps(context); free(context->control_windows); context->control_windows = NULL; }}\n"
+            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0;{secondary_subclass_release} flux__windows_release_image_bitmaps(context); free(context->control_windows); context->control_windows = NULL; }}\n"
         ));
         secondary_save_cases.push_str(&format!(
             " case UINT32_C({view_identity}): flux__windows_save_view_{view_identity}_state(context); return;"
@@ -21905,30 +21951,46 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         let mut secondary_command_messages = String::new();
         for (index, element) in secondary_view.elements.iter().enumerate() {
             if element.kind == "TextInput" {
-                let Some(action) = view_property(element, "on_change") else {
-                    continue;
-                };
-                let action_body = if let Some(transition) = &action.transition {
-                    let setter = ui_set_state_c_name_for_view_identity(
-                        &transition.state,
-                        Some(*view_identity),
-                    );
-                    format!("{setter}(text);")
-                } else {
-                    let ExprKind::Var(function) = &action.value.kind else {
-                        unreachable!(
-                            "secondary TextInput.onChange shape was validated before emission"
-                        );
+                for (property_name, callback_name) in
+                    [("on_change", "change"), ("on_submit", "submit")]
+                {
+                    let Some(action) = view_property(element, property_name) else {
+                        continue;
                     };
-                    format!("{}(text);", function_c_name(function))
-                };
-                out.push_str(&format!(
-                    "static void flux__win_change_view_{view_identity}_{index}(HWND control) {{ if (flux__win_is_refreshing()) return; int length = GetWindowTextLengthW(control); if (length < 0) return; wchar_t *wide = (wchar_t *)malloc(((size_t)length + 1) * sizeof(wchar_t)); if (wide == NULL) return; if (GetWindowTextW(control, wide, length + 1) > 0 || length == 0) {{ char *text = flux__windows_wide_to_utf8(wide); if (text != NULL) {{ {action_body} }} free(text); }} free(wide); flux__win_refresh(); }}\n"
-                ));
-                secondary_command_messages.push_str(&format!(
-                    "case {}: if (HIWORD(wparam) == EN_CHANGE) flux__win_change_view_{view_identity}_{index}((HWND)lparam); return 0;\n",
-                    1000 + index
-                ));
+                    let action_body = if let Some(transition) = &action.transition {
+                        let setter = ui_set_state_c_name_for_view_identity(
+                            &transition.state,
+                            Some(*view_identity),
+                        );
+                        format!("{setter}(text);")
+                    } else {
+                        let ExprKind::Var(function) = &action.value.kind else {
+                            unreachable!(
+                                "secondary TextInput callback shape was validated before emission"
+                            );
+                        };
+                        format!("{}(text);", function_c_name(function))
+                    };
+                    out.push_str(&format!(
+                        "static void flux__win_{callback_name}_view_{view_identity}_{index}(HWND control) {{ if (flux__win_is_refreshing()) return; int length = GetWindowTextLengthW(control); if (length < 0) return; wchar_t *wide = (wchar_t *)malloc(((size_t)length + 1) * sizeof(wchar_t)); if (wide == NULL) return; if (GetWindowTextW(control, wide, length + 1) > 0 || length == 0) {{ char *text = flux__windows_wide_to_utf8(wide); if (text != NULL) {{ {action_body} }} free(text); }} free(wide); flux__win_refresh(); }}\n"
+                    ));
+                }
+                if view_property(element, "on_change").is_some() {
+                    secondary_command_messages.push_str(&format!(
+                        "case {}: if (HIWORD(wparam) == EN_CHANGE) flux__win_change_view_{view_identity}_{index}((HWND)lparam); return 0;\n",
+                        1000 + index
+                    ));
+                }
+                if view_property(element, "on_submit").is_some() {
+                    let submit_on_enter = view_property(element, "submit_on_enter")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        .unwrap_or(true);
+                    if submit_on_enter {
+                        out.push_str(&format!(
+                            "static LRESULT CALLBACK flux__win_input_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_originals != NULL && context->control_subclass_original_count > {index} ? context->control_subclass_originals[{index}] : NULL; if (message == WM_KEYDOWN && wparam == VK_RETURN) {{ flux__win_submit_view_{view_identity}_{index}(hwnd); return 0; }} return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); }}\n"
+                        ));
+                    }
+                }
                 continue;
             }
             let action_name = match element.kind.as_str() {
@@ -22505,6 +22567,27 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         if !secondary_view.elements.is_empty() {
             out.push_str(&format!("context->control_windows = (HWND *)calloc({}, sizeof(HWND)); if (context->control_windows == NULL) return flux__win_create_view_window_failure(window, primary);\n", secondary_view.elements.len()));
         }
+        let secondary_submit_subclasses = secondary_view
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(index, element)| {
+                if element.kind != "TextInput" || view_property(element, "on_submit").is_none() {
+                    return None;
+                }
+                let submit_on_enter = view_property(element, "submit_on_enter")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    .unwrap_or(true);
+                submit_on_enter.then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if !secondary_submit_subclasses.is_empty() {
+            out.push_str(&format!(
+                "context->control_subclass_originals = (WNDPROC *)calloc({}, sizeof(WNDPROC)); if (context->control_subclass_originals == NULL) return flux__win_create_view_window_failure(window, primary); context->control_subclass_original_count = {};\n",
+                secondary_view.elements.len(),
+                secondary_view.elements.len()
+            ));
+        }
         for (index, element) in secondary_view.elements.iter().enumerate() {
             let text = if element.kind == "Image" {
                 String::new()
@@ -22559,6 +22642,11 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 _ => unreachable!("secondary element kind was validated above"),
             };
             out.push_str(&format!("context->control_windows[{index}] = CreateWindowExW(0, L\"{class}\", L\"\", {style}, 0, 0, 1, 1, window, (HMENU)(INT_PTR){id}, instance, NULL); if (context->control_windows[{index}] == NULL) return flux__win_create_view_window_failure(window, primary); SendMessageW(context->control_windows[{index}], WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE); flux__win_set_text_if_changed(context->control_windows[{index}], {});\n", c_string(&text)));
+            if secondary_submit_subclasses.contains(&index) {
+                out.push_str(&format!(
+                    "SetLastError(0); context->control_subclass_originals[{index}] = (WNDPROC)(LONG_PTR)SetWindowLongPtrW(context->control_windows[{index}], GWLP_WNDPROC, (LONG_PTR)flux__win_input_proc_view_{view_identity}_{index}); if (context->control_subclass_originals[{index}] == NULL && GetLastError() != 0) return flux__win_create_view_window_failure(window, primary);\n"
+                ));
+            }
         }
         out.push_str(&format!("UINT dpi = flux__win_query_dpi(window); RECT client = {{0}}; if (GetClientRect(window, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__windows_store_metrics(window, flux__win_unscale_for_dpi(physical_width, dpi), flux__win_unscale_for_dpi(physical_height, dpi), dpi); flux__win_layout_view_{view_identity}(context, physical_width, physical_height); }} return window; }}\n"));
         secondary_constructor_dispatch.push_str(&format!(" case UINT32_C({view_identity}): return flux__win_create_view_{view_identity}_window(instance, class_name, primary, view_identity);"));
