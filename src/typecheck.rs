@@ -140,6 +140,7 @@ pub struct RouteSignature {
     pub view_name: String,
     pub view_identity: usize,
     pub params: Vec<Type>,
+    pub param_details: Vec<ParamSignature>,
     pub span: SourceSpan,
 }
 
@@ -496,6 +497,17 @@ fn check_all_with_package_constants_mode(
                 view_name: view.name.clone(),
                 view_identity,
                 params: view.params.iter().map(|param| param.ty.clone()).collect(),
+                param_details: view
+                    .params
+                    .iter()
+                    .map(|param| ParamSignature {
+                        name: param.name.clone(),
+                        ty: param.ty.clone(),
+                        named_only: param.named_only,
+                        default: None,
+                        span: param.name_span,
+                    })
+                    .collect(),
                 span: route.name_span,
             });
     }
@@ -890,6 +902,38 @@ fn check_all_with_package_constants_mode(
         }
     }
     signatures.constants = constant_cache;
+
+    for route in &program.routes {
+        let Some(view) = program
+            .views
+            .iter()
+            .find(|view| view.name == route.view_name)
+        else {
+            continue;
+        };
+        let param_details = view
+            .params
+            .iter()
+            .map(|param| ParamSignature {
+                name: param.name.clone(),
+                ty: signatures.canonical_type(&param.ty),
+                named_only: param.named_only,
+                default: param
+                    .default
+                    .as_ref()
+                    .and_then(|default| evaluate_default_expr(default, &signatures).ok()),
+                span: param.name_span,
+            })
+            .collect::<Vec<_>>();
+        let params = param_details
+            .iter()
+            .map(|param| param.ty.clone())
+            .collect::<Vec<_>>();
+        if let Some(signature) = signatures.routes.get_mut(&route.name) {
+            signature.params = params;
+            signature.param_details = param_details;
+        }
+    }
 
     let mut foreign_symbols = HashMap::<String, SourceSpan>::new();
     for function in &program.functions {
@@ -15485,22 +15529,16 @@ fn check_qualified_call_fallback(
         }
     }
     if namespace == "window" {
-        if !named_args.is_empty() {
-            return Err(diag(
-                span,
-                &format!("window.{name} accepts positional arguments only"),
-            ));
-        }
         match name.as_str() {
             "open" => {
                 if args.is_empty() {
+                    if !named_args.is_empty() {
+                        return Err(diag(
+                            span,
+                            "window.open named route arguments require a route target",
+                        ));
+                    }
                     return Ok(vec![Type::Bool]);
-                }
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!("window.open expects 0 or 1 arguments, got {}", args.len()),
-                    ));
                 }
                 let ExprKind::Var(route_name) = &args[0].kind else {
                     return Err(diag(
@@ -15519,20 +15557,128 @@ fn check_qualified_call_fallback(
                     route_name,
                     signatures,
                 )?;
-                if !route.params.is_empty() {
+
+                let positional = route
+                    .param_details
+                    .iter()
+                    .filter(|param| !param.named_only)
+                    .collect::<Vec<_>>();
+                let route_args = &args[1..];
+                if route_args.len() > positional.len() {
                     return Err(diag(
-                        args[0].span,
+                        span,
                         &format!(
-                            "window.open route '{}' requires {} parameter{}; parameterized route windows are not supported yet",
-                            route_name,
-                            route.params.len(),
-                            if route.params.len() == 1 { "" } else { "s" }
+                            "window.open route '{route_name}' accepts at most {} positional parameter{}, got {}",
+                            positional.len(),
+                            if positional.len() == 1 { "" } else { "s" },
+                            route_args.len()
                         ),
-                    ));
+                    )
+                    .with_label(route.span, format!("route '{route_name}' is declared here")));
+                }
+
+                let mut supplied = HashSet::new();
+                for (index, (arg, expected)) in route_args.iter().zip(&positional).enumerate() {
+                    let actual = type_of_call_argument(arg, &expected.ty, env, signatures)?;
+                    require_type(
+                        arg.span,
+                        &expected.ty,
+                        &actual,
+                        &format!(
+                            "window.open parameter {} ('{}') for route '{route_name}'",
+                            index + 1,
+                            expected.name
+                        ),
+                    )
+                    .map_err(|diagnostic| {
+                        diagnostic.with_label(
+                            expected.span,
+                            format!("route parameter '{}' is declared here", expected.name),
+                        )
+                    })?;
+                    supplied.insert(expected.name.as_str());
+                }
+
+                for arg in named_args {
+                    let Some(expected) = route
+                        .param_details
+                        .iter()
+                        .find(|param| param.name == arg.name)
+                    else {
+                        return Err(diag(
+                            arg.name_span,
+                            &format!(
+                                "window.open route '{route_name}' has no named parameter '{}'",
+                                arg.name
+                            ),
+                        )
+                        .with_label(route.span, format!("route '{route_name}' is declared here")));
+                    };
+                    if !expected.named_only {
+                        return Err(diag(
+                            arg.name_span,
+                            &format!(
+                                "route parameter '{}' is positional; it cannot be passed by name",
+                                arg.name
+                            ),
+                        )
+                        .with_label(
+                            expected.span,
+                            format!("route parameter '{}' is declared here", arg.name),
+                        ));
+                    }
+                    let actual = type_of_call_argument(&arg.value, &expected.ty, env, signatures)?;
+                    require_type(
+                        arg.value.span,
+                        &expected.ty,
+                        &actual,
+                        &format!(
+                            "window.open named parameter '{}' for route '{route_name}'",
+                            arg.name
+                        ),
+                    )
+                    .map_err(|diagnostic| {
+                        diagnostic.with_label(
+                            expected.span,
+                            format!("route parameter '{}' is declared here", arg.name),
+                        )
+                    })?;
+                    if !supplied.insert(expected.name.as_str()) {
+                        return Err(diag(
+                            arg.name_span,
+                            &format!(
+                                "window.open route '{route_name}' supplies parameter '{}' more than once",
+                                arg.name
+                            ),
+                        ));
+                    }
+                }
+
+                let missing = route
+                    .param_details
+                    .iter()
+                    .filter(|param| {
+                        !supplied.contains(param.name.as_str()) && param.default.is_none()
+                    })
+                    .map(|param| param.name.as_str())
+                    .collect::<Vec<_>>();
+                if !missing.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "window.open route '{route_name}' is missing required parameter{} {}",
+                            if missing.len() == 1 { "" } else { "s" },
+                            missing.join(", ")
+                        ),
+                    )
+                    .with_label(route.span, format!("route '{route_name}' is declared here")));
                 }
                 return Ok(vec![Type::Bool]);
             }
             "close" => {
+                if !named_args.is_empty() {
+                    return Err(diag(span, "window.close accepts positional arguments only"));
+                }
                 if !args.is_empty() {
                     return Err(diag(
                         span,

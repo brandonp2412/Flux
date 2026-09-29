@@ -1072,16 +1072,6 @@ fn add_window_route_completions(
         if route.name_span.source_id != current_id {
             continue;
         }
-        let Some(view) = program
-            .views
-            .iter()
-            .find(|view| view.name == route.view_name)
-        else {
-            continue;
-        };
-        if !view.params.is_empty() {
-            continue;
-        }
         push_completion_item(
             items,
             seen,
@@ -6142,7 +6132,7 @@ fn signature_help_for_document_cached(
                 let route_form = prefix
                     .get(call_open + 1..)
                     .is_some_and(|arguments| !arguments.trim().is_empty());
-                return Some(signature_help_for_window_open(route_form));
+                return Some(signature_help_for_window_open(route_form, active_parameter));
             }
             return Some(signature_help_for_builtin(
                 &format!("window.{member}"),
@@ -6366,7 +6356,7 @@ fn signature_help_for_builtin(
     signature_help_from_labels(&canonical, labels, returns, active_parameter)
 }
 
-fn signature_help_for_window_open(route_form: bool) -> JsonValue {
+fn signature_help_for_window_open(route_form: bool, active_parameter: usize) -> JsonValue {
     let no_route = object([
         (
             "label",
@@ -6377,14 +6367,14 @@ fn signature_help_for_window_open(route_form: bool) -> JsonValue {
     let with_route = object([
         (
             "label",
-            JsonValue::String("fn window.open(routeName) -> bool".to_string()),
+            JsonValue::String("fn window.open(routeName, ...) -> bool".to_string()),
         ),
         (
             "parameters",
-            JsonValue::Array(vec![object([(
-                "label",
-                JsonValue::String("routeName".to_string()),
-            )])]),
+            JsonValue::Array(vec![
+                object([("label", JsonValue::String("routeName".to_string()))]),
+                object([("label", JsonValue::String("routeArgs...".to_string()))]),
+            ]),
         ),
     ]);
     object([
@@ -6393,7 +6383,14 @@ fn signature_help_for_window_open(route_form: bool) -> JsonValue {
             "activeSignature",
             JsonValue::Number(if route_form { 1 } else { 0 }),
         ),
-        ("activeParameter", JsonValue::Number(0)),
+        (
+            "activeParameter",
+            JsonValue::Number(if route_form {
+                active_parameter.min(1) as i64
+            } else {
+                0
+            }),
+        ),
     ])
 }
 
@@ -10423,7 +10420,8 @@ app Screen
         assert!(items.contains("route home = Screen"));
         assert!(items.contains(r#""label":"detail""#));
         assert!(items.contains("route detail = Detail"));
-        assert!(!items.contains(r#""label":"parameterized""#));
+        assert!(items.contains(r#""label":"parameterized""#));
+        assert!(items.contains("route parameterized = Parameterized"));
     }
 
     #[test]
@@ -14274,7 +14272,7 @@ app Screen
         .to_json();
 
         assert!(help.contains("fn window.open() -> bool"));
-        assert!(help.contains("fn window.open(routeName) -> bool"));
+        assert!(help.contains("fn window.open(routeName, ...) -> bool"));
         assert!(help.contains(r#""activeSignature":1"#));
     }
 

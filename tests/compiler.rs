@@ -71238,30 +71238,132 @@ app Screen
     }
 
     let parameterized_source = r#"
-fn openSecondary() -> void {
-    window.open(detail)
+fn openHistory() -> void {
+    window.open(detail, 7, tab: "history")
+}
+
+fn openDefault() -> void {
+    window.open(detail, 8)
 }
 
 view Screen {
     grid columns: 1fr
-    grid rows: auto
+    grid rows: auto auto
+    Button history at 1,1
+        text: "History"
+        onPress: openHistory
+    Button defaultTab at 2,1
+        text: "Default"
+        onPress: openDefault
 }
 
-view Detail(id: i64) {
+view Detail(id: i64, *, tab: str = "overview") {
+    derived hasId: bool = id > 0
     grid columns: 1fr
     grid rows: auto
+    Text title at 1,1
+        text: tab
+        visible: hasId
 }
 
 route detail = Detail
 app Screen
 "#;
-    let parameterized_error =
+    let parameterized_database =
         fluxc::semantic::SemanticDatabase::analyze(parameterized_source, SourceId::UNKNOWN)
-            .expect_err("parameterized route windows remain unsupported at the language boundary");
-    assert!(parameterized_error.iter().any(|diagnostic| {
+            .expect("parameterized route windows should typecheck");
+    let parameterized_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        parameterized_database.program(),
+        parameterized_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("parameterized route windows should lower for Windows");
+    assert!(parameterized_windows.contains(r#"flux__window_open_view_1(INT64_C(7), "history")"#));
+    assert!(parameterized_windows.contains(r#"flux__window_open_view_1(INT64_C(8), "overview")"#));
+    assert!(
+        parameterized_windows.contains("static int64_t flux__ui_view_1_param_id = INT64_C(0);")
+    );
+    assert!(
+        parameterized_windows.contains(r#"static const char * flux__ui_view_1_param_tab = "";"#)
+    );
+    assert!(parameterized_windows.contains("FluxWindowsView1ParamState"));
+    assert!(parameterized_windows.contains("static bool flux__windows_init_view_1_params("));
+    assert!(parameterized_windows.contains("static void flux__windows_restore_view_1_params("));
+    assert!(parameterized_windows.contains("static void flux__windows_release_view_1_params("));
+    assert!(
+        parameterized_windows
+            .contains("context->string_view_params = (char **)calloc(1, sizeof(char *))")
+    );
+    assert!(parameterized_windows.contains(
+        "flux__win_set_text_if_changed(context->control_windows[0], flux__ui_view_1_param_tab);"
+    ));
+    assert!(
+        parameterized_windows
+            .contains("flux__ui_view_1_derived_hasId = (flux__ui_view_1_param_id > INT64_C(0));")
+    );
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-parameterized-window-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)
+            .expect("parameterized-window syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &parameterized_windows)
+            .expect("parameterized-window C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate parameterized-window Win32 C");
+        assert!(
+            result.status.success(),
+            "parameterized-window Windows C failed syntax validation:
+{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    let missing_parameter = parameterized_source.replace(
+        r#"window.open(detail, 7, tab: "history")"#,
+        "window.open(detail)",
+    );
+    let missing_errors =
+        fluxc::semantic::SemanticDatabase::analyze(&missing_parameter, SourceId::UNKNOWN)
+            .expect_err("missing required route parameters must fail");
+    assert!(missing_errors.iter().any(|diagnostic| {
         diagnostic
             .message
-            .contains("parameterized route windows are not supported yet")
+            .contains("window.open route 'detail' is missing required parameter id")
+    }));
+
+    let positional_named_parameter = parameterized_source.replace(
+        r#"window.open(detail, 7, tab: "history")"#,
+        "window.open(detail, id: 7)",
+    );
+    let named_errors =
+        fluxc::semantic::SemanticDatabase::analyze(&positional_named_parameter, SourceId::UNKNOWN)
+            .expect_err("positional route parameters cannot be passed by name");
+    assert!(named_errors.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("route parameter 'id' is positional; it cannot be passed by name")
     }));
 }
 
