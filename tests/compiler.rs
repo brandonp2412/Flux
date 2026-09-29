@@ -71506,6 +71506,7 @@ view Detail {
         keyboardType: keyboard
         validationState: validation
         validationMessage: message
+        tooltip: "Fallback help"
         submitOnEnter: true
         onChange: query, value => value
         onSubmit: query, value => value
@@ -71585,7 +71586,11 @@ app Screen
             .contains("context->tooltip_window = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW")
     );
     assert!(windows.contains(
-        "flux__win_set_tooltip(context->control_windows[0], 0, flux__ui_view_1_state_message); flux__win_accessibility_set_description(context->control_windows[0], flux__ui_view_1_state_message);"
+        "const char *flux__win_view_1_validation_message_0 = flux__ui_view_1_state_message;"
+    ));
+    assert!(windows.contains(r#"? flux__win_view_1_validation_message_0 : "Fallback help""#));
+    assert!(windows.contains(
+        "flux__win_accessibility_set_description(context->control_windows[0], flux__ui_view_1_state_message);"
     ));
     assert!(
         windows.contains("flux__win_view_1_toolinfo_0.uId = (UINT_PTR)context->control_windows[0]")
@@ -71744,6 +71749,7 @@ view Detail {
         source: imageSource
         fit: imageFit
         alt: imageAlt
+        tooltip: "Image help"
     Image backup at 2,1
         source: "backup.bmp"
         fit: "scaleDown"
@@ -71777,6 +71783,12 @@ app Screen
     assert!(windows.contains(
         "flux__win_accessibility_set_name(context->control_windows[0], flux__ui_view_1_state_imageAlt);"
     ));
+    assert!(
+        windows.contains(r#"flux__win_set_tooltip(context->control_windows[0], 0, "Image help");"#)
+    );
+    assert!(
+        windows.contains("flux__win_view_1_toolinfo_0.uId = (UINT_PTR)context->control_windows[0]")
+    );
     assert!(windows.contains(
         r#"flux__win_set_bitmap(context->control_windows[1], flux__windows_image_bitmap_storage(context, 1), "backup.bmp", "scaleDown");"#
     ));

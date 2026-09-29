@@ -16844,6 +16844,7 @@ fn emit_windows_native_application(
                     }
                     _ => unreachable!("secondary element kind was validated above"),
                 };
+                let data_property = data_property || property.name == "tooltip";
                 let action_property = action_name.is_some_and(|action_name| {
                     property.name == action_name
                         || action_source
@@ -16857,7 +16858,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, and their supported activation/change action",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, and their supported activation/change action",
                     ));
                 }
                 if data_property {
@@ -16966,13 +16967,13 @@ fn emit_windows_native_application(
             ));
         }
     }
-    let secondary_uses_validation_messages =
-        secondary_window_views.iter().any(|(_, secondary_view)| {
-            secondary_view.elements.iter().any(|element| {
-                element.kind == "TextInput"
-                    && view_property(element, "validation_message").is_some()
-            })
-        });
+    let secondary_uses_tooltips = secondary_window_views.iter().any(|(_, secondary_view)| {
+        secondary_view.elements.iter().any(|element| {
+            view_property(element, "tooltip").is_some()
+                || (element.kind == "TextInput"
+                    && view_property(element, "validation_message").is_some())
+        })
+    });
     let secondary_uses_accessibility = secondary_window_views.iter().any(|(_, secondary_view)| {
         secondary_view.elements.iter().any(|element| {
             (element.kind == "TextInput" && view_property(element, "validation_message").is_some())
@@ -16996,7 +16997,7 @@ fn emit_windows_native_application(
         view_property(element, "tooltip").is_some()
             || (element.kind == "TextInput"
                 && view_property(element, "validation_message").is_some())
-    }) || secondary_uses_validation_messages;
+    }) || secondary_uses_tooltips;
     let windows_tooltip_slots = std::iter::once(view.elements.len())
         .chain(
             secondary_window_views
@@ -21825,10 +21826,34 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         signatures,
                         Some(*view_identity),
                     )?;
+                    let fallback = if let Some(tooltip) = view_property(element, "tooltip") {
+                        ui_expr_c_for_view_identity(
+                            &tooltip.value,
+                            secondary_view,
+                            signatures,
+                            Some(*view_identity),
+                        )?
+                    } else {
+                        c_string("")
+                    };
                     out.push_str(&format!(
-                        "flux__win_set_tooltip(context->control_windows[{index}], {index}, {value}); flux__win_accessibility_set_description(context->control_windows[{index}], {value});\n"
+                        "const char *flux__win_view_{view_identity}_validation_message_{index} = {value}; flux__win_set_tooltip(context->control_windows[{index}], {index}, (flux__win_view_{view_identity}_validation_message_{index} != NULL && flux__win_view_{view_identity}_validation_message_{index}[0] != '\\0') ? flux__win_view_{view_identity}_validation_message_{index} : {fallback}); flux__win_accessibility_set_description(context->control_windows[{index}], {value});\n"
                     ));
                 }
+            }
+            if let Some(property) = view_property(element, "tooltip")
+                && !(element.kind == "TextInput"
+                    && view_property(element, "validation_message").is_some())
+            {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                out.push_str(&format!(
+                    "flux__win_set_tooltip(context->control_windows[{index}], {index}, {value});\n"
+                ));
             }
             let checked_property_name = match element.kind.as_str() {
                 "Toggle" => Some("checked"),
@@ -22743,7 +22768,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     let mut secondary_constructor_dispatch = String::new();
     for (view_identity, secondary_view) in &secondary_window_views {
         let secondary_uses_tooltips = secondary_view.elements.iter().any(|element| {
-            element.kind == "TextInput" && view_property(element, "validation_message").is_some()
+            view_property(element, "tooltip").is_some()
+                || (element.kind == "TextInput"
+                    && view_property(element, "validation_message").is_some())
         });
         out.push_str(&format!("static HWND flux__win_create_view_{view_identity}_window(HINSTANCE instance, LPCWSTR class_name, bool primary, uint32_t view_identity) {{ HWND window = CreateWindowExW({window_ex_style}, class_name, L\"\", {window_style}, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({width})), flux__win_scale(INT64_C({height})), NULL, NULL, instance, NULL); if (window == NULL) return NULL; if (!flux__windows_register_context(window, primary, view_identity)) {{ DestroyWindow(window); return NULL; }} FluxWindowsWindowContext *context = flux__windows_context_for(window); if (context == NULL) return flux__win_create_view_window_failure(window, primary); flux__win_set_text_if_changed(window, {});\n", c_string(&title)));
         if secondary_uses_tooltips {
@@ -22841,7 +22868,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 _ => unreachable!("secondary element kind was validated above"),
             };
             out.push_str(&format!("context->control_windows[{index}] = CreateWindowExW(0, L\"{class}\", L\"\", {style}, 0, 0, 1, 1, window, (HMENU)(INT_PTR){id}, instance, NULL); if (context->control_windows[{index}] == NULL) return flux__win_create_view_window_failure(window, primary); SendMessageW(context->control_windows[{index}], WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE); flux__win_set_text_if_changed(context->control_windows[{index}], {});\n", c_string(&text)));
-            if element.kind == "TextInput" && view_property(element, "validation_message").is_some()
+            if view_property(element, "tooltip").is_some()
+                || (element.kind == "TextInput"
+                    && view_property(element, "validation_message").is_some())
             {
                 out.push_str(&format!(
                     "TOOLINFOW flux__win_view_{view_identity}_toolinfo_{index} = {{0}}; flux__win_view_{view_identity}_toolinfo_{index}.cbSize = sizeof(flux__win_view_{view_identity}_toolinfo_{index}); flux__win_view_{view_identity}_toolinfo_{index}.uFlags = TTF_IDISHWND | TTF_SUBCLASS; flux__win_view_{view_identity}_toolinfo_{index}.hwnd = window; flux__win_view_{view_identity}_toolinfo_{index}.uId = (UINT_PTR)context->control_windows[{index}]; flux__win_view_{view_identity}_toolinfo_{index}.lpszText = L\"\"; if (!SendMessageW(context->tooltip_window, TTM_ADDTOOLW, 0, (LPARAM)&flux__win_view_{view_identity}_toolinfo_{index})) return flux__win_create_view_window_failure(window, primary);\n"
