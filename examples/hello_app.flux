@@ -31,4 +31,4 @@ view HelloApp {
         onPress: clicked => !clicked
 }
 
-app HelloApp(id: "app.flux.hello", title: "Flux Hello", width: 420, height: 260, resizable: true, onStart: appStarted, onExit: appExiting)
+app HelloApp(id: "app.flux.hello", title: "Flux Hello", width: 420, height: 340, resizable: true, onStart: appStarted, onExit: appExiting)
