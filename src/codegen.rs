@@ -16853,6 +16853,9 @@ fn emit_windows_native_application(
                             | "accessibility_description"
                             | "accessibilityDescription"
                             | "focusable"
+                            | "autofocus"
+                            | "focus_scope"
+                            | "focusScope"
                     );
                 let action_property = action_name.is_some_and(|action_name| {
                     property.name == action_name
@@ -16867,7 +16870,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, focusable, and their supported activation/change action",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change action",
                     ));
                 }
                 if data_property {
@@ -22813,6 +22816,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     out.truncate(window_creation_start);
     out.push_str(&window_creation);
     let mut secondary_constructor_dispatch = String::new();
+    let mut secondary_autofocus_dispatch = String::new();
     for (view_identity, secondary_view) in &secondary_window_views {
         let secondary_uses_tooltips = secondary_view.elements.iter().any(|element| {
             view_property(element, "tooltip").is_some()
@@ -22865,7 +22869,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     .and_then(|property| static_expr_str(&property.value, signatures))
                     .unwrap_or_else(|| element.name.clone())
             };
-            let (class, style, id) = match element.kind.as_str() {
+            let (class, base_style, id) = match element.kind.as_str() {
                 "Button" => (
                     "BUTTON",
                     "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON",
@@ -22914,7 +22918,35 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 }
                 _ => unreachable!("secondary element kind was validated above"),
             };
+            let style = if view_property(element, "autofocus")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                == Some(true)
+                && view_property(element, "focusable").is_none()
+                && !base_style.contains("WS_TABSTOP")
+            {
+                format!("{base_style} | WS_TABSTOP")
+            } else {
+                base_style.to_string()
+            };
             out.push_str(&format!("context->control_windows[{index}] = CreateWindowExW(0, L\"{class}\", L\"\", {style}, 0, 0, 1, 1, window, (HMENU)(INT_PTR){id}, instance, NULL); if (context->control_windows[{index}] == NULL) return flux__win_create_view_window_failure(window, primary); SendMessageW(context->control_windows[{index}], WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE); flux__win_set_text_if_changed(context->control_windows[{index}], {});\n", c_string(&text)));
+            if let Some(property) = view_property(element, "focus_scope") {
+                let scope = static_expr_i64(&property.value, signatures).ok_or_else(|| {
+                    diag(
+                        property.value.span,
+                        "focusScope must be a compile-time i64 value",
+                    )
+                })?;
+                if !(0..=i64::from(i32::MAX)).contains(&scope) {
+                    return Err(diag(
+                        property.value.span,
+                        "focusScope must be between 0 and 2147483647",
+                    ));
+                }
+                out.push_str(&format!(
+                    "if (!SetPropA(context->control_windows[{index}], \"flux-focus-scope\", (HANDLE)(INT_PTR)INT64_C({}))) return flux__win_create_view_window_failure(window, primary);\n",
+                    scope + 1
+                ));
+            }
             if view_property(element, "tooltip").is_some()
                 || (element.kind == "TextInput"
                     && view_property(element, "validation_message").is_some())
@@ -22930,11 +22962,37 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             }
         }
         out.push_str(&format!("UINT dpi = flux__win_query_dpi(window); RECT client = {{0}}; if (GetClientRect(window, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__windows_store_metrics(window, flux__win_unscale_for_dpi(physical_width, dpi), flux__win_unscale_for_dpi(physical_height, dpi), dpi); flux__win_layout_view_{view_identity}(context, physical_width, physical_height); }} return window; }}\n"));
+        if let Some((index, _)) = secondary_view
+            .elements
+            .iter()
+            .enumerate()
+            .find(|(_, element)| {
+                view_property(element, "autofocus")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    == Some(true)
+            })
+        {
+            secondary_autofocus_dispatch.push_str(&format!(" case UINT32_C({view_identity}): if (flux__windows_active_context != NULL && flux__windows_active_context->control_windows != NULL && flux__windows_active_context->control_windows[{index}] != NULL) SetFocus(flux__windows_active_context->control_windows[{index}]); return;"));
+        }
         secondary_constructor_dispatch.push_str(&format!(" case UINT32_C({view_identity}): return flux__win_create_view_{view_identity}_window(instance, class_name, primary, view_identity);"));
     }
     out.push_str(&format!("static HWND flux__win_create_view_window(HINSTANCE instance, LPCWSTR class_name, bool primary, uint32_t view_identity) {{ if (view_identity >= flux__win_view_count) return NULL; switch (view_identity) {{ case UINT32_C({root_view_identity}): return flux__win_create_root_view_window(instance, class_name, primary, view_identity);{secondary_constructor_dispatch} default: return NULL; }} }}\n"));
     if uses_window_open {
-        out.push_str("static bool flux__win_open_view(uint32_t view_identity) { HWND previous = flux__windows_active_window; HINSTANCE instance = GetModuleHandleW(NULL); if (instance == NULL) return false; HWND window = flux__win_create_view_window(instance, L\"FluxNativeWindow\", false, view_identity); if (window == NULL) { if (previous != NULL && IsWindow(previous)) { flux__windows_activate_context(previous); flux__win_refresh(); } return false; } flux__windows_activate_context(window); flux__win_refresh(); ShowWindow(window, SW_SHOW); UpdateWindow(window); if (previous != NULL && IsWindow(previous)) { flux__windows_activate_context(previous); flux__win_refresh(); } return true; }\nstatic bool flux__window_open_view(uint32_t view_identity) { return flux__win_open_view(view_identity); }\nstatic bool flux__window_open(void) { uint32_t view_identity = flux__windows_active_context != NULL ? flux__windows_active_context->view_identity : flux__win_root_view_identity; return flux__window_open_view(view_identity); }\n");
+        let root_autofocus_dispatch = view
+            .elements
+            .iter()
+            .find(|element| {
+                view_property(element, "autofocus")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    == Some(true)
+            })
+            .map(|element| {
+                let variable = ui_widget_c_name(&element.name);
+                format!(" case UINT32_C({root_view_identity}): if ({variable} != NULL) SetFocus({variable}); return;")
+            })
+            .unwrap_or_default();
+        out.push_str(&format!("static void flux__win_autofocus_view(uint32_t view_identity) {{ switch (view_identity) {{{root_autofocus_dispatch}{secondary_autofocus_dispatch} default: return; }} }}\n"));
+        out.push_str("static bool flux__win_open_view(uint32_t view_identity) { HWND previous = flux__windows_active_window; HINSTANCE instance = GetModuleHandleW(NULL); if (instance == NULL) return false; HWND window = flux__win_create_view_window(instance, L\"FluxNativeWindow\", false, view_identity); if (window == NULL) { if (previous != NULL && IsWindow(previous)) { flux__windows_activate_context(previous); flux__win_refresh(); } return false; } flux__windows_activate_context(window); flux__win_refresh(); ShowWindow(window, SW_SHOW); UpdateWindow(window); flux__win_autofocus_view(view_identity); if (previous != NULL && IsWindow(previous)) { flux__windows_activate_context(previous); flux__win_refresh(); } return true; }\nstatic bool flux__window_open_view(uint32_t view_identity) { return flux__win_open_view(view_identity); }\nstatic bool flux__window_open(void) { uint32_t view_identity = flux__windows_active_context != NULL ? flux__windows_active_context->view_identity : flux__win_root_view_identity; return flux__window_open_view(view_identity); }\n");
     }
     out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness(); flux__win_set_application_id({});{accessibility_init}{tooltip_init}{input_scope_init}{ole_init}{rich_text_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleW(NULL); WNDCLASSW wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = L\"FluxNativeWindow\"; wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512)); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1; HWND flux__win_primary_window = flux__win_create_view_window(instance, wc.lpszClassName, true, flux__win_root_view_identity); if (flux__win_primary_window == NULL) return 1;\n", c_string(&application_id)));
     if on_restore_state.is_some() {

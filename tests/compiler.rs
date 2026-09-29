@@ -71649,6 +71649,94 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_focus_scope_and_autofocus() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text focusTarget at 1,1
+        text: "Focused"
+        autofocus: true
+        focusScope: 7
+    Text body at 2,1
+        text: "Body"
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary focus route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary focus route should lower for Windows");
+
+    assert!(windows.contains(
+        r#"CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT | WS_TABSTOP"#
+    ));
+    assert!(windows.contains(
+        r#"SetPropA(context->control_windows[0], "flux-focus-scope", (HANDLE)(INT_PTR)INT64_C(8))"#
+    ));
+    assert!(windows.contains(
+        "case UINT32_C(1): if (flux__windows_active_context != NULL && flux__windows_active_context->control_windows != NULL && flux__windows_active_context->control_windows[0] != NULL) SetFocus(flux__windows_active_context->control_windows[0]); return;"
+    ));
+    assert!(windows.contains("UpdateWindow(window); flux__win_autofocus_view(view_identity);"));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-focus-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("secondary focus syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary focus C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary focus Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary focus Windows C failed syntax validation:
+{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_multiline_text_input() {
     let source = r#"
 fn openSecondary() -> void {
