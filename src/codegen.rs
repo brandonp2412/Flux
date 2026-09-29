@@ -16888,6 +16888,7 @@ fn emit_windows_native_application(
                             property.name.as_str(),
                             "color" | "text_align" | "textAlign" | "ellipsize"
                         ))
+                    || (element.kind == "Button" && property.name == "primary")
                     || matches!(
                         property.name.as_str(),
                         "accessibility_label"
@@ -16961,7 +16962,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.ellipsize/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.ellipsize/Button.primary/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -19524,6 +19525,11 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
         .elements
         .iter()
         .any(|element| element.kind == "Button" && view_property(element, "primary").is_some())
+        || secondary_window_views.iter().any(|(_, secondary_view)| {
+            secondary_view.elements.iter().any(|element| {
+                element.kind == "Button" && view_property(element, "primary").is_some()
+            })
+        })
     {
         out.push_str("static void flux__win_set_button_primary(HWND control, bool primary) { if (control == NULL) return; LONG_PTR style = GetWindowLongPtrW(control, GWL_STYLE); LONG_PTR next = (style & ~((LONG_PTR)BS_TYPEMASK)) | (primary ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON); if (next == style) return; SetWindowLongPtrW(control, GWL_STYLE, next); SetWindowPos(control, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); InvalidateRect(control, NULL, TRUE); }\n");
     }
@@ -22521,6 +22527,20 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     "EnableWindow(context->control_windows[{index}], ({value}) ? TRUE : FALSE);\n"
                 ));
             }
+            if element.kind == "Button"
+                && let Some(property) = view_property(element, "primary")
+            {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                out.push_str(&format!(
+                    "flux__win_set_button_primary(context->control_windows[{index}], {value});
+"
+                ));
+            }
             if let Some(property) = view_property(element, "background_color")
                 && static_expr_str(&property.value, signatures).is_none()
             {
@@ -24324,11 +24344,20 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     .unwrap_or_else(|| element.name.clone())
             };
             let (class, base_style, id) = match element.kind.as_str() {
-                "Button" => (
-                    "BUTTON",
-                    "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON",
-                    (1000 + index).to_string(),
-                ),
+                "Button" => {
+                    let primary = view_property(element, "primary")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        .unwrap_or(false);
+                    (
+                        "BUTTON",
+                        if primary {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON"
+                        } else {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON"
+                        },
+                        (1000 + index).to_string(),
+                    )
+                }
                 "Toggle" => (
                     "BUTTON",
                     "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX",
