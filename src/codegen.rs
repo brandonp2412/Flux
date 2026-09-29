@@ -16881,7 +16881,16 @@ fn emit_windows_native_application(
                     || property.name == "tooltip"
                     || matches!(
                         property.name.as_str(),
-                        "background_color" | "backgroundColor"
+                        "background_color"
+                            | "backgroundColor"
+                            | "min_width"
+                            | "minWidth"
+                            | "min_height"
+                            | "minHeight"
+                            | "max_width"
+                            | "maxWidth"
+                            | "max_height"
+                            | "maxHeight"
                     )
                     || (element.kind == "Text"
                         && matches!(
@@ -16994,10 +17003,32 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/minWidth/minHeight/maxWidth/maxHeight/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
+                    if matches!(
+                        property.name.as_str(),
+                        "min_width"
+                            | "minWidth"
+                            | "min_height"
+                            | "minHeight"
+                            | "max_width"
+                            | "maxWidth"
+                            | "max_height"
+                            | "maxHeight"
+                    ) && let Some(value) = static_expr_i64(&property.value, signatures)
+                        && !(1..=i64::from(i32::MAX)).contains(&value)
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            &format!(
+                                "{} must be between 1 and {}",
+                                internal_name_to_source(&property.name),
+                                i32::MAX
+                            ),
+                        ));
+                    }
                     if matches!(
                         property.name.as_str(),
                         "background_color" | "backgroundColor" | "color"
@@ -17153,6 +17184,26 @@ fn emit_windows_native_application(
                             Some(*view_identity),
                         )?;
                     }
+                }
+            }
+            for (minimum_name, maximum_name, source_minimum, source_maximum) in [
+                ("min_width", "max_width", "minWidth", "maxWidth"),
+                ("min_height", "max_height", "minHeight", "maxHeight"),
+            ] {
+                if let (Some(minimum), Some(maximum)) = (
+                    view_property(element, minimum_name),
+                    view_property(element, maximum_name),
+                ) && let (Some(minimum_value), Some(maximum_value)) = (
+                    static_expr_i64(&minimum.value, signatures),
+                    static_expr_i64(&maximum.value, signatures),
+                ) && maximum_value < minimum_value
+                {
+                    return Err(diag(
+                        maximum.value.span,
+                        &format!(
+                            "{source_maximum} must be greater than or equal to {source_minimum}"
+                        ),
+                    ));
                 }
             }
             if let Some(action_name) = action_name
@@ -17838,14 +17889,23 @@ fn emit_windows_native_application(
             }
         }
     }
-    let uses_dynamic_layout_constraints = view.elements.iter().any(|element| {
-        ["min_width", "min_height", "max_width", "max_height"]
-            .iter()
-            .any(|property_name| {
-                view_property(element, property_name)
-                    .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
-            })
-    });
+    let uses_dynamic_layout_constraints = view
+        .elements
+        .iter()
+        .chain(
+            secondary_window_views
+                .iter()
+                .flat_map(|(_, secondary_view)| secondary_view.elements.iter()),
+        )
+        .any(|element| {
+            ["min_width", "min_height", "max_width", "max_height"]
+                .iter()
+                .any(|property_name| {
+                    view_property(element, property_name).is_some_and(|property| {
+                        static_expr_i64(&property.value, signatures).is_none()
+                    })
+                })
+        });
     let uses_dynamic_margins = view.elements.iter().any(|element| {
         [
             "margin",
@@ -22136,6 +22196,50 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             let row_offset = i64::from(element.row) - 1;
             let column_span = i64::from(element.column_span);
             let row_span = i64::from(element.row_span);
+            let secondary_layout_constraint_value =
+                |property_name: &str, source_name: &str| -> Result<Option<String>, Diagnostic> {
+                    let Some(property) = view_property(element, property_name) else {
+                        return Ok(None);
+                    };
+                    if let Some(value) = static_expr_i64(&property.value, signatures) {
+                        return Ok(Some(format!("INT64_C({value})")));
+                    }
+                    let value = ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                    Ok(Some(format!(
+                        "flux__win_checked_layout_size(({value}), \"{source_name}\")"
+                    )))
+                };
+            let secondary_min_width = secondary_layout_constraint_value("min_width", "minWidth")?;
+            let secondary_min_height =
+                secondary_layout_constraint_value("min_height", "minHeight")?;
+            let secondary_max_width = secondary_layout_constraint_value("max_width", "maxWidth")?;
+            let secondary_max_height =
+                secondary_layout_constraint_value("max_height", "maxHeight")?;
+            let secondary_min_width_value = secondary_min_width.as_deref().unwrap_or("INT64_C(40)");
+            let secondary_min_height_value =
+                secondary_min_height.as_deref().unwrap_or("INT64_C(28)");
+            let secondary_max_width_value = secondary_max_width.as_deref().unwrap_or("INT64_C(-1)");
+            let secondary_max_height_value =
+                secondary_max_height.as_deref().unwrap_or("INT64_C(-1)");
+            let secondary_width_relationship = if secondary_min_width.is_some()
+                && secondary_max_width.is_some()
+            {
+                "if (requested_max_width < requested_min_width) { fputs(\"Flux runtime error: maxWidth must be greater than or equal to minWidth\\n\", stderr); abort(); } "
+            } else {
+                ""
+            };
+            let secondary_height_relationship = if secondary_min_height.is_some()
+                && secondary_max_height.is_some()
+            {
+                "if (requested_max_height < requested_min_height) { fputs(\"Flux runtime error: maxHeight must be greater than or equal to minHeight\\n\", stderr); abort(); } "
+            } else {
+                ""
+            };
             let secondary_text_padding_value = |property_name: &str| -> Result<String, Diagnostic> {
                 if let Some(property) = view_property(element, property_name) {
                     if let Some(value) = static_expr_i64(&property.value, signatures) {
@@ -22248,7 +22352,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             } else {
                 String::new()
             };
-            out.push_str(&format!("HWND control_{index} = context->control_windows[{index}]; if (control_{index} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height{secondary_scroll_offset}; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; if (control_width < 1) control_width = 1; if (control_height < 1) control_height = 1; {secondary_text_width_limit}{secondary_text_height_limit}MoveWindow(control_{index}, x, y, control_width, control_height, TRUE); }}\n"));
+            out.push_str(&format!("HWND control_{index} = context->control_windows[{index}]; if (control_{index} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height{secondary_scroll_offset}; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; if (control_width < 1) control_width = 1; if (control_height < 1) control_height = 1; int64_t requested_min_width = {secondary_min_width_value}; int64_t requested_min_height = {secondary_min_height_value}; int64_t requested_max_width = {secondary_max_width_value}; int64_t requested_max_height = {secondary_max_height_value}; {secondary_width_relationship}{secondary_height_relationship}{secondary_text_width_limit}{secondary_text_height_limit}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} MoveWindow(control_{index}, x, y, control_width, control_height, TRUE); }}\n"));
         }
         out.push_str("}\n");
         secondary_layout_dispatch.push_str(&format!(" case UINT32_C({view_identity}): flux__win_layout_view_{view_identity}(flux__windows_active_context, width, height); return;"));
@@ -22734,6 +22838,16 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     let mut secondary_refresh_dispatch = String::new();
     for (view_identity, secondary_view) in &secondary_window_views {
         let secondary_needs_layout_refresh = secondary_view.elements.iter().any(|element| {
+            let dynamic_layout_constraint = ["min_width", "min_height", "max_width", "max_height"]
+                .iter()
+                .any(|property_name| {
+                    view_property(element, property_name).is_some_and(|property| {
+                        static_expr_i64(&property.value, signatures).is_none()
+                    })
+                });
+            if dynamic_layout_constraint {
+                return true;
+            }
             if element.kind != "Text" {
                 return false;
             }

@@ -72478,6 +72478,138 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_size_constraints() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state minimumWidth: i64 = 72
+    state maximumHeight: i64 = 88
+    grid columns: 1fr
+    grid rows: auto auto
+    Button dynamic at 1,1
+        text: "Dynamic"
+        minWidth: minimumWidth
+        minHeight: 44
+        maxWidth: 180
+        maxHeight: maximumHeight
+    Text fixed at 2,1
+        text: "Fixed"
+        minWidth: 60
+        minHeight: 30
+        maxWidth: 120
+        maxHeight: 64
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary constrained route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary size constraints should lower for Windows");
+
+    assert!(windows.contains(
+        r#"requested_min_width = flux__win_checked_layout_size((flux__ui_view_1_state_minimumWidth), "minWidth")"#
+    ));
+    assert!(windows.contains("requested_min_height = INT64_C(44)"));
+    assert!(windows.contains("requested_max_width = INT64_C(180)"));
+    assert!(windows.contains(
+        r#"requested_max_height = flux__win_checked_layout_size((flux__ui_view_1_state_maximumHeight), "maxHeight")"#
+    ));
+    assert!(windows.contains("requested_max_width < requested_min_width"));
+    assert!(windows.contains("maxWidth must be greater than or equal to minWidth"));
+    assert!(windows.contains(
+        "if (requested_max_width > 0) { int maximum_width = flux__win_scale(requested_max_width);"
+    ));
+    assert!(windows.contains(
+        "flux__win_layout_view_1(context, flux__win_view_1_refresh_client.right - flux__win_view_1_refresh_client.left"
+    ));
+
+    for (needle, replacement, expected) in [
+        (
+            "minHeight: 44",
+            "minHeight: 0",
+            "minHeight must be between 1 and 2147483647",
+        ),
+        (
+            "maxWidth: 120",
+            "maxWidth: 50",
+            "maxWidth must be greater than or equal to minWidth",
+        ),
+    ] {
+        let invalid = source.replace(needle, replacement);
+        let invalid_database =
+            fluxc::semantic::SemanticDatabase::analyze(&invalid, SourceId::UNKNOWN)
+                .expect("invalid static secondary constraint should analyze before lowering");
+        let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+            invalid_database.program(),
+            invalid_database.signatures(),
+            &std::collections::HashMap::new(),
+            fluxc::codegen::NativeTarget::Windows,
+        )
+        .expect_err("invalid static secondary size constraint must fail lowering");
+        assert!(
+            error.message.contains(expected),
+            "expected {expected:?}, got {:?}",
+            error.message
+        );
+    }
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-size-constraints-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)
+            .expect("secondary size-constraints syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary size-constraints C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary size-constraints Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary size-constraints Windows C failed syntax validation:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_semantic_text_controls() {
     let source = r#"
 fn openSecondary() -> void {
