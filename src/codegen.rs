@@ -16827,7 +16827,7 @@ fn emit_windows_native_application(
                     "Image" => {
                         matches!(
                             property.name.as_str(),
-                            "source" | "fit" | "visible" | "enabled"
+                            "source" | "fit" | "alt" | "visible" | "enabled"
                         )
                     }
                     "Toggle" => {
@@ -16857,7 +16857,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, and their supported activation/change action",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, and their supported activation/change action",
                     ));
                 }
                 if data_property {
@@ -16973,6 +16973,12 @@ fn emit_windows_native_application(
                     && view_property(element, "validation_message").is_some()
             })
         });
+    let secondary_uses_accessibility = secondary_window_views.iter().any(|(_, secondary_view)| {
+        secondary_view.elements.iter().any(|element| {
+            (element.kind == "TextInput" && view_property(element, "validation_message").is_some())
+                || (element.kind == "Image" && view_property(element, "alt").is_some())
+        })
+    });
     let uses_accessibility = view.elements.iter().any(|element| {
         view_property(element, "accessibility_label").is_some()
             || view_property(element, "accessibility_description").is_some()
@@ -16985,7 +16991,7 @@ fn emit_windows_native_application(
             || (element.kind == "Image" && view_property(element, "alt").is_some())
             || (element.kind == "TextInput"
                 && view_property(element, "validation_message").is_some())
-    }) || secondary_uses_validation_messages;
+    }) || secondary_uses_accessibility;
     let uses_tooltips = view.elements.iter().any(|element| {
         view_property(element, "tooltip").is_some()
             || (element.kind == "TextInput"
@@ -21684,6 +21690,17 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 out.push_str(&format!(
                     "flux__win_set_bitmap(context->control_windows[{index}], flux__windows_image_bitmap_storage(context, {index}), {source}, {fit});\n"
                 ));
+                if let Some(property) = view_property(element, "alt") {
+                    let value = ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                    out.push_str(&format!(
+                        "flux__win_accessibility_set_name(context->control_windows[{index}], {value});\n"
+                    ));
+                }
             } else {
                 let text_property_name = match element.kind.as_str() {
                     "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => "label",

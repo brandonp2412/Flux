@@ -71737,11 +71737,13 @@ view Screen {
 view Detail {
     state imageSource: str = "cover.bmp"
     state imageFit: str = "contain"
+    state imageAlt: str = "Cover image"
     grid columns: 1fr
     grid rows: auto auto
     Image hero at 1,1
         source: imageSource
         fit: imageFit
+        alt: imageAlt
     Image backup at 2,1
         source: "backup.bmp"
         fit: "scaleDown"
@@ -71771,6 +71773,9 @@ app Screen
     );
     assert!(windows.contains(
         "flux__win_set_bitmap(context->control_windows[0], flux__windows_image_bitmap_storage(context, 0), flux__ui_view_1_state_imageSource, flux__ui_view_1_state_imageFit);"
+    ));
+    assert!(windows.contains(
+        "flux__win_accessibility_set_name(context->control_windows[0], flux__ui_view_1_state_imageAlt);"
     ));
     assert!(windows.contains(
         r#"flux__win_set_bitmap(context->control_windows[1], flux__windows_image_bitmap_storage(context, 1), "backup.bmp", "scaleDown");"#
