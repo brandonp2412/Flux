@@ -71854,6 +71854,155 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_long_press_interaction() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+fn pressSecondary() -> void {
+    print("pressed")
+}
+
+fn holdSecondary() -> void {
+    print("held")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state held: bool = false
+    state holdLabel: str = "Hold for details"
+    grid columns: 1fr
+    grid rows: auto auto
+    Button action at 1,1
+        text: "Action"
+        onPress: pressSecondary
+        onLongPress: held => !held
+        accessibilityLongPressLabel: holdLabel
+    Text passive at 2,1
+        text: "Passive"
+        onLongPress: holdSecondary
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary long-press interaction should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary long-press interaction should lower for Windows");
+
+    assert!(windows.contains(
+        "typedef struct { bool armed[2]; bool consumed[2]; POINT start[2]; } FluxWindowsView1GestureState;"
+    ));
+    assert!(windows.contains("flux__win_long_press_proc_view_1_0"));
+    assert!(windows.contains("flux__win_long_press_proc_view_1_1"));
+    assert!(windows.contains("WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOTIFY"));
+    assert!(windows.contains("gesture->consumed[0] = true"));
+    assert!(windows.contains(
+        "flux__win_accessibility_set_description(context->control_windows[0], flux__ui_view_1_state_holdLabel);"
+    ));
+    assert!(windows.contains("gesture_state->consumed[0] = false; flux__win_refresh(); return 0;"));
+    assert!(windows.contains("GWLP_WNDPROC, (LONG_PTR)flux__win_long_press_proc_view_1_0"));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-long-press-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)
+            .expect("secondary long-press syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary long-press C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary long-press Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary long-press Windows C failed syntax validation:
+{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn windows_distinct_route_text_input_long_press_remains_explicitly_unsupported() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+fn holdSecondary() -> void {
+    print("held")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput input at 1,1
+        text: ""
+        onLongPress: holdSecondary
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary TextInput long-press source should typecheck portably");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err(
+        "secondary Windows TextInput long-press must remain explicit until subclass chaining lands",
+    );
+    assert!(error.message.contains(
+        "Windows distinct secondary TextInput long-press interaction remains unsupported"
+    ));
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_multiline_text_input() {
     let source = r#"
 fn openSecondary() -> void {
