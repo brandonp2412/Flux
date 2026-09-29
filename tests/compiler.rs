@@ -23240,6 +23240,61 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_set_binding_preserves_root_borrow_provenance() {
+    let live = r#"
+fn main() -> i64 {
+    let values: set<i64>? = {10, 20}
+    if let present = borrow values:
+        let alias: set<i64> = borrow present
+        let destination: set<i64>? = values
+        print(alias.count)
+        if let moved = borrow destination:
+            print(moved.count)
+    return 0
+}
+"#;
+    let errors = check_source_all(live)
+        .expect_err("a live optional-set binding must keep its root owner borrowed");
+    assert!(
+        errors.iter().any(|error| {
+            error.message.contains(
+                "cannot move non-copy binding 'values' while borrowed view 'alias' is still live",
+            )
+        }),
+        "optional set binding errors: {errors:?}"
+    );
+
+    let dead = r#"
+fn main() -> i64 {
+    let values: set<i64>? = {10, 20}
+    if let present = borrow values:
+        let alias: set<i64> = borrow present
+        print(alias.count)
+        let destination: set<i64>? = values
+        if let moved = borrow destination:
+            print(moved.count)
+    return 0
+}
+"#;
+    check_source(dead)
+        .expect("the optional-set owner move should be valid after the nested borrow dies");
+    let generated =
+        compile_to_c(dead).expect("optional set bindings should lower as zero-copy descriptors");
+    assert!(generated.contains("struct flux__optional_list"));
+    let database = fluxc::semantic::SemanticDatabase::analyze(dead, SourceId::new(1222))
+        .expect("optional set binding lifetimes should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    assert!(
+        graph
+            .borrow_lifetimes()
+            .iter()
+            .any(|lifetime| lifetime.borrower == "alias" && lifetime.source == "values")
+    );
+}
+
+#[test]
 fn explicit_collection_borrow_supports_set_and_map_storage() {
     let source = r#"
 fn main() -> i64 {

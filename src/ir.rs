@@ -5128,7 +5128,10 @@ impl<'a> ControlFlowBuilder<'a> {
                     && let Some(binding) = binding
                     && binding.name != "_"
                     && let Some(Type::Optional(inner)) = self.scalar_expression_type(cond)
-                    && matches!(inner.as_ref(), Type::List(_) | Type::Map(_, _))
+                    && matches!(
+                        inner.as_ref(),
+                        Type::List(_) | Type::Set(_) | Type::Map(_, _)
+                    )
                     && let Some(source) = self.nodes[condition_node.0].values.first().copied()
                 {
                     self.scoped_borrow_sources.insert(

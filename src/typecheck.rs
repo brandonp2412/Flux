@@ -17595,6 +17595,7 @@ fn require_known_type(
                 | Type::Error
                 | Type::Function { .. }
                 | Type::List(_)
+                | Type::Set(_)
                 | Type::Map(_, _) => Ok(()),
                 Type::Record(_) if signatures.is_copy_type(&actual) => Ok(()),
                 Type::Named(name)
@@ -17608,7 +17609,7 @@ fn require_known_type(
                 _ => Err(diag(
                     span,
                     &format!(
-                        "bootstrap optional values require a Copy scalar/function/value type or a borrowed list view; got {}?",
+                        "bootstrap optional values require a Copy scalar/function/value type or a borrowed collection view; got {}?",
                         actual.name()
                     ),
                 )),
