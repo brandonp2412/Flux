@@ -16881,6 +16881,8 @@ fn emit_windows_native_application(
                         property.name == *property_name
                             || property.name == internal_name_to_source(property_name)
                     }))
+                    || (element.kind != "TextInput"
+                        && matches!(property.name.as_str(), "on_tap" | "onTap"))
                     || matches!(
                         property.name.as_str(),
                         "on_accessibility_action"
@@ -16901,7 +16903,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/long-press/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/tap/long-press/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -16934,6 +16936,23 @@ fn emit_windows_native_application(
                     return Err(diag(
                         property.value.span,
                         "Windows distinct secondary window activation requires a named fn() -> void callback or state transition",
+                    ));
+                }
+            }
+            if element.kind != "TextInput"
+                && let Some(property) = view_property(element, "on_tap")
+            {
+                if property.transition.is_some() {
+                    ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                } else if !matches!(property.value.kind, ExprKind::Var(_)) {
+                    return Err(diag(
+                        property.value.span,
+                        "Windows distinct secondary onTap requires a named fn() -> void callback or state transition",
                     ));
                 }
             }
@@ -19707,10 +19726,17 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
                 || view_property(element, "context_menu_items").is_some()
         })
     });
-    let uses_passive_keyboard_activation = view.elements.iter().any(|element| {
-        !matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
-            && view_property(element, "on_tap").is_some()
-    });
+    let uses_passive_keyboard_activation =
+        view.elements.iter().any(|element| {
+            !matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
+                && view_property(element, "on_tap").is_some()
+        }) || secondary_window_views.iter().any(|(_, secondary_view)| {
+            secondary_view.elements.iter().any(|element| {
+                element.kind != "TextInput"
+                    && !matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
+                    && view_property(element, "on_tap").is_some()
+            })
+        });
     if uses_key_events {
         out.push_str("static const char *flux__win_key_name(WPARAM key, char utf8[8]) { switch (key) { case VK_RETURN: return \"Enter\"; case VK_ESCAPE: return \"Escape\"; case VK_TAB: return \"Tab\"; case VK_BACK: return \"Backspace\"; case VK_DELETE: return \"Delete\"; case VK_LEFT: return \"ArrowLeft\"; case VK_RIGHT: return \"ArrowRight\"; case VK_UP: return \"ArrowUp\"; case VK_DOWN: return \"ArrowDown\"; case VK_HOME: return \"Home\"; case VK_END: return \"End\"; case VK_PRIOR: return \"PageUp\"; case VK_NEXT: return \"PageDown\"; case VK_SPACE: return \" \"; default: break; } BYTE keyboard_state[256]; if (!GetKeyboardState(keyboard_state)) return \"Unknown\"; WCHAR wide[4] = {0}; UINT scan = MapVirtualKeyW((UINT)key, MAPVK_VK_TO_VSC); int count = ToUnicode((UINT)key, scan, keyboard_state, wide, 3, 0); if (count <= 0) return \"Unknown\"; int length = WideCharToMultiByte(CP_UTF8, 0, wide, count, utf8, 7, NULL, NULL); if (length <= 0) return \"Unknown\"; utf8[length] = '\\0'; return utf8; }\n");
     }
@@ -19771,6 +19797,37 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
             out.push_str(&format!(
                 "static void flux__win_tap_{index}(void) {{ {}(); flux__win_refresh(); }}\n",
                 function_c_name(function)
+            ));
+        }
+    }
+    for (view_identity, secondary_view) in &secondary_window_views {
+        for (index, element) in secondary_view.elements.iter().enumerate() {
+            if element.kind == "TextInput" {
+                continue;
+            }
+            let Some(action) = view_property(element, "on_tap") else {
+                continue;
+            };
+            let event_body = if let Some(transition) = &action.transition {
+                let next = ui_expr_c_for_view_identity(
+                    &action.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                format!(
+                    "{} = {next}; flux__win_refresh();",
+                    ui_state_c_name_for_view_identity(&transition.state, Some(*view_identity))
+                )
+            } else {
+                let ExprKind::Var(function) = &action.value.kind else {
+                    unreachable!("secondary onTap shape was validated before emission");
+                };
+                format!("{}(); flux__win_refresh();", function_c_name(function))
+            };
+            out.push_str(&format!(
+                "static void flux__win_tap_view_{view_identity}_{index}(void) {{ {event_body} }}
+"
             ));
         }
     }
@@ -20723,7 +20780,37 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             }
             out.push_str("return false; }\n");
         }
-        out.push_str(&format!("return false; }}\nstatic bool flux__win_dispatch_key(const MSG *message) {{ if (flux__windows_active_context == NULL) return false; switch (flux__windows_active_context->view_identity) {{ case UINT32_C({root_view_identity}): return flux__win_dispatch_key_root_view(message); default: return false; }} }}\n"));
+        out.push_str("return false; }\n");
+        let mut secondary_key_dispatch = String::new();
+        for (view_identity, secondary_view) in &secondary_window_views {
+            let passive_taps = secondary_view
+                .elements
+                .iter()
+                .enumerate()
+                .filter(|(_, element)| {
+                    element.kind != "TextInput"
+                        && !matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
+                        && view_property(element, "on_tap").is_some()
+                })
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            if passive_taps.is_empty() {
+                continue;
+            }
+            out.push_str(&format!(
+                "static bool flux__win_dispatch_key_view_{view_identity}(const MSG *message) {{ if (message == NULL || (message->message != WM_KEYDOWN && message->message != WM_SYSKEYDOWN)) return false; FluxWindowsWindowContext *context = flux__windows_active_context; if (context == NULL || context->view_identity != UINT32_C({view_identity}) || context->control_windows == NULL) return false; HWND focused = GetFocus();\n"
+            ));
+            for index in passive_taps {
+                out.push_str(&format!(
+                    "if (focused != NULL && focused == context->control_windows[{index}] && (message->wParam == VK_RETURN || message->wParam == VK_SPACE)) {{ flux__win_tap_view_{view_identity}_{index}(); return true; }}\n"
+                ));
+            }
+            out.push_str("return false; }\n");
+            secondary_key_dispatch.push_str(&format!(
+                " case UINT32_C({view_identity}): return flux__win_dispatch_key_view_{view_identity}(message);"
+            ));
+        }
+        out.push_str(&format!("static bool flux__win_dispatch_key(const MSG *message) {{ if (flux__windows_active_context == NULL) return false; switch (flux__windows_active_context->view_identity) {{ case UINT32_C({root_view_identity}): return flux__win_dispatch_key_root_view(message);{secondary_key_dispatch} default: return false; }} }}\n"));
     }
     let gap = i64::from(view.grid.gap.unwrap_or(12));
     let padding = i64::from(view.grid.padding.unwrap_or(20));
@@ -22525,12 +22612,30 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 "Radio" => Some("on_select"),
                 _ => None,
             };
-            let Some(action_name) = action_name else {
+            let primary_action = action_name.and_then(|name| view_property(element, name));
+            if primary_action.is_none() {
+                if view_property(element, "on_tap").is_some() {
+                    let notification =
+                        if matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio") {
+                            "BN_CLICKED"
+                        } else {
+                            "STN_CLICKED"
+                        };
+                    let long_press_guard = if view_property(element, "on_long_press").is_some() {
+                        format!(
+                            "FluxWindowsView{view_identity}GestureState *gesture_state = (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state; if (gesture_state != NULL && gesture_state->consumed[{index}]) {{ gesture_state->consumed[{index}] = false; flux__win_refresh(); return 0; }} "
+                        )
+                    } else {
+                        String::new()
+                    };
+                    secondary_command_messages.push_str(&format!(
+                        "case {}: if (HIWORD(wparam) == {notification}) {{ {long_press_guard}flux__win_tap_view_{view_identity}_{index}(); }} return 0;\n",
+                        1000 + index
+                    ));
+                }
                 continue;
-            };
-            let Some(action) = view_property(element, action_name) else {
-                continue;
-            };
+            }
+            let action = primary_action.expect("secondary primary action exists");
             let long_press_guard = if view_property(element, "on_long_press").is_some() {
                 format!(
                     "FluxWindowsView{view_identity}GestureState *gesture_state = (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state; if (gesture_state != NULL && gesture_state->consumed[{index}]) {{ gesture_state->consumed[{index}] = false; flux__win_refresh(); return 0; }} "
@@ -23322,16 +23427,27 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 "Image" => (
                     "STATIC",
                     "WS_CHILD | WS_VISIBLE | SS_BITMAP | SS_CENTERIMAGE",
-                    "0".to_string(),
+                    if view_property(element, "on_tap").is_some() {
+                        (1000 + index).to_string()
+                    } else {
+                        "0".to_string()
+                    },
                 ),
-                "Text" | "Nav" | "Chart" | "Card" | "Header" | "Content" => {
-                    ("STATIC", "WS_CHILD | WS_VISIBLE | SS_LEFT", "0".to_string())
-                }
+                "Text" | "Nav" | "Chart" | "Card" | "Header" | "Content" => (
+                    "STATIC",
+                    "WS_CHILD | WS_VISIBLE | SS_LEFT",
+                    if view_property(element, "on_tap").is_some() {
+                        (1000 + index).to_string()
+                    } else {
+                        "0".to_string()
+                    },
+                ),
                 _ => unreachable!("secondary element kind was validated above"),
             };
             let implicitly_focusable = view_property(element, "autofocus")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
                 == Some(true)
+                || view_property(element, "on_tap").is_some()
                 || view_property(element, "on_context_menu").is_some()
                 || view_property(element, "context_menu_label").is_some()
                 || view_property(element, "context_menu_items").is_some();
@@ -23344,7 +23460,8 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 base_style.to_string()
             };
             if class == "STATIC"
-                && view_property(element, "on_long_press").is_some()
+                && (view_property(element, "on_tap").is_some()
+                    || view_property(element, "on_long_press").is_some())
                 && !style.contains("SS_NOTIFY")
             {
                 style.push_str(" | SS_NOTIFY");

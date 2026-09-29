@@ -71961,6 +71961,108 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_tap_interaction() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+fn tappedSecondary() -> void {
+    print("tapped")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state tapped: bool = false
+    grid columns: 1fr
+    grid rows: auto auto
+    Text passive at 1,1
+        text: "Tap"
+        onTap: tapped => !tapped
+        onLongPress: tappedSecondary
+    Button action at 2,1
+        text: "Action"
+        onTap: tappedSecondary
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary tap source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary tap interaction should lower for Windows");
+
+    assert!(windows.contains("static void flux__win_tap_view_1_0"));
+    assert!(windows.contains("static void flux__win_tap_view_1_1"));
+    assert!(windows.contains(
+        "flux__ui_view_1_state_tapped = (!(flux__ui_view_1_state_tapped)); flux__win_refresh();"
+    ));
+    assert!(windows.contains("flux__fn_tappedSecondary(); flux__win_refresh();"));
+    assert!(windows.contains(
+        "case 1000: if (HIWORD(wparam) == STN_CLICKED) { FluxWindowsView1GestureState *gesture_state = (FluxWindowsView1GestureState *)context->control_gesture_state; if (gesture_state != NULL && gesture_state->consumed[0]) { gesture_state->consumed[0] = false; flux__win_refresh(); return 0; } flux__win_tap_view_1_0(); } return 0;"
+    ));
+    assert!(windows.contains(
+        "case 1001: if (HIWORD(wparam) == BN_CLICKED) { flux__win_tap_view_1_1(); } return 0;"
+    ));
+    assert!(windows.contains("WS_CHILD | WS_VISIBLE | SS_LEFT | WS_TABSTOP | SS_NOTIFY"));
+    assert!(windows.contains("static bool flux__win_dispatch_key_view_1(const MSG *message)"));
+    assert!(windows.contains(
+        "focused == context->control_windows[0] && (message->wParam == VK_RETURN || message->wParam == VK_SPACE)"
+    ));
+    assert!(windows.contains("case UINT32_C(1): return flux__win_dispatch_key_view_1(message);"));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-tap-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("secondary tap syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary tap C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary tap Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary tap Windows C failed syntax validation:
+{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_long_press_interaction() {
     let source = r#"
 fn openSecondary() -> void {
