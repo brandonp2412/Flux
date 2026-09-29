@@ -72958,6 +72958,119 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_radii() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state corner: i64 = 9
+    grid columns: 1fr
+    grid rows: auto auto
+    Button dynamic at 1,1
+        text: "Dynamic"
+        radius: corner
+    Text detailed at 2,1
+        text: "Detailed"
+        radius: 8
+        radiusTopLeft: corner
+        radiusBottomRight: 12
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary radius route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary radii should lower for Windows");
+
+    assert!(windows.contains("static bool flux__win_subtract_corner("));
+    assert!(windows.contains("int64_t requested_radius = flux__ui_view_1_state_corner;"));
+    assert!(windows.contains(
+        "flux__win_set_radius(control_0, control_width, control_height, requested_radius);"
+    ));
+    assert!(windows.contains("int64_t requested_radius_top_left = flux__ui_view_1_state_corner;"));
+    assert!(windows.contains("int64_t requested_radius_top_right = INT64_C(8);"));
+    assert!(windows.contains("int64_t requested_radius_bottom_right = INT64_C(12);"));
+    assert!(windows.contains("int64_t requested_radius_bottom_left = INT64_C(8);"));
+    assert!(windows.contains(
+        "flux__win_set_radii(control_1, control_width, control_height, requested_radius_top_left, requested_radius_top_right, requested_radius_bottom_right, requested_radius_bottom_left);"
+    ));
+    assert!(windows.contains(
+        "flux__win_layout_view_1(context, flux__win_view_1_refresh_client.right - flux__win_view_1_refresh_client.left"
+    ));
+
+    let invalid = source.replace("radiusBottomRight: 12", "radiusBottomRight: -1");
+    let invalid_database = fluxc::semantic::SemanticDatabase::analyze(&invalid, SourceId::UNKNOWN)
+        .expect("invalid static secondary radius should analyze before lowering");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        invalid_database.program(),
+        invalid_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("negative secondary radius must fail lowering");
+    assert!(
+        error.message.contains(
+            "radiusBottomRight must be non-negative and fit within a 32-bit signed integer"
+        ),
+        "unexpected radius diagnostic: {:?}",
+        error.message
+    );
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-radius-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("secondary radius syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary radius C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary radius Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary radius Windows C failed syntax validation:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_alignment_constraints() {
     let source = r#"
 fn openSecondary() -> void {
