@@ -16811,6 +16811,7 @@ fn emit_windows_native_application(
                                 | "password"
                                 | "max_length"
                                 | "maxLength"
+                                | "multiline"
                                 | "submit_on_enter"
                                 | "submitOnEnter"
                                 | "visible"
@@ -16903,6 +16904,24 @@ fn emit_windows_native_application(
                             ),
                         ));
                     }
+                }
+                let multiline = match view_property(element, "multiline") {
+                    Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                        diag(
+                            property.value.span,
+                            "Windows distinct secondary TextInput.multiline must be a compile-time bool value",
+                        )
+                    })?,
+                    None => false,
+                };
+                if multiline
+                    && let Some(property) = view_property(element, "password")
+                    && static_expr_bool(&property.value, signatures) == Some(true)
+                {
+                    return Err(diag(
+                        property.value.span,
+                        "TextInput.password and TextInput.multiline cannot both be true",
+                    ));
                 }
                 if let Some(property) = view_property(element, "submit_on_enter")
                     && static_expr_bool(&property.value, signatures).is_none()
@@ -20287,7 +20306,12 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 }
                 let submit_on_enter = view_property(element, "submit_on_enter")
                     .and_then(|property| static_expr_bool(&property.value, signatures))
-                    .unwrap_or(true);
+                    .unwrap_or_else(|| {
+                        let multiline = view_property(element, "multiline")
+                            .and_then(|property| static_expr_bool(&property.value, signatures))
+                            .unwrap_or(false);
+                        !multiline
+                    });
                 submit_on_enter.then_some(index)
             })
             .collect::<Vec<_>>();
@@ -21686,8 +21710,18 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         signatures,
                         Some(*view_identity),
                     )?;
+                    let multiline = view_property(element, "multiline")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        .unwrap_or(false);
+                    let invalid_multiline = if multiline {
+                        format!(
+                            "if ({value}) {{ fputs(\"Flux runtime error: TextInput.password and TextInput.multiline cannot both be true\\n\", stderr); abort(); }} "
+                        )
+                    } else {
+                        String::new()
+                    };
                     out.push_str(&format!(
-                        "bool flux__win_view_{view_identity}_password_{index} = ({value}); SendMessageA(context->control_windows[{index}], EM_SETPASSWORDCHAR, flux__win_view_{view_identity}_password_{index} ? (WPARAM)'*' : 0, 0); InvalidateRect(context->control_windows[{index}], NULL, TRUE);\n"
+                        "{invalid_multiline}bool flux__win_view_{view_identity}_password_{index} = ({value}); SendMessageA(context->control_windows[{index}], EM_SETPASSWORDCHAR, flux__win_view_{view_identity}_password_{index} ? (WPARAM)'*' : 0, 0); InvalidateRect(context->control_windows[{index}], NULL, TRUE);\n"
                     ));
                 }
                 if let Some(property) = view_property(element, "max_length") {
@@ -21984,7 +22018,12 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 if view_property(element, "on_submit").is_some() {
                     let submit_on_enter = view_property(element, "submit_on_enter")
                         .and_then(|property| static_expr_bool(&property.value, signatures))
-                        .unwrap_or(true);
+                        .unwrap_or_else(|| {
+                            let multiline = view_property(element, "multiline")
+                                .and_then(|property| static_expr_bool(&property.value, signatures))
+                                .unwrap_or(false);
+                            !multiline
+                        });
                     if submit_on_enter {
                         out.push_str(&format!(
                             "static LRESULT CALLBACK flux__win_input_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_originals != NULL && context->control_subclass_original_count > {index} ? context->control_subclass_originals[{index}] : NULL; if (message == WM_KEYDOWN && wparam == VK_RETURN) {{ flux__win_submit_view_{view_identity}_{index}(hwnd); return 0; }} return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); }}\n"
@@ -22577,7 +22616,12 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 }
                 let submit_on_enter = view_property(element, "submit_on_enter")
                     .and_then(|property| static_expr_bool(&property.value, signatures))
-                    .unwrap_or(true);
+                    .unwrap_or_else(|| {
+                        let multiline = view_property(element, "multiline")
+                            .and_then(|property| static_expr_bool(&property.value, signatures))
+                            .unwrap_or(false);
+                        !multiline
+                    });
                 submit_on_enter.then_some(index)
             })
             .collect::<Vec<_>>();
@@ -22626,11 +22670,20 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         (1000 + index).to_string(),
                     )
                 }
-                "TextInput" => (
-                    "EDIT",
-                    "WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_LEFT | ES_AUTOHSCROLL",
-                    (1000 + index).to_string(),
-                ),
+                "TextInput" => {
+                    let multiline = view_property(element, "multiline")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        .unwrap_or(false);
+                    (
+                        "EDIT",
+                        if multiline {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL"
+                        } else {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_LEFT | ES_AUTOHSCROLL"
+                        },
+                        (1000 + index).to_string(),
+                    )
+                }
                 "Image" => (
                     "STATIC",
                     "WS_CHILD | WS_VISIBLE | SS_BITMAP | SS_CENTERIMAGE",
