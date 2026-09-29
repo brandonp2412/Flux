@@ -6307,7 +6307,9 @@ app Screen(title: "Keyboard Windows")
     assert!(generated.contains("static const char *flux__win_key_name"));
     assert!(generated.contains("ToUnicode((UINT)key"));
     assert!(generated.contains("case VK_LEFT: return \"ArrowLeft\""));
+    assert!(generated.contains("static bool flux__win_dispatch_key_root_view(const MSG *message)"));
     assert!(generated.contains("static bool flux__win_dispatch_key(const MSG *message)"));
+    assert!(generated.contains("switch (flux__windows_active_context->view_identity) { case UINT32_C(0): return flux__win_dispatch_key_root_view(message); default: return false; }"));
     assert!(generated.contains("focused == flux__ui_title"));
     assert!(generated.contains("flux__win_tap_1(); return true;"));
     assert!(generated.contains("WM_SETFOCUS"));
