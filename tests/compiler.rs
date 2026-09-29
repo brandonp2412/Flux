@@ -71496,6 +71496,8 @@ view Detail {
     state validation: str = "error"
     state message: str = "Please fix this"
     state canFocus: bool = true
+    state accessibleValue: str = "Current query"
+    state hiddenFromAccessibility: bool = false
     grid columns: 1fr
     grid rows: auto auto
     TextInput input at 1,1
@@ -71508,6 +71510,9 @@ view Detail {
         validationState: validation
         validationMessage: message
         accessibilityDescription: "Explicit detail"
+        accessibilityValue: accessibleValue
+        accessibilityRole: "textBox"
+        accessibilityHidden: hiddenFromAccessibility
         tooltip: "Fallback help"
         focusable: canFocus
         submitOnEnter: true
@@ -71597,6 +71602,15 @@ app Screen
     ));
     assert!(windows.contains(
         r#"flux__win_accessibility_set_description(context->control_windows[0], "Explicit detail");"#
+    ));
+    assert!(windows.contains(
+        "flux__win_accessibility_set_role(context->control_windows[0], ROLE_SYSTEM_TEXT);"
+    ));
+    assert!(windows.contains(
+        "flux__win_view_1_accessibility_value_0 = flux__win_accessibility_wide(flux__ui_view_1_state_accessibleValue)"
+    ));
+    assert!(windows.contains(
+        "if (flux__ui_view_1_state_hiddenFromAccessibility) { VARIANT flux__win_view_1_accessibility_state_0;"
     ));
     assert!(windows.contains(
         "LONG_PTR flux__win_view_1_focus_style_0 = GetWindowLongPtrW(context->control_windows[0], GWL_STYLE);"

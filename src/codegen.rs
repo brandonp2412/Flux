@@ -16852,6 +16852,12 @@ fn emit_windows_native_application(
                             | "accessibilityLabel"
                             | "accessibility_description"
                             | "accessibilityDescription"
+                            | "accessibility_value"
+                            | "accessibilityValue"
+                            | "accessibility_role"
+                            | "accessibilityRole"
+                            | "accessibility_hidden"
+                            | "accessibilityHidden"
                             | "focusable"
                             | "autofocus"
                             | "focus_scope"
@@ -16870,7 +16876,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change action",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change action",
                     ));
                 }
                 if data_property {
@@ -16990,6 +16996,9 @@ fn emit_windows_native_application(
         secondary_view.elements.iter().any(|element| {
             view_property(element, "accessibility_label").is_some()
                 || view_property(element, "accessibility_description").is_some()
+                || view_property(element, "accessibility_value").is_some()
+                || view_property(element, "accessibility_role").is_some()
+                || view_property(element, "accessibility_hidden").is_some()
                 || (element.kind == "TextInput"
                     && view_property(element, "validation_message").is_some())
                 || (element.kind == "Image" && view_property(element, "alt").is_some())
@@ -21891,6 +21900,28 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
 "
                 ));
             }
+            if let Some(property) = view_property(element, "accessibility_value") {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                out.push_str(&format!(
+                    "if (context->control_windows[{index}] != NULL && flux__win_accessibility != NULL) {{ wchar_t *flux__win_view_{view_identity}_accessibility_value_{index} = flux__win_accessibility_wide({value}); if (flux__win_view_{view_identity}_accessibility_value_{index} != NULL) {{ (void)flux__win_accessibility->lpVtbl->SetHwndPropStr(flux__win_accessibility, context->control_windows[{index}], OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_VALUE, flux__win_view_{view_identity}_accessibility_value_{index}); free(flux__win_view_{view_identity}_accessibility_value_{index}); }} }}\n"
+                ));
+            }
+            if let Some(property) = view_property(element, "accessibility_hidden") {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                out.push_str(&format!(
+                    "if (context->control_windows[{index}] != NULL && flux__win_accessibility != NULL) {{ if ({value}) {{ VARIANT flux__win_view_{view_identity}_accessibility_state_{index}; VariantInit(&flux__win_view_{view_identity}_accessibility_state_{index}); flux__win_view_{view_identity}_accessibility_state_{index}.vt = VT_I4; flux__win_view_{view_identity}_accessibility_state_{index}.lVal = STATE_SYSTEM_INVISIBLE; (void)flux__win_accessibility->lpVtbl->SetHwndProp(flux__win_accessibility, context->control_windows[{index}], OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_STATE, flux__win_view_{view_identity}_accessibility_state_{index}); VariantClear(&flux__win_view_{view_identity}_accessibility_state_{index}); }} else {{ const MSAAPROPID flux__win_view_{view_identity}_accessibility_state_property_{index} = PROPID_ACC_STATE; (void)flux__win_accessibility->lpVtbl->ClearHwndProps(flux__win_accessibility, context->control_windows[{index}], OBJID_CLIENT, CHILDID_SELF, &flux__win_view_{view_identity}_accessibility_state_property_{index}, 1); }} }}\n"
+                ));
+            }
             if let Some(property) = view_property(element, "tooltip")
                 && !(element.kind == "TextInput"
                     && view_property(element, "validation_message").is_some())
@@ -22946,6 +22977,36 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     "if (!SetPropA(context->control_windows[{index}], \"flux-focus-scope\", (HANDLE)(INT_PTR)INT64_C({}))) return flux__win_create_view_window_failure(window, primary);\n",
                     scope + 1
                 ));
+            }
+            if let Some(property) = view_property(element, "accessibility_role") {
+                let role = static_expr_str(&property.value, signatures).ok_or_else(|| {
+                    diag(
+                        property.value.span,
+                        "bootstrap Windows accessibilityRole must be a compile-time string value",
+                    )
+                })?;
+                let native_role = match role.as_str() {
+                    "label" | "heading" => "ROLE_SYSTEM_STATICTEXT",
+                    "button" => "ROLE_SYSTEM_PUSHBUTTON",
+                    "textBox" => "ROLE_SYSTEM_TEXT",
+                    "checkbox" | "switch" => "ROLE_SYSTEM_CHECKBUTTON",
+                    "radio" => "ROLE_SYSTEM_RADIOBUTTON",
+                    "image" => "ROLE_SYSTEM_GRAPHIC",
+                    _ => {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Windows accessibilityRole is not supported by the native role mapping",
+                        ));
+                    }
+                };
+                out.push_str(&format!(
+                    "flux__win_accessibility_set_role(context->control_windows[{index}], {native_role});\n"
+                ));
+                if role == "heading" {
+                    out.push_str(&format!(
+                        "flux__win_accessibility_set_heading_level(context->control_windows[{index}], 1);\n"
+                    ));
+                }
             }
             if view_property(element, "tooltip").is_some()
                 || (element.kind == "TextInput"
