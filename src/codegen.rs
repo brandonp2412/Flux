@@ -16852,6 +16852,7 @@ fn emit_windows_native_application(
                             | "accessibilityLabel"
                             | "accessibility_description"
                             | "accessibilityDescription"
+                            | "focusable"
                     );
                 let action_property = action_name.is_some_and(|action_name| {
                     property.name == action_name
@@ -16866,7 +16867,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, and their supported activation/change action",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, focusable, and their supported activation/change action",
                     ));
                 }
                 if data_property {
@@ -21763,6 +21764,17 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 )?;
                 out.push_str(&format!(
                     "EnableWindow(context->control_windows[{index}], ({value}) ? TRUE : FALSE);\n"
+                ));
+            }
+            if let Some(property) = view_property(element, "focusable") {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                out.push_str(&format!(
+                    "if (context->control_windows[{index}] != NULL) {{ LONG_PTR flux__win_view_{view_identity}_focus_style_{index} = GetWindowLongPtrW(context->control_windows[{index}], GWL_STYLE); LONG_PTR flux__win_view_{view_identity}_focus_next_{index} = ({value}) ? (flux__win_view_{view_identity}_focus_style_{index} | WS_TABSTOP) : (flux__win_view_{view_identity}_focus_style_{index} & ~((LONG_PTR)WS_TABSTOP)); if (flux__win_view_{view_identity}_focus_next_{index} != flux__win_view_{view_identity}_focus_style_{index}) SetWindowLongPtrW(context->control_windows[{index}], GWL_STYLE, flux__win_view_{view_identity}_focus_next_{index}); }}\n"
                 ));
             }
             if element.kind == "TextInput" {

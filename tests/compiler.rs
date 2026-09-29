@@ -71495,6 +71495,7 @@ view Detail {
     state keyboard: str = "email"
     state validation: str = "error"
     state message: str = "Please fix this"
+    state canFocus: bool = true
     grid columns: 1fr
     grid rows: auto auto
     TextInput input at 1,1
@@ -71508,6 +71509,7 @@ view Detail {
         validationMessage: message
         accessibilityDescription: "Explicit detail"
         tooltip: "Fallback help"
+        focusable: canFocus
         submitOnEnter: true
         onChange: query, value => value
         onSubmit: query, value => value
@@ -71595,6 +71597,12 @@ app Screen
     ));
     assert!(windows.contains(
         r#"flux__win_accessibility_set_description(context->control_windows[0], "Explicit detail");"#
+    ));
+    assert!(windows.contains(
+        "LONG_PTR flux__win_view_1_focus_style_0 = GetWindowLongPtrW(context->control_windows[0], GWL_STYLE);"
+    ));
+    assert!(windows.contains(
+        "LONG_PTR flux__win_view_1_focus_next_0 = (flux__ui_view_1_state_canFocus) ? (flux__win_view_1_focus_style_0 | WS_TABSTOP)"
     ));
     assert!(
         windows.contains("flux__win_view_1_toolinfo_0.uId = (UINT_PTR)context->control_windows[0]")
