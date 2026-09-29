@@ -16927,6 +16927,7 @@ fn emit_windows_native_application(
                             | "radiusBottomRight"
                             | "radius_bottom_left"
                             | "radiusBottomLeft"
+                            | "clip"
                     )
                     || (element.kind == "Text"
                         && matches!(
@@ -17039,7 +17040,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/clip/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -20282,6 +20283,12 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         .elements
         .iter()
         .any(|element| view_property(element, "clip").is_some())
+        || secondary_window_views.iter().any(|(_, secondary_view)| {
+            secondary_view
+                .elements
+                .iter()
+                .any(|element| view_property(element, "clip").is_some())
+        })
     {
         out.push_str(r#"static void flux__win_set_clip(HWND control, int width, int height, bool clip) {
     if (control == NULL) return;
@@ -22579,6 +22586,33 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             } else {
                 String::new()
             };
+            let secondary_clip_value = if let Some(property) = view_property(element, "clip") {
+                Some(match static_expr_bool(&property.value, signatures) {
+                    Some(value) => {
+                        if value {
+                            "true".to_string()
+                        } else {
+                            "false".to_string()
+                        }
+                    }
+                    None => ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?,
+                })
+            } else {
+                None
+            };
+            let secondary_apply_clip = secondary_clip_value
+                .as_ref()
+                .map(|value| {
+                    format!(
+                        "flux__win_set_clip(control_{index}, control_width, control_height, {value}); "
+                    )
+                })
+                .unwrap_or_default();
             let secondary_alignment_value = |property_name: &str,
                                              source_name: &str|
              -> Result<(String, String), Diagnostic> {
@@ -22766,7 +22800,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             } else {
                 String::new()
             };
-            out.push_str(&format!("HWND control_{index} = context->control_windows[{index}]; if (control_{index} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height{secondary_scroll_offset}; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; if (control_width < 1) control_width = 1; if (control_height < 1) control_height = 1; int64_t requested_margin_top = {secondary_margin_top_value}; int64_t requested_margin_bottom = {secondary_margin_bottom_value}; int64_t requested_margin_start = {secondary_margin_start_value}; int64_t requested_margin_end = {secondary_margin_end_value}; int64_t requested_translate_x = {secondary_translate_x_value}; int64_t requested_translate_y = {secondary_translate_y_value}; if (requested_translate_x < INT32_MIN || requested_translate_x > INT32_MAX) {{ fputs(\"Flux runtime error: translateX must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_translate_y < INT32_MIN || requested_translate_y > INT32_MAX) {{ fputs(\"Flux runtime error: translateY must fit within a 32-bit signed integer\\n\", stderr); abort(); }} int physical_margin_top = flux__win_scale(requested_margin_top); int physical_margin_bottom = flux__win_scale(requested_margin_bottom); int physical_margin_start = flux__win_scale(requested_margin_start); int physical_margin_end = flux__win_scale(requested_margin_end); int physical_translate_x = flux__win_scale(requested_translate_x); int physical_translate_y = flux__win_scale(requested_translate_y); int64_t adjusted_x = (int64_t)x + physical_margin_start + physical_translate_x; int64_t adjusted_y = (int64_t)y + physical_margin_top + physical_translate_y; x = adjusted_x < INT32_MIN ? INT32_MIN : (adjusted_x > INT32_MAX ? INT32_MAX : (int)adjusted_x); y = adjusted_y < INT32_MIN ? INT32_MIN : (adjusted_y > INT32_MAX ? INT32_MAX : (int)adjusted_y); int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end; int64_t margin_height = (int64_t)control_height - physical_margin_top - physical_margin_bottom; control_width = margin_width < 1 ? 1 : (margin_width > INT32_MAX ? INT32_MAX : (int)margin_width); control_height = margin_height < 1 ? 1 : (margin_height > INT32_MAX ? INT32_MAX : (int)margin_height); int available_width = control_width; int available_height = control_height; {secondary_radius_setup}{secondary_alignment_setup}int64_t requested_min_width = {secondary_min_width_value}; int64_t requested_min_height = {secondary_min_height_value}; int64_t requested_max_width = {secondary_max_width_value}; int64_t requested_max_height = {secondary_max_height_value}; {secondary_width_relationship}{secondary_height_relationship}{secondary_preferred_size}{secondary_text_width_limit}{secondary_text_height_limit}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} {secondary_alignment_position}{secondary_scale_transform}MoveWindow(control_{index}, x, y, control_width, control_height, TRUE); {secondary_apply_radius}}}\n"));
+            out.push_str(&format!("HWND control_{index} = context->control_windows[{index}]; if (control_{index} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height{secondary_scroll_offset}; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; if (control_width < 1) control_width = 1; if (control_height < 1) control_height = 1; int64_t requested_margin_top = {secondary_margin_top_value}; int64_t requested_margin_bottom = {secondary_margin_bottom_value}; int64_t requested_margin_start = {secondary_margin_start_value}; int64_t requested_margin_end = {secondary_margin_end_value}; int64_t requested_translate_x = {secondary_translate_x_value}; int64_t requested_translate_y = {secondary_translate_y_value}; if (requested_translate_x < INT32_MIN || requested_translate_x > INT32_MAX) {{ fputs(\"Flux runtime error: translateX must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_translate_y < INT32_MIN || requested_translate_y > INT32_MAX) {{ fputs(\"Flux runtime error: translateY must fit within a 32-bit signed integer\\n\", stderr); abort(); }} int physical_margin_top = flux__win_scale(requested_margin_top); int physical_margin_bottom = flux__win_scale(requested_margin_bottom); int physical_margin_start = flux__win_scale(requested_margin_start); int physical_margin_end = flux__win_scale(requested_margin_end); int physical_translate_x = flux__win_scale(requested_translate_x); int physical_translate_y = flux__win_scale(requested_translate_y); int64_t adjusted_x = (int64_t)x + physical_margin_start + physical_translate_x; int64_t adjusted_y = (int64_t)y + physical_margin_top + physical_translate_y; x = adjusted_x < INT32_MIN ? INT32_MIN : (adjusted_x > INT32_MAX ? INT32_MAX : (int)adjusted_x); y = adjusted_y < INT32_MIN ? INT32_MIN : (adjusted_y > INT32_MAX ? INT32_MAX : (int)adjusted_y); int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end; int64_t margin_height = (int64_t)control_height - physical_margin_top - physical_margin_bottom; control_width = margin_width < 1 ? 1 : (margin_width > INT32_MAX ? INT32_MAX : (int)margin_width); control_height = margin_height < 1 ? 1 : (margin_height > INT32_MAX ? INT32_MAX : (int)margin_height); int available_width = control_width; int available_height = control_height; {secondary_radius_setup}{secondary_alignment_setup}int64_t requested_min_width = {secondary_min_width_value}; int64_t requested_min_height = {secondary_min_height_value}; int64_t requested_max_width = {secondary_max_width_value}; int64_t requested_max_height = {secondary_max_height_value}; {secondary_width_relationship}{secondary_height_relationship}{secondary_preferred_size}{secondary_text_width_limit}{secondary_text_height_limit}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} {secondary_alignment_position}{secondary_scale_transform}MoveWindow(control_{index}, x, y, control_width, control_height, TRUE); {secondary_apply_clip}{secondary_apply_radius}}}\n"));
         }
         out.push_str("}\n");
         secondary_layout_dispatch.push_str(&format!(" case UINT32_C({view_identity}): flux__win_layout_view_{view_identity}(flux__windows_active_context, width, height); return;"));
@@ -23284,7 +23318,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 view_property(element, property_name)
                     .is_some_and(|property| static_expr_str(&property.value, signatures).is_none())
             });
-            if dynamic_layout_constraint || dynamic_alignment {
+            let dynamic_clip = view_property(element, "clip")
+                .is_some_and(|property| static_expr_bool(&property.value, signatures).is_none());
+            if dynamic_layout_constraint || dynamic_alignment || dynamic_clip {
                 return true;
             }
             if element.kind != "Text" {
