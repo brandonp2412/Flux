@@ -16815,6 +16815,8 @@ fn emit_windows_native_application(
                                 | "keyboardType"
                                 | "validation_state"
                                 | "validationState"
+                                | "validation_message"
+                                | "validationMessage"
                                 | "multiline"
                                 | "submit_on_enter"
                                 | "submitOnEnter"
@@ -16855,7 +16857,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit, placeholder/readOnly/keyboardType/validationState, checked/selected, visible, enabled, and their supported activation/change action",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, and their supported activation/change action",
                     ));
                 }
                 if data_property {
@@ -16964,6 +16966,13 @@ fn emit_windows_native_application(
             ));
         }
     }
+    let secondary_uses_validation_messages =
+        secondary_window_views.iter().any(|(_, secondary_view)| {
+            secondary_view.elements.iter().any(|element| {
+                element.kind == "TextInput"
+                    && view_property(element, "validation_message").is_some()
+            })
+        });
     let uses_accessibility = view.elements.iter().any(|element| {
         view_property(element, "accessibility_label").is_some()
             || view_property(element, "accessibility_description").is_some()
@@ -16976,12 +16985,21 @@ fn emit_windows_native_application(
             || (element.kind == "Image" && view_property(element, "alt").is_some())
             || (element.kind == "TextInput"
                 && view_property(element, "validation_message").is_some())
-    });
+    }) || secondary_uses_validation_messages;
     let uses_tooltips = view.elements.iter().any(|element| {
         view_property(element, "tooltip").is_some()
             || (element.kind == "TextInput"
                 && view_property(element, "validation_message").is_some())
-    });
+    }) || secondary_uses_validation_messages;
+    let windows_tooltip_slots = std::iter::once(view.elements.len())
+        .chain(
+            secondary_window_views
+                .iter()
+                .map(|(_, secondary_view)| secondary_view.elements.len()),
+        )
+        .max()
+        .unwrap_or(0)
+        .max(1);
     let uses_input_scopes = view.elements.iter().any(|element| {
         element.kind == "TextInput" && view_property(element, "keyboard_type").is_some()
     }) || secondary_window_views.iter().any(|(_, secondary_view)| {
@@ -17549,7 +17567,7 @@ fn emit_windows_native_application(
         out.push_str("static int flux__win_text_height_for_lines(HWND control, int64_t lines, int64_t line_height_percent) { if (control == NULL) return INT32_MAX; if (lines < 1 || lines > INT32_MAX) { fputs(\"Flux runtime error: Text.maxLines must be between 1 and 2147483647\\n\", stderr); abort(); } if (line_height_percent < 1 || line_height_percent > INT32_MAX) { fputs(\"Flux runtime error: Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); } HDC dc = GetDC(control); if (dc == NULL) return INT32_MAX; HFONT font = (HFONT)SendMessageW(control, WM_GETFONT, 0, 0); HGDIOBJ previous = font != NULL ? SelectObject(dc, font) : NULL; TEXTMETRICA metrics = {0}; int result = INT32_MAX; if (GetTextMetricsA(dc, &metrics)) { int base_line_height = metrics.tmHeight + metrics.tmExternalLeading; if (base_line_height < 1) base_line_height = 1; int64_t scaled_line_height = ((int64_t)base_line_height * line_height_percent + INT64_C(50)) / INT64_C(100); if (scaled_line_height < 1) scaled_line_height = 1; int64_t measured = lines * scaled_line_height; result = measured > INT32_MAX ? INT32_MAX : (int)measured; } if (previous != NULL && previous != HGDI_ERROR) SelectObject(dc, previous); ReleaseDC(control, dc); return result; }\n");
     }
     if uses_tooltips {
-        out.push_str(&format!("static wchar_t **flux__windows_tooltip_storage(FluxWindowsWindowContext *context, size_t slot) {{ if (context == NULL || slot >= {}) return NULL; if (context->tooltip_texts == NULL) {{ context->tooltip_texts = (wchar_t **)calloc({}, sizeof(wchar_t *)); if (context->tooltip_texts == NULL) abort(); context->tooltip_text_count = {}; }} return &context->tooltip_texts[slot]; }}\n", view.elements.len(), view.elements.len().max(1), view.elements.len()));
+        out.push_str(&format!("static wchar_t **flux__windows_tooltip_storage(FluxWindowsWindowContext *context, size_t slot) {{ if (context == NULL || slot >= {windows_tooltip_slots}) return NULL; if (context->tooltip_texts == NULL) {{ context->tooltip_texts = (wchar_t **)calloc({windows_tooltip_slots}, sizeof(wchar_t *)); if (context->tooltip_texts == NULL) abort(); context->tooltip_text_count = {windows_tooltip_slots}; }} return &context->tooltip_texts[slot]; }}\n"));
         out.push_str(r#"static void flux__win_set_tooltip(HWND control, size_t slot, const char *text) { FluxWindowsWindowContext *context = flux__windows_active_context; wchar_t **storage = flux__windows_tooltip_storage(context, slot); if (control == NULL || context == NULL || context->tooltip_window == NULL || storage == NULL) return; if (text == NULL) text = ""; size_t length = 0; if (!flux__win_bounded_length(text, 65536, &length)) { fputs("Flux runtime error: tooltip exceeds 65536 bytes\n", stderr); abort(); } (void)length; wchar_t *wide = flux__windows_utf8_to_wide(text); if (wide == NULL) { fputs("Flux runtime error: tooltip is not valid UTF-8\n", stderr); abort(); } if (*storage != NULL && wcscmp(*storage, wide) == 0) { free(wide); return; } free(*storage); *storage = wide; TOOLINFOW info = {0}; info.cbSize = sizeof(info); info.uFlags = TTF_IDISHWND | TTF_SUBCLASS; info.hwnd = context->hwnd; info.uId = (UINT_PTR)control; info.lpszText = *storage; SendMessageW(context->tooltip_window, TTM_UPDATETIPTEXTW, 0, (LPARAM)&info); }
 "#);
     }
@@ -20437,7 +20455,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
         out.push_str(" }\n");
         out.push_str(&format!(
-            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0;{secondary_subclass_release} flux__windows_release_validation_state(context); flux__windows_release_image_bitmaps(context); free(context->control_windows); context->control_windows = NULL; }}\n"
+            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0;{secondary_subclass_release} flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_image_bitmaps(context); free(context->control_windows); context->control_windows = NULL; }}\n"
         ));
         secondary_save_cases.push_str(&format!(
             " case UINT32_C({view_identity}): flux__windows_save_view_{view_identity}_state(context); return;"
@@ -21783,6 +21801,17 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         "flux__win_set_validation_state(context->control_windows[{index}], {index}, {value});\n"
                     ));
                 }
+                if let Some(property) = view_property(element, "validation_message") {
+                    let value = ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                    out.push_str(&format!(
+                        "flux__win_set_tooltip(context->control_windows[{index}], {index}, {value}); flux__win_accessibility_set_description(context->control_windows[{index}], {value});\n"
+                    ));
+                }
             }
             let checked_property_name = match element.kind.as_str() {
                 "Toggle" => Some("checked"),
@@ -22696,7 +22725,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     out.push_str(&window_creation);
     let mut secondary_constructor_dispatch = String::new();
     for (view_identity, secondary_view) in &secondary_window_views {
+        let secondary_uses_tooltips = secondary_view.elements.iter().any(|element| {
+            element.kind == "TextInput" && view_property(element, "validation_message").is_some()
+        });
         out.push_str(&format!("static HWND flux__win_create_view_{view_identity}_window(HINSTANCE instance, LPCWSTR class_name, bool primary, uint32_t view_identity) {{ HWND window = CreateWindowExW({window_ex_style}, class_name, L\"\", {window_style}, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({width})), flux__win_scale(INT64_C({height})), NULL, NULL, instance, NULL); if (window == NULL) return NULL; if (!flux__windows_register_context(window, primary, view_identity)) {{ DestroyWindow(window); return NULL; }} FluxWindowsWindowContext *context = flux__windows_context_for(window); if (context == NULL) return flux__win_create_view_window_failure(window, primary); flux__win_set_text_if_changed(window, {});\n", c_string(&title)));
+        if secondary_uses_tooltips {
+            out.push_str("context->tooltip_window = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, window, NULL, instance, NULL); if (context->tooltip_window == NULL) return flux__win_create_view_window_failure(window, primary); SetWindowPos(context->tooltip_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);\n");
+        }
         if !secondary_view.elements.is_empty() {
             out.push_str(&format!("context->control_windows = (HWND *)calloc({}, sizeof(HWND)); if (context->control_windows == NULL) return flux__win_create_view_window_failure(window, primary);\n", secondary_view.elements.len()));
         }
@@ -22789,6 +22824,12 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 _ => unreachable!("secondary element kind was validated above"),
             };
             out.push_str(&format!("context->control_windows[{index}] = CreateWindowExW(0, L\"{class}\", L\"\", {style}, 0, 0, 1, 1, window, (HMENU)(INT_PTR){id}, instance, NULL); if (context->control_windows[{index}] == NULL) return flux__win_create_view_window_failure(window, primary); SendMessageW(context->control_windows[{index}], WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE); flux__win_set_text_if_changed(context->control_windows[{index}], {});\n", c_string(&text)));
+            if element.kind == "TextInput" && view_property(element, "validation_message").is_some()
+            {
+                out.push_str(&format!(
+                    "TOOLINFOW flux__win_view_{view_identity}_toolinfo_{index} = {{0}}; flux__win_view_{view_identity}_toolinfo_{index}.cbSize = sizeof(flux__win_view_{view_identity}_toolinfo_{index}); flux__win_view_{view_identity}_toolinfo_{index}.uFlags = TTF_IDISHWND | TTF_SUBCLASS; flux__win_view_{view_identity}_toolinfo_{index}.hwnd = window; flux__win_view_{view_identity}_toolinfo_{index}.uId = (UINT_PTR)context->control_windows[{index}]; flux__win_view_{view_identity}_toolinfo_{index}.lpszText = L\"\"; if (!SendMessageW(context->tooltip_window, TTM_ADDTOOLW, 0, (LPARAM)&flux__win_view_{view_identity}_toolinfo_{index})) return flux__win_create_view_window_failure(window, primary);\n"
+                ));
+            }
             if secondary_submit_subclasses.contains(&index) {
                 out.push_str(&format!(
                     "SetLastError(0); context->control_subclass_originals[{index}] = (WNDPROC)(LONG_PTR)SetWindowLongPtrW(context->control_windows[{index}], GWLP_WNDPROC, (LONG_PTR)flux__win_input_proc_view_{view_identity}_{index}); if (context->control_subclass_originals[{index}] == NULL && GetLastError() != 0) return flux__win_create_view_window_failure(window, primary);\n"

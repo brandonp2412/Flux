@@ -71494,6 +71494,7 @@ view Detail {
     state limit: i64 = 24
     state keyboard: str = "email"
     state validation: str = "error"
+    state message: str = "Please fix this"
     grid columns: 1fr
     grid rows: auto auto
     TextInput input at 1,1
@@ -71504,6 +71505,7 @@ view Detail {
         maxLength: limit
         keyboardType: keyboard
         validationState: validation
+        validationMessage: message
         submitOnEnter: true
         onChange: query, value => value
         onSubmit: query, value => value
@@ -71578,6 +71580,16 @@ app Screen
     assert!(windows.contains(
         "secondary_paint_context->validation_active != NULL && secondary_paint_context->validation_active[0]"
     ));
+    assert!(
+        windows
+            .contains("context->tooltip_window = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW")
+    );
+    assert!(windows.contains(
+        "flux__win_set_tooltip(context->control_windows[0], 0, flux__ui_view_1_state_message); flux__win_accessibility_set_description(context->control_windows[0], flux__ui_view_1_state_message);"
+    ));
+    assert!(
+        windows.contains("flux__win_view_1_toolinfo_0.uId = (UINT_PTR)context->control_windows[0]")
+    );
     assert!(windows.contains(
         "flux__win_set_text_if_changed(context->control_windows[1], flux__ui_view_1_state_query);"
     ));
