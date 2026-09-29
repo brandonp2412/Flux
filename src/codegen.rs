@@ -16720,7 +16720,7 @@ fn emit_windows_native_application(
         if !secondary_view.states.is_empty() || !secondary_view.derived.is_empty() {
             return Err(diag(
                 secondary_view.name_span,
-                "Windows distinct secondary window views are currently limited to stateless static Text content",
+                "Windows distinct secondary window views are currently limited to stateless static content",
             ));
         }
         if secondary_view.grid.flow.is_some()
@@ -16733,23 +16733,37 @@ fn emit_windows_native_application(
             ));
         }
         for element in &secondary_view.elements {
-            if element.kind != "Text" {
+            if !matches!(element.kind.as_str(), "Text" | "Button") {
                 return Err(diag(
                     element.kind_span,
-                    "Windows distinct secondary window views currently support Text elements only",
+                    "Windows distinct secondary window views currently support Text and Button elements only",
                 ));
             }
+            let on_press_source = internal_name_to_source("on_press");
             for property in &element.properties {
-                if property.name != "text" {
+                let supported = property.name == "text"
+                    || (element.kind == "Button"
+                        && (property.name == "on_press" || property.name == on_press_source));
+                if !supported {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window Text elements currently support only the text property",
+                        "Windows distinct secondary window elements currently support static text and Button.onPress only",
                     ));
                 }
-                if static_expr_str(&property.value, signatures).is_none() {
+                if property.name == "text" && static_expr_str(&property.value, signatures).is_none()
+                {
                     return Err(diag(
                         property.value.span,
                         "Windows distinct secondary window text must be a compile-time string value",
+                    ));
+                }
+            }
+            if let Some(property) = view_property(element, "on_press") {
+                if property.transition.is_some() || !matches!(property.value.kind, ExprKind::Var(_))
+                {
+                    return Err(diag(
+                        property.value.span,
+                        "Windows distinct secondary window Button.onPress requires a named fn() -> void callback",
                     ));
                 }
             }
@@ -21229,6 +21243,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         .collect::<String>();
     out.push_str(&format!("flux__win_set_refreshing(previous_refreshing); }}\nstatic void flux__win_refresh(void) {{ if (flux__windows_active_context == NULL) return; switch (flux__windows_active_context->view_identity) {{ case UINT32_C({root_view_identity}): flux__win_refresh_root_view(); return;{secondary_refresh_dispatch} default: return; }} }}\n"));
     out.push_str("static bool flux__windows_app_foreground = false;\nstatic int flux__win_handle_root_view_command(WPARAM wparam, LPARAM lparam);\n");
+    for (view_identity, _) in &secondary_window_views {
+        out.push_str(&format!("static int flux__win_handle_view_{view_identity}_command(WPARAM wparam, LPARAM lparam);\n"));
+    }
     if uses_context_menus {
         out.push_str(
             "static bool flux__win_handle_root_view_context_menu(HWND control, LPARAM lparam);\n",
@@ -21283,7 +21300,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             out.push_str(" return (LRESULT)GetSysColorBrush(COLOR_WINDOW); }\n");
         }
     }
-    out.push_str(&format!("return (LRESULT)GetSysColorBrush(COLOR_WINDOW); }} break; case WM_COMMAND: flux__windows_activate_context(hwnd); if (flux__windows_active_context != NULL && flux__windows_active_context->view_identity == UINT32_C({root_view_identity})) {{ int flux__win_command_result = flux__win_handle_root_view_command(wparam, lparam); if (flux__win_command_result >= 0) return (LRESULT)flux__win_command_result; }} break;\n"));
+    let secondary_command_dispatch = secondary_window_views
+        .iter()
+        .map(|(view_identity, _)| {
+            format!(" case UINT32_C({view_identity}): flux__win_command_result = flux__win_handle_view_{view_identity}_command(wparam, lparam); break;")
+        })
+        .collect::<String>();
+    out.push_str(&format!("return (LRESULT)GetSysColorBrush(COLOR_WINDOW); }} break; case WM_COMMAND: flux__windows_activate_context(hwnd); if (flux__windows_active_context != NULL) {{ int flux__win_command_result = -1; switch (flux__windows_active_context->view_identity) {{ case UINT32_C({root_view_identity}): flux__win_command_result = flux__win_handle_root_view_command(wparam, lparam); break;{secondary_command_dispatch} default: break; }} if (flux__win_command_result >= 0) return (LRESULT)flux__win_command_result; }} break;\n"));
     let mut command_messages = String::new();
     for (index, element) in view.elements.iter().enumerate() {
         let click_action = match element.kind.as_str() {
@@ -21439,6 +21462,26 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         exit = exit_callback,
     ));
     out.push_str(&format!("static int flux__win_handle_root_view_command(WPARAM wparam, LPARAM lparam) {{ switch (LOWORD(wparam)) {{ {command_messages} default: return -1; }} }}\n"));
+    for (view_identity, secondary_view) in &secondary_window_views {
+        let mut secondary_command_messages = String::new();
+        for (index, element) in secondary_view.elements.iter().enumerate() {
+            if element.kind != "Button" {
+                continue;
+            }
+            let Some(action) = view_property(element, "on_press") else {
+                continue;
+            };
+            let ExprKind::Var(function) = &action.value.kind else {
+                unreachable!("secondary Button.onPress shape was validated before emission");
+            };
+            secondary_command_messages.push_str(&format!(
+                "case {}: if (HIWORD(wparam) == BN_CLICKED) {{ {}(); flux__win_refresh(); }} return 0;\n",
+                1000 + index,
+                function_c_name(function)
+            ));
+        }
+        out.push_str(&format!("static int flux__win_handle_view_{view_identity}_command(WPARAM wparam, LPARAM lparam) {{ (void)lparam; switch (LOWORD(wparam)) {{ {secondary_command_messages} default: return -1; }} }}\n"));
+    }
     if uses_context_menus {
         out.push_str(&format!("static bool flux__win_handle_root_view_context_menu(HWND control, LPARAM lparam) {{ {context_menu_handler} return false; }}\n"));
     }
@@ -21973,7 +22016,16 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             let text = view_property(element, "text")
                 .and_then(|property| static_expr_str(&property.value, signatures))
                 .unwrap_or_else(|| element.name.clone());
-            out.push_str(&format!("context->control_windows[{index}] = CreateWindowExW(0, L\"STATIC\", L\"\", WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 1, 1, window, NULL, instance, NULL); if (context->control_windows[{index}] == NULL) return flux__win_create_view_window_failure(window, primary); SendMessageW(context->control_windows[{index}], WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE); flux__win_set_text_if_changed(context->control_windows[{index}], {});\n", c_string(&text)));
+            let (class, style, id) = if element.kind == "Button" {
+                (
+                    "BUTTON",
+                    "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON",
+                    (1000 + index).to_string(),
+                )
+            } else {
+                ("STATIC", "WS_CHILD | WS_VISIBLE | SS_LEFT", "0".to_string())
+            };
+            out.push_str(&format!("context->control_windows[{index}] = CreateWindowExW(0, L\"{class}\", L\"\", {style}, 0, 0, 1, 1, window, (HMENU)(INT_PTR){id}, instance, NULL); if (context->control_windows[{index}] == NULL) return flux__win_create_view_window_failure(window, primary); SendMessageW(context->control_windows[{index}], WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE); flux__win_set_text_if_changed(context->control_windows[{index}], {});\n", c_string(&text)));
         }
         out.push_str(&format!("UINT dpi = flux__win_query_dpi(window); RECT client = {{0}}; if (GetClientRect(window, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__windows_store_metrics(window, flux__win_unscale_for_dpi(physical_width, dpi), flux__win_unscale_for_dpi(physical_height, dpi), dpi); flux__win_layout_view_{view_identity}(context, physical_width, physical_height); }} return window; }}\n"));
         secondary_constructor_dispatch.push_str(&format!(" case UINT32_C({view_identity}): return flux__win_create_view_{view_identity}_window(instance, class_name, primary, view_identity);"));
@@ -32725,11 +32777,15 @@ fn build_function_ir_cache(
 }
 
 fn runtime_views(program: &Program) -> impl Iterator<Item = &crate::ast::ViewDef> {
-    program.application.iter().filter_map(|application| {
+    program.views.iter().filter(|view| {
         program
-            .views
-            .iter()
-            .find(|view| view.name == application.view_name)
+            .application
+            .as_ref()
+            .is_some_and(|application| application.view_name == view.name)
+            || program
+                .routes
+                .iter()
+                .any(|route| route.view_name == view.name)
     })
 }
 

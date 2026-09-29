@@ -70863,9 +70863,9 @@ app Screen
             "static int flux__win_handle_root_view_command(WPARAM wparam, LPARAM lparam)"
         )
     );
-    assert!(windows.contains("flux__windows_active_context->view_identity == UINT32_C(0)"));
+    assert!(windows.contains("switch (flux__windows_active_context->view_identity)"));
     assert!(windows.contains(
-        "int flux__win_command_result = flux__win_handle_root_view_command(wparam, lparam);"
+        "case UINT32_C(0): flux__win_command_result = flux__win_handle_root_view_command(wparam, lparam); break;"
     ));
     assert!(windows.contains("bool destroyed_primary = flux__windows_unregister_context(hwnd);"));
     assert!(windows.contains("if (destroyed_primary) PostQuitMessage(0); else if (flux__windows_active_context != NULL) flux__win_refresh();"));
@@ -71008,6 +71008,10 @@ fn openSecondary() -> void {
         return
 }
 
+fn closeDetail() -> void {
+    window.close()
+}
+
 view Screen {
     grid columns: 1fr
     grid rows: auto
@@ -71018,9 +71022,12 @@ view Screen {
 
 view Detail {
     grid columns: 1fr
-    grid rows: auto
+    grid rows: auto auto
     Text label at 1,1
         text: "Detail"
+    Button close at 2,1
+        text: "Close"
+        onPress: closeDetail
 }
 
 route detail = Detail
@@ -71046,6 +71053,17 @@ app Screen
         distinct_windows
             .contains("flux__win_set_text_if_changed(context->control_windows[0], \"Detail\")")
     );
+    assert!(
+        distinct_windows.contains("context->control_windows[1] = CreateWindowExW(0, L\"BUTTON\"")
+    );
+    assert!(distinct_windows.contains("(HMENU)(INT_PTR)1001"));
+    assert!(
+        distinct_windows
+            .contains("static int flux__win_handle_view_1_command(WPARAM wparam, LPARAM lparam)")
+    );
+    assert!(distinct_windows.contains("case 1001: if (HIWORD(wparam) == BN_CLICKED) { flux__fn_closeDetail(); flux__win_refresh(); } return 0;"));
+    assert!(distinct_windows.contains("case UINT32_C(1): flux__win_command_result = flux__win_handle_view_1_command(wparam, lparam); break;"));
+    assert!(distinct_windows.contains("static inline void flux__fn_closeDetail(void)"));
     assert!(distinct_windows.contains("case UINT32_C(1): return flux__win_create_view_1_window(instance, class_name, primary, view_identity);"));
     assert!(distinct_windows.contains(
         "case UINT32_C(1): free(context->control_windows); context->control_windows = NULL; return;"
@@ -71121,7 +71139,7 @@ app Screen
     )
     .expect_err("stateful distinct Windows windows should stay explicit until state schemas lower");
     assert!(stateful_error.message.contains(
-        "Windows distinct secondary window views are currently limited to stateless static Text content"
+        "Windows distinct secondary window views are currently limited to stateless static content"
     ));
 
     let parameterized_source = r#"
