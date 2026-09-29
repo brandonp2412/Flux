@@ -71957,14 +71957,10 @@ app Screen
 }
 
 #[test]
-fn windows_distinct_route_text_input_long_press_remains_explicitly_unsupported() {
+fn windows_distinct_route_text_input_combines_submit_and_long_press_subclassing() {
     let source = r#"
 fn openSecondary() -> void {
     window.open(detail)
-}
-
-fn holdSecondary() -> void {
-    print("held")
 }
 
 view Screen {
@@ -71976,30 +71972,84 @@ view Screen {
 }
 
 view Detail {
+    state query: str = "Ready"
+    state held: bool = false
+    state holdLabel: str = "Hold to clear"
     grid columns: 1fr
     grid rows: auto
     TextInput input at 1,1
-        text: ""
-        onLongPress: holdSecondary
+        text: query
+        submitOnEnter: true
+        onChange: query, value => value
+        onSubmit: query, value => value
+        onLongPress: held => !held
+        accessibilityLongPressLabel: holdLabel
 }
 
 route detail = Detail
 app Screen
 "#;
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
-        .expect("secondary TextInput long-press source should typecheck portably");
-    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        .expect("secondary TextInput submit/long-press source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
         database.program(),
         database.signatures(),
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Windows,
     )
-    .expect_err(
-        "secondary Windows TextInput long-press must remain explicit until subclass chaining lands",
-    );
-    assert!(error.message.contains(
-        "Windows distinct secondary TextInput long-press interaction remains unsupported"
+    .expect("secondary Windows TextInput submit/long-press should lower through one subclass");
+
+    assert!(windows.contains(
+        "static LRESULT CALLBACK flux__win_input_proc_view_1_0(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)"
     ));
+    assert!(windows.contains(
+        "if (message == WM_KEYDOWN && wparam == VK_RETURN) { flux__win_submit_view_1_0(hwnd); return 0; }"
+    ));
+    assert!(windows.contains("FluxWindowsView1GestureState *gesture"));
+    assert!(windows.contains("gesture->consumed[0] = true"));
+    assert!(windows.contains(
+        "flux__win_accessibility_set_description(context->control_windows[0], flux__ui_view_1_state_holdLabel);"
+    ));
+    assert!(windows.contains("GWLP_WNDPROC, (LONG_PTR)flux__win_input_proc_view_1_0"));
+    assert!(!windows.contains("flux__win_long_press_proc_view_1_0"));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-text-input-long-press-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)
+            .expect("secondary TextInput long-press syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary TextInput long-press C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary TextInput long-press Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary TextInput long-press Windows C failed syntax validation:
+{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 }
 
 #[test]

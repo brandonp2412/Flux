@@ -16888,20 +16888,6 @@ fn emit_windows_native_application(
                             | "on_long_press"
                             | "onLongPress"
                     );
-                if element.kind == "TextInput"
-                    && matches!(
-                        property.name.as_str(),
-                        "on_long_press"
-                            | "onLongPress"
-                            | "accessibility_long_press_label"
-                            | "accessibilityLongPressLabel"
-                    )
-                {
-                    return Err(diag(
-                        property.name_span,
-                        "Windows distinct secondary TextInput long-press interaction remains unsupported",
-                    ));
-                }
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
@@ -20449,14 +20435,20 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             .iter()
             .enumerate()
             .filter_map(|(index, element)| {
-                (element.kind != "TextInput" && view_property(element, "on_long_press").is_some())
+                view_property(element, "on_long_press")
+                    .is_some()
                     .then_some(index)
             })
             .collect::<Vec<_>>();
-        let secondary_subclass_indices = secondary_submit_subclasses
+        let secondary_subclass_indices = secondary_view
+            .elements
             .iter()
-            .chain(secondary_long_press_subclasses.iter())
-            .copied()
+            .enumerate()
+            .filter_map(|(index, _)| {
+                (secondary_submit_subclasses.contains(&index)
+                    || secondary_long_press_subclasses.contains(&index))
+                .then_some(index)
+            })
             .collect::<Vec<_>>();
         if !secondary_long_press_subclasses.is_empty() {
             let slots = secondary_view.elements.len();
@@ -22381,20 +22373,64 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         1000 + index
                     ));
                 }
-                if view_property(element, "on_submit").is_some() {
-                    let submit_on_enter = view_property(element, "submit_on_enter")
-                        .and_then(|property| static_expr_bool(&property.value, signatures))
-                        .unwrap_or_else(|| {
-                            let multiline = view_property(element, "multiline")
-                                .and_then(|property| static_expr_bool(&property.value, signatures))
-                                .unwrap_or(false);
-                            !multiline
-                        });
-                    if submit_on_enter {
-                        out.push_str(&format!(
-                            "static LRESULT CALLBACK flux__win_input_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_originals != NULL && context->control_subclass_original_count > {index} ? context->control_subclass_originals[{index}] : NULL; if (message == WM_KEYDOWN && wparam == VK_RETURN) {{ flux__win_submit_view_{view_identity}_{index}(hwnd); return 0; }} return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); }}\n"
-                        ));
-                    }
+                let submit_on_enter = if view_property(element, "on_submit").is_some() {
+                    Some(
+                        view_property(element, "submit_on_enter")
+                            .and_then(|property| static_expr_bool(&property.value, signatures))
+                            .unwrap_or_else(|| {
+                                let multiline = view_property(element, "multiline")
+                                    .and_then(|property| {
+                                        static_expr_bool(&property.value, signatures)
+                                    })
+                                    .unwrap_or(false);
+                                !multiline
+                            }),
+                    )
+                } else {
+                    None
+                };
+                let submit_handler = if submit_on_enter == Some(true) {
+                    format!(
+                        "if (message == WM_KEYDOWN && wparam == VK_RETURN) {{ flux__win_submit_view_{view_identity}_{index}(hwnd); return 0; }} "
+                    )
+                } else {
+                    String::new()
+                };
+                let long_press_handler = if let Some(action) =
+                    view_property(element, "on_long_press")
+                {
+                    let event_body = if let Some(transition) = &action.transition {
+                        let next = ui_expr_c_for_view_identity(
+                            &action.value,
+                            secondary_view,
+                            signatures,
+                            Some(*view_identity),
+                        )?;
+                        format!(
+                            "{} = {next}; flux__win_refresh();",
+                            ui_state_c_name_for_view_identity(
+                                &transition.state,
+                                Some(*view_identity)
+                            )
+                        )
+                    } else {
+                        let ExprKind::Var(function) = &action.value.kind else {
+                            unreachable!(
+                                "secondary TextInput long-press shape was validated before emission"
+                            );
+                        };
+                        format!("{}(); flux__win_refresh();", function_c_name(function))
+                    };
+                    format!(
+                        "FluxWindowsView{view_identity}GestureState *gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (gesture != NULL) {{ const UINT_PTR timer_id = (UINT_PTR)(0xF500u + {index}u); if (message == WM_LBUTTONDOWN) {{ LRESULT result = previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); POINT point = {{ (int)(short)LOWORD(lparam), (int)(short)HIWORD(lparam) }}; ClientToScreen(hwnd, &point); gesture->start[{index}] = point; gesture->consumed[{index}] = false; gesture->armed[{index}] = SetTimer(hwnd, timer_id, GetDoubleClickTime(), NULL) != 0; return result; }} if (message == WM_MOUSEMOVE && gesture->armed[{index}]) {{ POINT point = {{0}}; if (GetCursorPos(&point)) {{ int dx = point.x - gesture->start[{index}].x; int dy = point.y - gesture->start[{index}].y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) {{ KillTimer(hwnd, timer_id); gesture->armed[{index}] = false; }} }} }} if (message == WM_TIMER && wparam == timer_id) {{ KillTimer(hwnd, timer_id); bool pressed = (GetKeyState(VK_LBUTTON) & 0x8000) != 0; POINT point = {{0}}; bool inside_threshold = false; if (pressed && GetCursorPos(&point)) {{ int dx = point.x - gesture->start[{index}].x; int dy = point.y - gesture->start[{index}].y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; inside_threshold = dx <= GetSystemMetrics(SM_CXDRAG) && dy <= GetSystemMetrics(SM_CYDRAG); }} if (gesture->armed[{index}] && inside_threshold) {{ gesture->consumed[{index}] = true; {event_body} }} gesture->armed[{index}] = false; return 0; }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ KillTimer(hwnd, timer_id); gesture->armed[{index}] = false; LRESULT result = previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); return result; }} if (message == WM_NCDESTROY) {{ KillTimer(hwnd, timer_id); gesture->armed[{index}] = false; }} }} "
+                    )
+                } else {
+                    String::new()
+                };
+                if !submit_handler.is_empty() || !long_press_handler.is_empty() {
+                    out.push_str(&format!(
+                        "static LRESULT CALLBACK flux__win_input_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_originals != NULL && context->control_subclass_original_count > {index} ? context->control_subclass_originals[{index}] : NULL; {submit_handler}{long_press_handler}return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); }}\n"
+                    ));
                 }
                 continue;
             }
@@ -23037,7 +23073,8 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             .iter()
             .enumerate()
             .filter_map(|(index, element)| {
-                (element.kind != "TextInput" && view_property(element, "on_long_press").is_some())
+                view_property(element, "on_long_press")
+                    .is_some()
                     .then_some(index)
             })
             .collect::<Vec<_>>();
@@ -23188,12 +23225,14 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     "TOOLINFOW flux__win_view_{view_identity}_toolinfo_{index} = {{0}}; flux__win_view_{view_identity}_toolinfo_{index}.cbSize = sizeof(flux__win_view_{view_identity}_toolinfo_{index}); flux__win_view_{view_identity}_toolinfo_{index}.uFlags = TTF_IDISHWND | TTF_SUBCLASS; flux__win_view_{view_identity}_toolinfo_{index}.hwnd = window; flux__win_view_{view_identity}_toolinfo_{index}.uId = (UINT_PTR)context->control_windows[{index}]; flux__win_view_{view_identity}_toolinfo_{index}.lpszText = L\"\"; if (!SendMessageW(context->tooltip_window, TTM_ADDTOOLW, 0, (LPARAM)&flux__win_view_{view_identity}_toolinfo_{index})) return flux__win_create_view_window_failure(window, primary);\n"
                 ));
             }
-            if secondary_submit_subclasses.contains(&index) {
+            if secondary_submit_subclasses.contains(&index)
+                || (element.kind == "TextInput" && secondary_long_press_subclasses.contains(&index))
+            {
                 out.push_str(&format!(
                     "SetLastError(0); context->control_subclass_originals[{index}] = (WNDPROC)(LONG_PTR)SetWindowLongPtrW(context->control_windows[{index}], GWLP_WNDPROC, (LONG_PTR)flux__win_input_proc_view_{view_identity}_{index}); if (context->control_subclass_originals[{index}] == NULL && GetLastError() != 0) return flux__win_create_view_window_failure(window, primary);\n"
                 ));
             }
-            if secondary_long_press_subclasses.contains(&index) {
+            if element.kind != "TextInput" && secondary_long_press_subclasses.contains(&index) {
                 out.push_str(&format!(
                     "SetLastError(0); context->control_subclass_originals[{index}] = (WNDPROC)(LONG_PTR)SetWindowLongPtrW(context->control_windows[{index}], GWLP_WNDPROC, (LONG_PTR)flux__win_long_press_proc_view_{view_identity}_{index}); if (context->control_subclass_originals[{index}] == NULL && GetLastError() != 0) return flux__win_create_view_window_failure(window, primary);\n"
                 ));
