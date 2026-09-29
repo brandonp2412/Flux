@@ -16884,7 +16884,10 @@ fn emit_windows_native_application(
                         "background_color" | "backgroundColor"
                     )
                     || (element.kind == "Text"
-                        && matches!(property.name.as_str(), "color" | "text_align" | "textAlign"))
+                        && matches!(
+                            property.name.as_str(),
+                            "color" | "text_align" | "textAlign" | "ellipsize"
+                        ))
                     || matches!(
                         property.name.as_str(),
                         "accessibility_label"
@@ -16958,7 +16961,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.ellipsize/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -16985,6 +16988,29 @@ fn emit_windows_native_application(
                             property.value.span,
                             "Text.textAlign must be one of 'left', 'center', 'right', or 'fill'",
                         ));
+                    }
+                    if element.kind == "Text" && property.name == "ellipsize" {
+                        match static_expr_str(&property.value, signatures).as_deref() {
+                            Some("none" | "end") => {}
+                            Some("start" | "middle") => {
+                                return Err(diag(
+                                    property.value.span,
+                                    "Windows distinct secondary Text currently supports ellipsize: 'none' or 'end'",
+                                ));
+                            }
+                            Some(_) => {
+                                return Err(diag(
+                                    property.value.span,
+                                    "Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'",
+                                ));
+                            }
+                            None => {
+                                return Err(diag(
+                                    property.value.span,
+                                    "Windows distinct secondary Text currently requires ellipsize to be a compile-time str value",
+                                ));
+                            }
+                        }
                     }
                     if matches!(
                         property.name.as_str(),
@@ -24395,6 +24421,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             } else {
                 base_style.to_string()
             };
+            if element.kind == "Text"
+                && view_property(element, "ellipsize")
+                    .and_then(|property| static_expr_str(&property.value, signatures))
+                    .is_some_and(|ellipsize| ellipsize == "end")
+            {
+                style.push_str(" | SS_ENDELLIPSIS");
+            }
             if class == "STATIC"
                 && (view_property(element, "on_tap").is_some()
                     || view_property(element, "on_double_tap").is_some()
