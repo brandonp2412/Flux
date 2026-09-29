@@ -16886,7 +16886,13 @@ fn emit_windows_native_application(
                     || (element.kind == "Text"
                         && matches!(
                             property.name.as_str(),
-                            "color" | "text_align" | "textAlign" | "ellipsize"
+                            "color"
+                                | "text_align"
+                                | "textAlign"
+                                | "wrap"
+                                | "wrap_mode"
+                                | "wrapMode"
+                                | "ellipsize"
                         ))
                     || (element.kind == "Button" && property.name == "primary")
                     || matches!(
@@ -16960,7 +16966,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.ellipsize/Button.primary/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Button.primary/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -16988,28 +16994,25 @@ fn emit_windows_native_application(
                             "Text.textAlign must be one of 'left', 'center', 'right', or 'fill'",
                         ));
                     }
-                    if element.kind == "Text" && property.name == "ellipsize" {
-                        match static_expr_str(&property.value, signatures).as_deref() {
-                            Some("none" | "end") => {}
-                            Some("start" | "middle") => {
-                                return Err(diag(
-                                    property.value.span,
-                                    "Windows distinct secondary Text currently supports ellipsize: 'none' or 'end'",
-                                ));
-                            }
-                            Some(_) => {
-                                return Err(diag(
-                                    property.value.span,
-                                    "Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'",
-                                ));
-                            }
-                            None => {
-                                return Err(diag(
-                                    property.value.span,
-                                    "Windows distinct secondary Text currently requires ellipsize to be a compile-time str value",
-                                ));
-                            }
-                        }
+                    if element.kind == "Text"
+                        && matches!(property.name.as_str(), "wrap_mode" | "wrapMode")
+                        && let Some(value) = static_expr_str(&property.value, signatures)
+                        && !matches!(value.as_str(), "word" | "char" | "wordChar" | "word_char")
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.wrapMode must be one of 'word', 'char', or 'wordChar'",
+                        ));
+                    }
+                    if element.kind == "Text"
+                        && property.name == "ellipsize"
+                        && let Some(value) = static_expr_str(&property.value, signatures)
+                        && !matches!(value.as_str(), "none" | "start" | "middle" | "end")
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'",
+                        ));
                     }
                     if matches!(
                         property.name.as_str(),
@@ -17742,7 +17745,13 @@ fn emit_windows_native_application(
     let uses_custom_windows_text_layout = view
         .elements
         .iter()
-        .any(|element| windows_element_uses_custom_text_layout(element, signatures));
+        .any(|element| windows_element_uses_custom_text_layout(element, signatures))
+        || secondary_window_views.iter().any(|(_, secondary_view)| {
+            secondary_view
+                .elements
+                .iter()
+                .any(|element| windows_element_uses_custom_text_layout(element, signatures))
+        });
     let uses_dynamic_text_layout = view.elements.iter().any(|element| {
         let property_names: &[&str] = if element.kind == "Text" {
             &[
@@ -18866,6 +18875,50 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
             out.push_str(&format!(
                 "static {} {derived_name} = {initial};\n",
                 c_type(&derived.ty, signatures)
+            ));
+        }
+        for (index, element) in secondary_view.elements.iter().enumerate() {
+            if !windows_element_uses_custom_text_layout(element, signatures) {
+                continue;
+            }
+            let initial_letter_spacing = view_property(element, "letter_spacing")
+                .and_then(|property| static_expr_i64(&property.value, signatures))
+                .unwrap_or(0);
+            let initial_line_height_percent = view_property(element, "line_height_percent")
+                .and_then(|property| static_expr_i64(&property.value, signatures))
+                .unwrap_or(100);
+            let wrap = view_property(element, "wrap")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                .unwrap_or(true);
+            let wrap_mode = match view_property(element, "wrap_mode")
+                .and_then(|property| static_expr_str(&property.value, signatures))
+                .as_deref()
+            {
+                Some("char") => "FLUX__WIN_WRAP_CHAR",
+                Some("wordChar" | "word_char") => "FLUX__WIN_WRAP_WORD_CHAR",
+                _ => "FLUX__WIN_WRAP_WORD",
+            };
+            let ellipsize_mode = match view_property(element, "ellipsize")
+                .and_then(|property| static_expr_str(&property.value, signatures))
+                .as_deref()
+            {
+                Some("start") => "FLUX__WIN_ELLIPSIZE_START",
+                Some("middle") => "FLUX__WIN_ELLIPSIZE_MIDDLE",
+                Some("end") => "FLUX__WIN_ELLIPSIZE_END",
+                _ => "FLUX__WIN_ELLIPSIZE_NONE",
+            };
+            let initial_padding_top =
+                windows_text_padding_initial_value(element, "padding_top", signatures);
+            let initial_padding_bottom =
+                windows_text_padding_initial_value(element, "padding_bottom", signatures);
+            let initial_padding_start =
+                windows_text_padding_initial_value(element, "padding_start", signatures);
+            let initial_padding_end =
+                windows_text_padding_initial_value(element, "padding_end", signatures);
+            out.push_str(&format!(
+                "static const flux__win_text_layout_state flux__win_view_{view_identity}_text_layout_initial_{index} = {{ INT64_C({initial_letter_spacing}), INT64_C({initial_line_height_percent}), {}, {wrap_mode}, {ellipsize_mode}, INT64_C({initial_padding_top}), INT64_C({initial_padding_bottom}), INT64_C({initial_padding_start}), INT64_C({initial_padding_end}), {} }};\n",
+                if wrap { "true" } else { "false" },
+                if layout_direction == "rtl" { "true" } else { "false" },
             ));
         }
     }
@@ -21139,7 +21192,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             format!(" flux__windows_release_view_{view_identity}_params(context);")
         };
         out.push_str(&format!(
-            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0;{release_params}{secondary_subclass_release} flux__windows_release_drop_targets(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_image_bitmaps(context); flux__windows_release_style_state(context); free(context->control_windows); context->control_windows = NULL; }}\n"
+            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0; free(context->text_layout_states); context->text_layout_states = NULL; context->text_layout_count = 0;{release_params}{secondary_subclass_release} flux__windows_release_drop_targets(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_image_bitmaps(context); flux__windows_release_style_state(context); free(context->control_windows); context->control_windows = NULL; }}\n"
         ));
         secondary_save_cases.push_str(&format!(
             " case UINT32_C({view_identity}): flux__windows_save_view_{view_identity}_state(context); return;"
@@ -22544,6 +22597,67 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     "flux__win_set_text_alignment(context->control_windows[{index}], {value});
 "
                 ));
+            }
+            if element.kind == "Text"
+                && windows_element_uses_custom_text_layout(element, signatures)
+            {
+                let dynamic_wrap = view_property(element, "wrap").is_some_and(|property| {
+                    static_expr_bool(&property.value, signatures).is_none()
+                });
+                let dynamic_wrap_mode = view_property(element, "wrap_mode")
+                    .is_some_and(|property| static_expr_str(&property.value, signatures).is_none());
+                let dynamic_ellipsize = view_property(element, "ellipsize")
+                    .is_some_and(|property| static_expr_str(&property.value, signatures).is_none());
+                if dynamic_wrap || dynamic_wrap_mode || dynamic_ellipsize {
+                    let text_layout_slot = secondary_view.elements[..index]
+                        .iter()
+                        .filter(|candidate| {
+                            windows_element_uses_custom_text_layout(candidate, signatures)
+                        })
+                        .count();
+                    out.push_str(&format!(
+                        "flux__win_text_layout_state *flux__win_view_{view_identity}_text_layout_{index} = context->text_layout_states != NULL && context->text_layout_count > {text_layout_slot} ? &((flux__win_text_layout_state *)context->text_layout_states)[{text_layout_slot}] : NULL;\n"
+                    ));
+                    if dynamic_wrap {
+                        let property = view_property(element, "wrap")
+                            .expect("dynamic secondary Text.wrap property exists");
+                        let value = ui_expr_c_for_view_identity(
+                            &property.value,
+                            secondary_view,
+                            signatures,
+                            Some(*view_identity),
+                        )?;
+                        out.push_str(&format!(
+                            "bool flux__win_view_{view_identity}_next_wrap_{index} = {value}; if (flux__win_view_{view_identity}_text_layout_{index} != NULL && flux__win_view_{view_identity}_text_layout_{index}->wrap != flux__win_view_{view_identity}_next_wrap_{index}) {{ flux__win_view_{view_identity}_text_layout_{index}->wrap = flux__win_view_{view_identity}_next_wrap_{index}; InvalidateRect(context->control_windows[{index}], NULL, TRUE); }}\n"
+                        ));
+                    }
+                    if dynamic_wrap_mode {
+                        let property = view_property(element, "wrap_mode")
+                            .expect("dynamic secondary Text.wrapMode property exists");
+                        let value = ui_expr_c_for_view_identity(
+                            &property.value,
+                            secondary_view,
+                            signatures,
+                            Some(*view_identity),
+                        )?;
+                        out.push_str(&format!(
+                            "const char *flux__win_view_{view_identity}_next_wrap_mode_text_{index} = {value}; int flux__win_view_{view_identity}_next_wrap_mode_{index} = FLUX__WIN_WRAP_WORD; if (flux__win_view_{view_identity}_next_wrap_mode_text_{index} == NULL) {{ fputs(\"Flux runtime error: Text.wrapMode must be one of 'word', 'char', or 'wordChar'\\n\", stderr); abort(); }} if (strcmp(flux__win_view_{view_identity}_next_wrap_mode_text_{index}, \"word\") == 0) flux__win_view_{view_identity}_next_wrap_mode_{index} = FLUX__WIN_WRAP_WORD; else if (strcmp(flux__win_view_{view_identity}_next_wrap_mode_text_{index}, \"char\") == 0) flux__win_view_{view_identity}_next_wrap_mode_{index} = FLUX__WIN_WRAP_CHAR; else if (strcmp(flux__win_view_{view_identity}_next_wrap_mode_text_{index}, \"wordChar\") == 0 || strcmp(flux__win_view_{view_identity}_next_wrap_mode_text_{index}, \"word_char\") == 0) flux__win_view_{view_identity}_next_wrap_mode_{index} = FLUX__WIN_WRAP_WORD_CHAR; else {{ fputs(\"Flux runtime error: Text.wrapMode must be one of 'word', 'char', or 'wordChar'\\n\", stderr); abort(); }} if (flux__win_view_{view_identity}_text_layout_{index} != NULL && flux__win_view_{view_identity}_text_layout_{index}->wrap_mode != flux__win_view_{view_identity}_next_wrap_mode_{index}) {{ flux__win_view_{view_identity}_text_layout_{index}->wrap_mode = flux__win_view_{view_identity}_next_wrap_mode_{index}; InvalidateRect(context->control_windows[{index}], NULL, TRUE); }}\n"
+                        ));
+                    }
+                    if dynamic_ellipsize {
+                        let property = view_property(element, "ellipsize")
+                            .expect("dynamic secondary Text.ellipsize property exists");
+                        let value = ui_expr_c_for_view_identity(
+                            &property.value,
+                            secondary_view,
+                            signatures,
+                            Some(*view_identity),
+                        )?;
+                        out.push_str(&format!(
+                            "const char *flux__win_view_{view_identity}_next_ellipsize_text_{index} = {value}; int flux__win_view_{view_identity}_next_ellipsize_{index} = FLUX__WIN_ELLIPSIZE_NONE; if (flux__win_view_{view_identity}_next_ellipsize_text_{index} == NULL) {{ fputs(\"Flux runtime error: Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'\\n\", stderr); abort(); }} if (strcmp(flux__win_view_{view_identity}_next_ellipsize_text_{index}, \"none\") == 0) flux__win_view_{view_identity}_next_ellipsize_{index} = FLUX__WIN_ELLIPSIZE_NONE; else if (strcmp(flux__win_view_{view_identity}_next_ellipsize_text_{index}, \"start\") == 0) flux__win_view_{view_identity}_next_ellipsize_{index} = FLUX__WIN_ELLIPSIZE_START; else if (strcmp(flux__win_view_{view_identity}_next_ellipsize_text_{index}, \"middle\") == 0) flux__win_view_{view_identity}_next_ellipsize_{index} = FLUX__WIN_ELLIPSIZE_MIDDLE; else if (strcmp(flux__win_view_{view_identity}_next_ellipsize_text_{index}, \"end\") == 0) flux__win_view_{view_identity}_next_ellipsize_{index} = FLUX__WIN_ELLIPSIZE_END; else {{ fputs(\"Flux runtime error: Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'\\n\", stderr); abort(); }} if (flux__win_view_{view_identity}_text_layout_{index} != NULL && flux__win_view_{view_identity}_text_layout_{index}->ellipsize_mode != flux__win_view_{view_identity}_next_ellipsize_{index}) {{ flux__win_view_{view_identity}_text_layout_{index}->ellipsize_mode = flux__win_view_{view_identity}_next_ellipsize_{index}; InvalidateRect(context->control_windows[{index}], NULL, TRUE); }}\n"
+                        ));
+                    }
+                }
             }
             if let Some(property) = view_property(element, "focusable") {
                 let value = ui_expr_c_for_view_identity(
@@ -24174,6 +24288,12 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     for (view_identity, secondary_view) in &secondary_window_views {
         let secondary_accessibility_order =
             ordered_accessibility_elements(secondary_view, signatures)?;
+        let secondary_text_layout_elements = secondary_view
+            .elements
+            .iter()
+            .enumerate()
+            .filter(|(_, element)| windows_element_uses_custom_text_layout(element, signatures))
+            .collect::<Vec<_>>();
         let secondary_uses_tooltips = secondary_view.elements.iter().any(|element| {
             view_property(element, "tooltip").is_some()
                 || (element.kind == "TextInput"
@@ -24185,6 +24305,18 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
         if !secondary_view.elements.is_empty() {
             out.push_str(&format!("context->control_windows = (HWND *)calloc({}, sizeof(HWND)); if (context->control_windows == NULL) return flux__win_create_view_window_failure(window, primary);\n", secondary_view.elements.len()));
+        }
+        if !secondary_text_layout_elements.is_empty() {
+            out.push_str(&format!(
+                "context->text_layout_states = calloc({}, sizeof(flux__win_text_layout_state)); if (context->text_layout_states == NULL) return flux__win_create_view_window_failure(window, primary); context->text_layout_count = {}; flux__win_text_layout_state *text_layout_states = (flux__win_text_layout_state *)context->text_layout_states;\n",
+                secondary_text_layout_elements.len(),
+                secondary_text_layout_elements.len()
+            ));
+            for (slot, (element_index, _)) in secondary_text_layout_elements.iter().enumerate() {
+                out.push_str(&format!(
+                    "text_layout_states[{slot}] = flux__win_view_{view_identity}_text_layout_initial_{element_index};\n"
+                ));
+            }
         }
         let secondary_submit_subclasses = secondary_view
             .elements
@@ -24364,10 +24496,17 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                             .unwrap_or_else(|| "left".to_string()),
                         None => "left".to_string(),
                     };
+                    let nowrap = view_property(element, "wrap")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        == Some(false);
                     let style = match alignment.as_str() {
+                        "left" if nowrap => "WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP",
                         "left" => "WS_CHILD | WS_VISIBLE | SS_LEFT",
                         "center" => "WS_CHILD | WS_VISIBLE | SS_CENTER",
                         "right" => "WS_CHILD | WS_VISIBLE | SS_RIGHT",
+                        "fill" if nowrap => {
+                            "WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_NOPREFIX"
+                        }
                         "fill" => "WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX",
                         _ => unreachable!("secondary Text.textAlign was validated before emission"),
                     };
@@ -24534,6 +24673,16 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 out.push_str(&format!(
                     "GESTURECONFIG flux__win_zoom_config_view_{view_identity}_{index} = {{ GID_ZOOM, GC_ZOOM, 0 }}; if (!SetGestureConfig(context->control_windows[{index}], 0, 1, &flux__win_zoom_config_view_{view_identity}_{index}, sizeof(flux__win_zoom_config_view_{view_identity}_{index}))) return flux__win_create_view_window_failure(window, primary);
 "
+                ));
+            }
+            if windows_element_uses_custom_text_layout(element, signatures) {
+                let text_layout_slot = secondary_text_layout_elements
+                    .iter()
+                    .position(|(element_index, _)| *element_index == index)
+                    .expect("secondary custom text-layout element has a context slot");
+                out.push_str(&format!(
+                    "if (!SetWindowSubclass(context->control_windows[{index}], flux__win_text_layout_proc, (UINT_PTR){}, (DWORD_PTR)(uintptr_t)&text_layout_states[{text_layout_slot}])) return flux__win_create_view_window_failure(window, primary);\n",
+                    index + 1
                 ));
             }
         }
