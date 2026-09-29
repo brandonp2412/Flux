@@ -16893,6 +16893,14 @@ fn emit_windows_native_application(
                                 | "wrap_mode"
                                 | "wrapMode"
                                 | "ellipsize"
+                                | "variant"
+                                | "size"
+                                | "bold"
+                                | "italic"
+                                | "underline"
+                                | "strikethrough"
+                                | "font_family"
+                                | "fontFamily"
                         ))
                     || (element.kind == "Button"
                         && matches!(property.name.as_str(), "primary" | "size"))
@@ -16969,7 +16977,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -16985,6 +16993,26 @@ fn emit_windows_native_application(
                                 "{} must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token",
                                 internal_name_to_source(&property.name)
                             ),
+                        ));
+                    }
+                    if element.kind == "Text"
+                        && property.name == "size"
+                        && let Some(value) = static_expr_i64(&property.value, signatures)
+                        && (value <= 0 || value > i64::from(i32::MAX))
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.size must be greater than zero and fit within a 32-bit signed integer",
+                        ));
+                    }
+                    if element.kind == "Text"
+                        && matches!(property.name.as_str(), "font_family" | "fontFamily")
+                        && let Some(value) = static_expr_str(&property.value, signatures)
+                        && value.is_empty()
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.font_family cannot be empty",
                         ));
                     }
                     if element.kind == "Button"
@@ -19305,7 +19333,7 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
         }
         out.push_str("}\nstatic void flux__windows_release_text_fonts(FluxWindowsWindowContext *context) { if (context == NULL) return; if (context->text_fonts != NULL) for (size_t index = 0; index < context->text_font_count; ++index) if (context->text_fonts[index] != NULL) DeleteObject(context->text_fonts[index]); if (context->text_font_families != NULL) for (size_t index = 0; index < context->text_font_count; ++index) free(context->text_font_families[index]); free(context->text_fonts); free(context->text_font_families); free(context->text_font_sizes); free(context->text_font_bold); free(context->text_font_italic); free(context->text_font_underline); free(context->text_font_strikethrough); free(context->text_font_dpis); free(context->text_font_initialized); context->text_fonts = NULL; context->text_font_families = NULL; context->text_font_sizes = NULL; context->text_font_bold = NULL; context->text_font_italic = NULL; context->text_font_underline = NULL; context->text_font_strikethrough = NULL; context->text_font_dpis = NULL; context->text_font_initialized = NULL; context->text_font_count = 0; }\n");
     } else {
-        out.push_str("static void flux__windows_save_text_fonts(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_restore_text_fonts(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_release_text_fonts(FluxWindowsWindowContext *context) { (void)context; }\n");
+        out.push_str("static void flux__windows_save_text_fonts(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_restore_text_fonts(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_release_text_fonts(FluxWindowsWindowContext *context) { if (context == NULL) return; if (context->text_fonts != NULL) for (size_t index = 0; index < context->text_font_count; ++index) if (context->text_fonts[index] != NULL) DeleteObject(context->text_fonts[index]); if (context->text_font_families != NULL) for (size_t index = 0; index < context->text_font_count; ++index) free(context->text_font_families[index]); free(context->text_fonts); free(context->text_font_families); free(context->text_font_sizes); free(context->text_font_bold); free(context->text_font_italic); free(context->text_font_underline); free(context->text_font_strikethrough); free(context->text_font_dpis); free(context->text_font_initialized); context->text_fonts = NULL; context->text_font_families = NULL; context->text_font_sizes = NULL; context->text_font_bold = NULL; context->text_font_italic = NULL; context->text_font_underline = NULL; context->text_font_strikethrough = NULL; context->text_font_dpis = NULL; context->text_font_initialized = NULL; context->text_font_count = 0; }\n");
     }
     let sized_buttons = view
         .elements
@@ -19449,7 +19477,14 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
     } else {
         out.push_str("static void flux__windows_release_style_state(FluxWindowsWindowContext *context) { (void)context; }\n");
     }
-    if view.elements.iter().any(|element| element.kind == "Text") {
+    if view.elements.iter().any(|element| element.kind == "Text")
+        || secondary_window_views.iter().any(|(_, secondary_view)| {
+            secondary_view
+                .elements
+                .iter()
+                .any(|element| element.kind == "Text")
+        })
+    {
         out.push_str(
             r#"static void flux__win_apply_font(HWND control, HFONT *font, char **current_family, int64_t *current_size, bool *current_bold, bool *current_italic, bool *current_underline, bool *current_strikethrough, UINT *current_dpi, bool *initialized, const char *family, int64_t size, bool bold, bool italic, bool underline, bool strikethrough) {
     if (control == NULL || font == NULL || current_family == NULL || current_size == NULL || current_bold == NULL || current_italic == NULL || current_underline == NULL || current_strikethrough == NULL || current_dpi == NULL || initialized == NULL) return;
@@ -21226,7 +21261,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             format!(" flux__windows_release_view_{view_identity}_params(context);")
         };
         out.push_str(&format!(
-            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0; free(context->text_layout_states); context->text_layout_states = NULL; context->text_layout_count = 0; flux__windows_release_button_fonts(context);{release_params}{secondary_subclass_release} flux__windows_release_drop_targets(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_image_bitmaps(context); flux__windows_release_style_state(context); free(context->control_windows); context->control_windows = NULL; }}\n"
+            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0; free(context->text_layout_states); context->text_layout_states = NULL; context->text_layout_count = 0; flux__windows_release_text_fonts(context); flux__windows_release_button_fonts(context);{release_params}{secondary_subclass_release} flux__windows_release_drop_targets(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_image_bitmaps(context); flux__windows_release_style_state(context); free(context->control_windows); context->control_windows = NULL; }}\n"
         ));
         secondary_save_cases.push_str(&format!(
             " case UINT32_C({view_identity}): flux__windows_save_view_{view_identity}_state(context); return;"
@@ -22674,6 +22709,80 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 out.push_str(&format!(
                     "flux__win_set_text_alignment(context->control_windows[{index}], {value});
 "
+                ));
+            }
+            if element.kind == "Text" {
+                let (default_size, default_bold, _, _) =
+                    text_semantic_typography(element, signatures)?;
+                let size = match view_property(element, "size") {
+                    Some(property) => {
+                        if let Some(value) = static_expr_i64(&property.value, signatures) {
+                            if value <= 0 || value > i64::from(i32::MAX) {
+                                return Err(diag(
+                                    property.value.span,
+                                    "Text.size must be greater than zero and fit within a 32-bit signed integer",
+                                ));
+                            }
+                            format!("INT64_C({value})")
+                        } else {
+                            ui_expr_c_for_view_identity(
+                                &property.value,
+                                secondary_view,
+                                signatures,
+                                Some(*view_identity),
+                            )?
+                        }
+                    }
+                    None => format!("INT64_C({default_size})"),
+                };
+                let boolean_style = |name: &str, default: bool| -> Result<String, Diagnostic> {
+                    match view_property(element, name) {
+                        Some(property) => {
+                            if let Some(value) = static_expr_bool(&property.value, signatures) {
+                                Ok(if value { "true" } else { "false" }.to_string())
+                            } else {
+                                ui_expr_c_for_view_identity(
+                                    &property.value,
+                                    secondary_view,
+                                    signatures,
+                                    Some(*view_identity),
+                                )
+                            }
+                        }
+                        None => Ok(if default { "true" } else { "false" }.to_string()),
+                    }
+                };
+                let bold = boolean_style("bold", default_bold)?;
+                let italic = boolean_style("italic", false)?;
+                let underline = boolean_style("underline", false)?;
+                let strikethrough = boolean_style("strikethrough", false)?;
+                let font_family = match view_property(element, "font_family") {
+                    Some(property) => {
+                        if let Some(value) = static_expr_str(&property.value, signatures) {
+                            if value.is_empty() {
+                                return Err(diag(
+                                    property.value.span,
+                                    "Text.font_family cannot be empty",
+                                ));
+                            }
+                            c_string(&value)
+                        } else {
+                            ui_expr_c_for_view_identity(
+                                &property.value,
+                                secondary_view,
+                                signatures,
+                                Some(*view_identity),
+                            )?
+                        }
+                    }
+                    None => c_string("Segoe UI"),
+                };
+                let text_font_slot = secondary_view.elements[..index]
+                    .iter()
+                    .filter(|candidate| candidate.kind == "Text")
+                    .count();
+                out.push_str(&format!(
+                    "if (context->text_fonts != NULL && context->text_font_families != NULL && context->text_font_sizes != NULL && context->text_font_bold != NULL && context->text_font_italic != NULL && context->text_font_underline != NULL && context->text_font_strikethrough != NULL && context->text_font_dpis != NULL && context->text_font_initialized != NULL && context->text_font_count > {text_font_slot}) flux__win_apply_font(context->control_windows[{index}], &context->text_fonts[{text_font_slot}], &context->text_font_families[{text_font_slot}], &context->text_font_sizes[{text_font_slot}], &context->text_font_bold[{text_font_slot}], &context->text_font_italic[{text_font_slot}], &context->text_font_underline[{text_font_slot}], &context->text_font_strikethrough[{text_font_slot}], &context->text_font_dpis[{text_font_slot}], &context->text_font_initialized[{text_font_slot}], {font_family}, {size}, {bold}, {italic}, {underline}, {strikethrough});\n"
                 ));
             }
             if element.kind == "Text"
@@ -24372,6 +24481,12 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             .enumerate()
             .filter(|(_, element)| windows_element_uses_custom_text_layout(element, signatures))
             .collect::<Vec<_>>();
+        let secondary_text_elements = secondary_view
+            .elements
+            .iter()
+            .enumerate()
+            .filter(|(_, element)| element.kind == "Text")
+            .collect::<Vec<_>>();
         let secondary_sized_buttons = secondary_view
             .elements
             .iter()
@@ -24403,6 +24518,12 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     "text_layout_states[{slot}] = flux__win_view_{view_identity}_text_layout_initial_{element_index};\n"
                 ));
             }
+        }
+        if !secondary_text_elements.is_empty() {
+            let text_count = secondary_text_elements.len();
+            out.push_str(&format!(
+                "context->text_fonts = (HFONT *)calloc({text_count}, sizeof(HFONT)); context->text_font_families = (char **)calloc({text_count}, sizeof(char *)); context->text_font_sizes = (int64_t *)calloc({text_count}, sizeof(int64_t)); context->text_font_bold = (bool *)calloc({text_count}, sizeof(bool)); context->text_font_italic = (bool *)calloc({text_count}, sizeof(bool)); context->text_font_underline = (bool *)calloc({text_count}, sizeof(bool)); context->text_font_strikethrough = (bool *)calloc({text_count}, sizeof(bool)); context->text_font_dpis = (UINT *)calloc({text_count}, sizeof(UINT)); context->text_font_initialized = (bool *)calloc({text_count}, sizeof(bool)); if (context->text_fonts == NULL || context->text_font_families == NULL || context->text_font_sizes == NULL || context->text_font_bold == NULL || context->text_font_italic == NULL || context->text_font_underline == NULL || context->text_font_strikethrough == NULL || context->text_font_dpis == NULL || context->text_font_initialized == NULL) return flux__win_create_view_window_failure(window, primary); context->text_font_count = {text_count};\n"
+            ));
         }
         if !secondary_sized_buttons.is_empty() {
             out.push_str(&format!(
