@@ -16764,22 +16764,28 @@ fn emit_windows_native_application(
         }
         for element in &secondary_view.elements {
             let action_name = match element.kind.as_str() {
-                "Text" => None,
+                "Text" | "Nav" | "Chart" | "Card" | "Header" | "Content" => None,
                 "Button" => Some("on_press"),
                 "Toggle" => Some("on_change"),
                 "Radio" => Some("on_select"),
                 _ => {
                     return Err(diag(
                         element.kind_span,
-                        "Windows distinct secondary window views currently support Text, Button, Toggle, and Radio elements only",
+                        "Windows distinct secondary window views currently support Text, Button, Toggle, Radio, Nav, Chart, Card, Header, and Content elements only",
                     ));
                 }
             };
             let action_source = action_name.map(internal_name_to_source);
             for property in &element.properties {
                 let data_property = match element.kind.as_str() {
-                    "Text" | "Button" => {
+                    "Text" | "Button" | "Header" => {
                         matches!(property.name.as_str(), "text" | "visible" | "enabled")
+                    }
+                    "Nav" | "Chart" | "Content" => {
+                        matches!(property.name.as_str(), "label" | "visible" | "enabled")
+                    }
+                    "Card" => {
+                        matches!(property.name.as_str(), "title" | "visible" | "enabled")
                     }
                     "Toggle" => {
                         matches!(
@@ -16804,7 +16810,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label, checked/selected, visible, enabled, and their primary activation action",
+                        "Windows distinct secondary window elements currently support text/label/title, checked/selected, visible, enabled, and their primary activation action",
                     ));
                 }
                 if data_property {
@@ -21469,10 +21475,10 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             ));
         }
         for (index, element) in secondary_view.elements.iter().enumerate() {
-            let text_property_name = if matches!(element.kind.as_str(), "Toggle" | "Radio") {
-                "label"
-            } else {
-                "text"
+            let text_property_name = match element.kind.as_str() {
+                "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => "label",
+                "Card" => "title",
+                _ => "text",
             };
             if let Some(property) = view_property(element, text_property_name) {
                 let value = ui_expr_c_for_view_identity(
@@ -22330,10 +22336,10 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             out.push_str(&format!("context->control_windows = (HWND *)calloc({}, sizeof(HWND)); if (context->control_windows == NULL) return flux__win_create_view_window_failure(window, primary);\n", secondary_view.elements.len()));
         }
         for (index, element) in secondary_view.elements.iter().enumerate() {
-            let text_property_name = if matches!(element.kind.as_str(), "Toggle" | "Radio") {
-                "label"
-            } else {
-                "text"
+            let text_property_name = match element.kind.as_str() {
+                "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => "label",
+                "Card" => "title",
+                _ => "text",
             };
             let text = view_property(element, text_property_name)
                 .and_then(|property| static_expr_str(&property.value, signatures))
@@ -22363,7 +22369,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         (1000 + index).to_string(),
                     )
                 }
-                "Text" => ("STATIC", "WS_CHILD | WS_VISIBLE | SS_LEFT", "0".to_string()),
+                "Text" | "Nav" | "Chart" | "Card" | "Header" | "Content" => {
+                    ("STATIC", "WS_CHILD | WS_VISIBLE | SS_LEFT", "0".to_string())
+                }
                 _ => unreachable!("secondary element kind was validated above"),
             };
             out.push_str(&format!("context->control_windows[{index}] = CreateWindowExW(0, L\"{class}\", L\"\", {style}, 0, 0, 1, 1, window, (HMENU)(INT_PTR){id}, instance, NULL); if (context->control_windows[{index}] == NULL) return flux__win_create_view_window_failure(window, primary); SendMessageW(context->control_windows[{index}], WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE); flux__win_set_text_if_changed(context->control_windows[{index}], {});\n", c_string(&text)));
