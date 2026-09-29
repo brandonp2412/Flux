@@ -73723,6 +73723,169 @@ app Screen(layoutDirection: "rtl")
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_borders() {
+    let source = r##"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state accentColor: str = "#336699"
+    state lineWidth: i64 = 2
+    state lineStyle: str = "dashed"
+    grid columns: 1fr
+    grid rows: auto auto
+    Text dynamic at 1,1
+        text: "Dynamic"
+        borderColor: accentColor
+        borderWidth: lineWidth
+        borderStyle: lineStyle
+    Button edged at 2,1
+        text: "Edged"
+        borderColor: "outline"
+        borderTopColor: accentColor
+        borderWidth: 1
+        borderStartWidth: lineWidth
+        borderStyle: "double"
+}
+
+route detail = Detail
+app Screen(layoutDirection: "rtl")
+"##;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary border route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary borders should lower for Windows");
+
+    assert!(windows.contains("static LRESULT CALLBACK flux__win_secondary_border_proc("));
+    assert!(windows.contains("context->border_colors = (COLORREF *)calloc(10, sizeof(COLORREF))"));
+    assert!(windows.contains("context->border_count = 2;"));
+    assert!(windows.contains(
+        "SetWindowSubclass(context->control_windows[0], flux__win_secondary_border_proc, (UINT_PTR)1"
+    ));
+    assert!(windows.contains(
+        "SetWindowSubclass(context->control_windows[1], flux__win_secondary_border_proc, (UINT_PTR)2"
+    ));
+    assert!(windows.contains(
+        "flux__win_set_border_color(context->control_windows[0], &context->border_colors[0], flux__ui_view_1_state_accentColor);"
+    ));
+    for offset in 1..=4 {
+        assert!(windows.contains(&format!(
+            "flux__win_set_border_color(context->control_windows[0], &context->border_colors[{offset}], flux__ui_view_1_state_accentColor);"
+        )));
+    }
+    assert!(windows.contains(
+        "flux__win_set_border_width(context->control_windows[0], &context->border_widths[0], flux__ui_view_1_state_lineWidth);"
+    ));
+    for offset in 1..=4 {
+        assert!(windows.contains(&format!(
+            "flux__win_set_border_width(context->control_windows[0], &context->border_widths[{offset}], flux__ui_view_1_state_lineWidth);"
+        )));
+    }
+    assert!(windows.contains(
+        "flux__win_set_border_style(context->control_windows[0], &context->border_styles[0], flux__ui_view_1_state_lineStyle);"
+    ));
+    assert!(windows.contains(
+        "flux__win_set_border_color(context->control_windows[1], &context->border_colors[6], flux__ui_view_1_state_accentColor);"
+    ));
+    assert!(windows.contains(
+        "flux__win_set_border_width(context->control_windows[1], &context->border_widths[9], flux__ui_view_1_state_lineWidth);"
+    ));
+    assert!(
+        windows.contains("flux__windows_release_borders(context); free(context->control_windows);")
+    );
+    assert!(windows.contains("COLORREF left_color = rtl ? end_color : start_color;"));
+
+    let invalid_width = source.replace("borderWidth: 1", "borderWidth: -1");
+    let invalid_width_database =
+        fluxc::semantic::SemanticDatabase::analyze(&invalid_width, SourceId::UNKNOWN)
+            .expect("invalid static secondary border width should analyze before lowering");
+    let width_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        invalid_width_database.program(),
+        invalid_width_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("negative secondary border width must fail lowering");
+    assert!(
+        width_error
+            .message
+            .contains("borderWidth must be non-negative and fit within a 32-bit signed integer"),
+        "unexpected border width diagnostic: {:?}",
+        width_error.message
+    );
+
+    let invalid_style = source.replace(r#"borderStyle: "double""#, r#"borderStyle: "wavy""#);
+    let invalid_style_database =
+        fluxc::semantic::SemanticDatabase::analyze(&invalid_style, SourceId::UNKNOWN)
+            .expect("invalid static secondary border style should analyze before lowering");
+    let style_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        invalid_style_database.program(),
+        invalid_style_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("invalid secondary border style must fail lowering");
+    assert!(
+        style_error.message.contains(
+            "borderStyle must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'"
+        ),
+        "unexpected border style diagnostic: {:?}",
+        style_error.message
+    );
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-border-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("secondary border syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary border C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary border Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary border Windows C failed syntax validation:
+{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_text_input_state() {
     let source = r#"
 fn openSecondary() -> void {

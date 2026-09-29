@@ -16928,6 +16928,28 @@ fn emit_windows_native_application(
                             | "radius_bottom_left"
                             | "radiusBottomLeft"
                             | "clip"
+                            | "border_color"
+                            | "borderColor"
+                            | "border_top_color"
+                            | "borderTopColor"
+                            | "border_end_color"
+                            | "borderEndColor"
+                            | "border_bottom_color"
+                            | "borderBottomColor"
+                            | "border_start_color"
+                            | "borderStartColor"
+                            | "border_width"
+                            | "borderWidth"
+                            | "border_top_width"
+                            | "borderTopWidth"
+                            | "border_end_width"
+                            | "borderEndWidth"
+                            | "border_bottom_width"
+                            | "borderBottomWidth"
+                            | "border_start_width"
+                            | "borderStartWidth"
+                            | "border_style"
+                            | "borderStyle"
                     )
                     || (element.kind == "Text"
                         && matches!(
@@ -17063,7 +17085,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.padding/Toggle.padding/Radio.padding/TextInput.padding/Nav.padding/Chart.padding/Card.padding/Header.padding/Content.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/clip/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.padding/Toggle.padding/Radio.padding/TextInput.padding/Nav.padding/Chart.padding/Card.padding/Header.padding/Content.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/clip/borderColor/borderTopColor/borderEndColor/borderBottomColor/borderStartColor/borderWidth/borderTopWidth/borderEndWidth/borderBottomWidth/borderStartWidth/borderStyle/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -17165,6 +17187,64 @@ fn emit_windows_native_application(
                                 "{} must be non-negative and fit within a 32-bit signed integer",
                                 internal_name_to_source(&property.name)
                             ),
+                        ));
+                    }
+                    if matches!(
+                        property.name.as_str(),
+                        "border_width"
+                            | "borderWidth"
+                            | "border_top_width"
+                            | "borderTopWidth"
+                            | "border_end_width"
+                            | "borderEndWidth"
+                            | "border_bottom_width"
+                            | "borderBottomWidth"
+                            | "border_start_width"
+                            | "borderStartWidth"
+                    ) && let Some(value) = static_expr_i64(&property.value, signatures)
+                        && !(0..=i64::from(i32::MAX)).contains(&value)
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            &format!(
+                                "{} must be non-negative and fit within a 32-bit signed integer",
+                                internal_name_to_source(&property.name)
+                            ),
+                        ));
+                    }
+                    if matches!(
+                        property.name.as_str(),
+                        "border_color"
+                            | "borderColor"
+                            | "border_top_color"
+                            | "borderTopColor"
+                            | "border_end_color"
+                            | "borderEndColor"
+                            | "border_bottom_color"
+                            | "borderBottomColor"
+                            | "border_start_color"
+                            | "borderStartColor"
+                    ) && let Some(value) = static_expr_str(&property.value, signatures)
+                        && windows_colorref(&value).is_none()
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            &format!(
+                                "{} must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token",
+                                internal_name_to_source(&property.name)
+                            ),
+                        ));
+                    }
+                    if matches!(property.name.as_str(), "border_style" | "borderStyle")
+                        && let Some(value) = static_expr_str(&property.value, signatures)
+                        && !matches!(
+                            value.as_str(),
+                            "none" | "solid" | "dashed" | "dotted" | "double"
+                        )
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            "borderStyle must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'",
                         ));
                     }
                     if matches!(
@@ -19755,7 +19835,7 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
         }
         out.push_str("}\nstatic void flux__windows_release_borders(FluxWindowsWindowContext *context) { if (context == NULL) return; free(context->border_colors); free(context->border_widths); free(context->border_styles); context->border_colors = NULL; context->border_widths = NULL; context->border_styles = NULL; context->border_count = 0; }\n");
     } else {
-        out.push_str("static void flux__windows_save_borders(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_restore_borders(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_release_borders(FluxWindowsWindowContext *context) { (void)context; }\n");
+        out.push_str("static void flux__windows_save_borders(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_restore_borders(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_release_borders(FluxWindowsWindowContext *context) { if (context == NULL) return; free(context->border_colors); free(context->border_widths); free(context->border_styles); context->border_colors = NULL; context->border_widths = NULL; context->border_styles = NULL; context->border_count = 0; }\n");
     }
     out.push_str("static void flux__windows_save_control_windows(FluxWindowsWindowContext *context) { if (context == NULL) return;\n");
     if !view.elements.is_empty() {
@@ -20084,6 +20164,24 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
         ]
         .iter()
         .any(|property_name| view_property(element, property_name).is_some())
+    }) || secondary_window_views.iter().any(|(_, secondary_view)| {
+        secondary_view.elements.iter().any(|element| {
+            [
+                "border_color",
+                "border_top_color",
+                "border_end_color",
+                "border_bottom_color",
+                "border_start_color",
+                "border_width",
+                "border_top_width",
+                "border_end_width",
+                "border_bottom_width",
+                "border_start_width",
+                "border_style",
+            ]
+            .iter()
+            .any(|property_name| view_property(element, property_name).is_some())
+        })
     });
     if uses_native_borders {
         out.push_str(r#"static bool flux__win_parse_border_color(const char *value, COLORREF *result) {
@@ -20242,6 +20340,37 @@ static void flux__win_set_border_style(HWND control, int *current, const char *v
     else if (strcmp(value, "double") == 0) next = FLUX__WIN_BORDER_STYLE_DOUBLE;
     else { fputs("Flux runtime error: borderStyle must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'\n", stderr); abort(); }
     if (*current != next) { *current = next; InvalidateRect(control, NULL, TRUE); }
+}
+static LRESULT CALLBACK flux__win_secondary_border_proc(
+    HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR subclass_id, DWORD_PTR ref_data
+) {
+    LRESULT result = DefSubclassProc(hwnd, message, wparam, lparam);
+    FluxWindowsWindowContext *context = (FluxWindowsWindowContext *)(uintptr_t)ref_data;
+    if (message == WM_PAINT && context != NULL && subclass_id > 0) {
+        size_t slot = (size_t)(subclass_id - 1);
+        if (context->border_colors != NULL
+            && context->border_widths != NULL
+            && context->border_styles != NULL
+            && slot < context->border_count) {
+            size_t offset = slot * 5;
+            flux__win_draw_border(
+                hwnd,
+                context->border_colors[offset + 1],
+                context->border_colors[offset + 2],
+                context->border_colors[offset + 3],
+                context->border_colors[offset + 4],
+                context->border_widths[offset + 1],
+                context->border_widths[offset + 2],
+                context->border_widths[offset + 3],
+                context->border_widths[offset + 4],
+                context->border_styles[slot]
+            );
+        }
+    }
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, flux__win_secondary_border_proc, subclass_id);
+    }
+    return result;
 }
 "#);
     }
@@ -21623,7 +21752,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             format!(" flux__windows_release_view_{view_identity}_params(context);")
         };
         out.push_str(&format!(
-            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0; free(context->text_layout_states); context->text_layout_states = NULL; context->text_layout_count = 0; flux__windows_release_text_fonts(context); flux__windows_release_button_fonts(context);{release_params}{secondary_subclass_release} flux__windows_release_drop_targets(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_image_bitmaps(context); flux__windows_release_style_state(context); free(context->control_windows); context->control_windows = NULL; }}\n"
+            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0; free(context->text_layout_states); context->text_layout_states = NULL; context->text_layout_count = 0; flux__windows_release_text_fonts(context); flux__windows_release_button_fonts(context);{release_params}{secondary_subclass_release} flux__windows_release_drop_targets(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_image_bitmaps(context); flux__windows_release_style_state(context); flux__windows_release_borders(context); free(context->control_windows); context->control_windows = NULL; }}\n"
         ));
         secondary_save_cases.push_str(&format!(
             " case UINT32_C({view_identity}): flux__windows_save_view_{view_identity}_state(context); return;"
@@ -23621,6 +23750,148 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     index * 2 + 1
                 ));
             }
+            let has_secondary_border = [
+                "border_color",
+                "border_top_color",
+                "border_end_color",
+                "border_bottom_color",
+                "border_start_color",
+                "border_width",
+                "border_top_width",
+                "border_end_width",
+                "border_bottom_width",
+                "border_start_width",
+                "border_style",
+            ]
+            .iter()
+            .any(|property_name| view_property(element, property_name).is_some());
+            if has_secondary_border {
+                let border_slot = secondary_view.elements[..index]
+                    .iter()
+                    .filter(|candidate| {
+                        [
+                            "border_color",
+                            "border_top_color",
+                            "border_end_color",
+                            "border_bottom_color",
+                            "border_start_color",
+                            "border_width",
+                            "border_top_width",
+                            "border_end_width",
+                            "border_bottom_width",
+                            "border_start_width",
+                            "border_style",
+                        ]
+                        .iter()
+                        .any(|property_name| view_property(candidate, property_name).is_some())
+                    })
+                    .count();
+                let border_offset = border_slot * 5;
+                if let Some(property) = view_property(element, "border_color") {
+                    let value = ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                    out.push_str(&format!(
+                        "flux__win_set_border_color(context->control_windows[{index}], &context->border_colors[{border_offset}], {value});
+"
+                    ));
+                    for (edge_offset, property_name) in [
+                        (1, "border_top_color"),
+                        (2, "border_end_color"),
+                        (3, "border_bottom_color"),
+                        (4, "border_start_color"),
+                    ] {
+                        if view_property(element, property_name).is_none() {
+                            out.push_str(&format!(
+                                "flux__win_set_border_color(context->control_windows[{index}], &context->border_colors[{}], {value});
+",
+                                border_offset + edge_offset
+                            ));
+                        }
+                    }
+                }
+                for (edge_offset, property_name) in [
+                    (1, "border_top_color"),
+                    (2, "border_end_color"),
+                    (3, "border_bottom_color"),
+                    (4, "border_start_color"),
+                ] {
+                    if let Some(property) = view_property(element, property_name) {
+                        let value = ui_expr_c_for_view_identity(
+                            &property.value,
+                            secondary_view,
+                            signatures,
+                            Some(*view_identity),
+                        )?;
+                        out.push_str(&format!(
+                            "flux__win_set_border_color(context->control_windows[{index}], &context->border_colors[{}], {value});
+",
+                            border_offset + edge_offset
+                        ));
+                    }
+                }
+                if let Some(property) = view_property(element, "border_width") {
+                    let value = ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                    out.push_str(&format!(
+                        "flux__win_set_border_width(context->control_windows[{index}], &context->border_widths[{border_offset}], {value});
+"
+                    ));
+                    for (edge_offset, property_name) in [
+                        (1, "border_top_width"),
+                        (2, "border_end_width"),
+                        (3, "border_bottom_width"),
+                        (4, "border_start_width"),
+                    ] {
+                        if view_property(element, property_name).is_none() {
+                            out.push_str(&format!(
+                                "flux__win_set_border_width(context->control_windows[{index}], &context->border_widths[{}], {value});
+",
+                                border_offset + edge_offset
+                            ));
+                        }
+                    }
+                }
+                for (edge_offset, property_name) in [
+                    (1, "border_top_width"),
+                    (2, "border_end_width"),
+                    (3, "border_bottom_width"),
+                    (4, "border_start_width"),
+                ] {
+                    if let Some(property) = view_property(element, property_name) {
+                        let value = ui_expr_c_for_view_identity(
+                            &property.value,
+                            secondary_view,
+                            signatures,
+                            Some(*view_identity),
+                        )?;
+                        out.push_str(&format!(
+                            "flux__win_set_border_width(context->control_windows[{index}], &context->border_widths[{}], {value});
+",
+                            border_offset + edge_offset
+                        ));
+                    }
+                }
+                if let Some(property) = view_property(element, "border_style") {
+                    let value = ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                    out.push_str(&format!(
+                        "flux__win_set_border_style(context->control_windows[{index}], &context->border_styles[{border_slot}], {value});
+"
+                    ));
+                }
+            }
             if element.kind == "Text"
                 && let Some(property) = view_property(element, "text_align")
                 && static_expr_str(&property.value, signatures).is_none()
@@ -25507,6 +25778,28 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 element.kind == "Button" && view_property(element, "size").is_some()
             })
             .collect::<Vec<_>>();
+        let secondary_bordered_elements = secondary_view
+            .elements
+            .iter()
+            .enumerate()
+            .filter(|(_, element)| {
+                [
+                    "border_color",
+                    "border_top_color",
+                    "border_end_color",
+                    "border_bottom_color",
+                    "border_start_color",
+                    "border_width",
+                    "border_top_width",
+                    "border_end_width",
+                    "border_bottom_width",
+                    "border_start_width",
+                    "border_style",
+                ]
+                .iter()
+                .any(|property_name| view_property(element, property_name).is_some())
+            })
+            .collect::<Vec<_>>();
         let secondary_uses_tooltips = secondary_view.elements.iter().any(|element| {
             view_property(element, "tooltip").is_some()
                 || (element.kind == "TextInput"
@@ -25518,6 +25811,23 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
         if !secondary_view.elements.is_empty() {
             out.push_str(&format!("context->control_windows = (HWND *)calloc({}, sizeof(HWND)); if (context->control_windows == NULL) return flux__win_create_view_window_failure(window, primary);\n", secondary_view.elements.len()));
+        }
+        if !secondary_bordered_elements.is_empty() {
+            let border_count = secondary_bordered_elements.len();
+            let border_value_count = border_count * 5;
+            out.push_str(&format!(
+                "context->border_colors = (COLORREF *)calloc({border_value_count}, sizeof(COLORREF)); context->border_widths = (int64_t *)calloc({border_value_count}, sizeof(int64_t)); context->border_styles = (int *)calloc({border_count}, sizeof(int)); if (context->border_colors == NULL || context->border_widths == NULL || context->border_styles == NULL) return flux__win_create_view_window_failure(window, primary); context->border_count = {border_count};\n"
+            ));
+            for slot in 0..border_count {
+                let offset = slot * 5;
+                out.push_str(&format!(
+                    "context->border_colors[{offset}] = RGB(208, 215, 222); context->border_colors[{}] = RGB(208, 215, 222); context->border_colors[{}] = RGB(208, 215, 222); context->border_colors[{}] = RGB(208, 215, 222); context->border_colors[{}] = RGB(208, 215, 222); context->border_styles[{slot}] = FLUX__WIN_BORDER_STYLE_SOLID;\n",
+                    offset + 1,
+                    offset + 2,
+                    offset + 3,
+                    offset + 4,
+                ));
+            }
         }
         if !secondary_text_layout_elements.is_empty() {
             out.push_str(&format!(
@@ -25902,6 +26212,15 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 out.push_str(&format!(
                     "GESTURECONFIG flux__win_zoom_config_view_{view_identity}_{index} = {{ GID_ZOOM, GC_ZOOM, 0 }}; if (!SetGestureConfig(context->control_windows[{index}], 0, 1, &flux__win_zoom_config_view_{view_identity}_{index}, sizeof(flux__win_zoom_config_view_{view_identity}_{index}))) return flux__win_create_view_window_failure(window, primary);
 "
+                ));
+            }
+            if let Some(border_slot) = secondary_bordered_elements
+                .iter()
+                .position(|(element_index, _)| *element_index == index)
+            {
+                out.push_str(&format!(
+                    "if (!SetWindowSubclass(context->control_windows[{index}], flux__win_secondary_border_proc, (UINT_PTR){}, (DWORD_PTR)(uintptr_t)context)) return flux__win_create_view_window_failure(window, primary);\n",
+                    border_slot + 1
                 ));
             }
             if windows_element_uses_custom_text_layout(element, signatures) {
