@@ -72345,6 +72345,139 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_text_size_limits() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state widthLimit: i64 = 14
+    state lineLimit: i64 = 2
+    state leading: i64 = 135
+    state inset: i64 = 3
+    grid columns: 1fr
+    grid rows: auto auto
+    Text dynamic at 1,1
+        text: "Dynamic limits"
+        maxWidthChars: widthLimit
+        maxLines: lineLimit
+        lineHeightPercent: leading
+        padding: inset
+    Text fixed at 2,1
+        text: "Fixed limits"
+        maxWidthChars: 9
+        maxLines: 1
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary text-size route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary Text size limits should lower for Windows");
+
+    assert!(windows.contains("static int flux__win_text_width_for_chars("));
+    assert!(windows.contains("static int flux__win_text_height_for_lines("));
+    assert!(windows.contains(
+        "flux__win_view_1_text_maximum_width_0 = flux__win_text_width_for_chars(control_0, flux__ui_view_1_state_widthLimit)"
+    ));
+    assert!(windows.contains(
+        "flux__win_view_1_text_maximum_height_0 = flux__win_text_height_for_lines(control_0, flux__ui_view_1_state_lineLimit, flux__ui_view_1_state_leading)"
+    ));
+    assert!(windows.contains(
+        "flux__win_view_1_text_maximum_width_1 = flux__win_text_width_for_chars(control_1, INT64_C(9))"
+    ));
+    assert!(windows.contains(
+        "flux__win_view_1_text_maximum_height_1 = flux__win_text_height_for_lines(control_1, INT64_C(1), INT64_C(100))"
+    ));
+    assert!(windows.contains(
+        "flux__win_layout_view_1(context, flux__win_view_1_refresh_client.right - flux__win_view_1_refresh_client.left"
+    ));
+
+    for (needle, replacement, expected) in [
+        (
+            "maxWidthChars: 9",
+            "maxWidthChars: -1",
+            "Text.maxWidthChars must be between 0 and 2147483647",
+        ),
+        (
+            "maxLines: 1",
+            "maxLines: 0",
+            "Text.maxLines must be between 1 and 2147483647",
+        ),
+    ] {
+        let invalid = source.replace(needle, replacement);
+        let invalid_database =
+            fluxc::semantic::SemanticDatabase::analyze(&invalid, SourceId::UNKNOWN)
+                .expect("invalid static secondary Text limit should analyze before lowering");
+        let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+            invalid_database.program(),
+            invalid_database.signatures(),
+            &std::collections::HashMap::new(),
+            fluxc::codegen::NativeTarget::Windows,
+        )
+        .expect_err("invalid static secondary Text limit must fail lowering");
+        assert!(
+            error.message.contains(expected),
+            "expected {expected:?}, got {:?}",
+            error.message
+        );
+    }
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-text-limits-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)
+            .expect("secondary text-limits syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary text-limits C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary text-limits Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary text-limits Windows C failed syntax validation:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_semantic_text_controls() {
     let source = r#"
 fn openSecondary() -> void {

@@ -16905,6 +16905,10 @@ fn emit_windows_native_application(
                                 | "letterSpacing"
                                 | "line_height_percent"
                                 | "lineHeightPercent"
+                                | "max_width_chars"
+                                | "maxWidthChars"
+                                | "max_lines"
+                                | "maxLines"
                                 | "padding"
                                 | "padding_top"
                                 | "paddingTop"
@@ -16990,7 +16994,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.padding/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -17026,6 +17030,26 @@ fn emit_windows_native_application(
                         return Err(diag(
                             property.value.span,
                             "Text.font_family cannot be empty",
+                        ));
+                    }
+                    if element.kind == "Text"
+                        && matches!(property.name.as_str(), "max_width_chars" | "maxWidthChars")
+                        && let Some(value) = static_expr_i64(&property.value, signatures)
+                        && !(0..=i64::from(i32::MAX)).contains(&value)
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.maxWidthChars must be between 0 and 2147483647",
+                        ));
+                    }
+                    if element.kind == "Text"
+                        && matches!(property.name.as_str(), "max_lines" | "maxLines")
+                        && let Some(value) = static_expr_i64(&property.value, signatures)
+                        && !(1..=i64::from(i32::MAX)).contains(&value)
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.maxLines must be between 1 and 2147483647",
                         ));
                     }
                     if element.kind == "Text"
@@ -17991,7 +18015,14 @@ fn emit_windows_native_application(
     if uses_dynamic_margins {
         out.push_str("static int64_t flux__win_checked_margin(int64_t value, const char *name) { if (value < 0 || value > INT32_MAX) { fprintf(stderr, \"Flux runtime error: %s must be between 0 and 2147483647\\n\", name); abort(); } return value; }\n");
     }
-    if view.elements.iter().any(|element| element.kind == "Text") {
+    if view.elements.iter().any(|element| element.kind == "Text")
+        || secondary_window_views.iter().any(|(_, secondary_view)| {
+            secondary_view
+                .elements
+                .iter()
+                .any(|element| element.kind == "Text")
+        })
+    {
         out.push_str("static int flux__win_text_width_for_chars(HWND control, int64_t chars) { if (control == NULL) return INT32_MAX; if (chars < 0 || chars > INT32_MAX) { fputs(\"Flux runtime error: Text.maxWidthChars must be between 0 and 2147483647\\n\", stderr); abort(); } if (chars == 0) return INT32_MAX; HDC dc = GetDC(control); if (dc == NULL) return INT32_MAX; HFONT font = (HFONT)SendMessageW(control, WM_GETFONT, 0, 0); HGDIOBJ previous = font != NULL ? SelectObject(dc, font) : NULL; TEXTMETRICA metrics = {0}; int result = INT32_MAX; if (GetTextMetricsA(dc, &metrics)) { int average = metrics.tmAveCharWidth > 0 ? metrics.tmAveCharWidth : 1; int64_t measured = chars * (int64_t)average; result = measured > INT32_MAX ? INT32_MAX : (int)measured; } if (previous != NULL && previous != HGDI_ERROR) SelectObject(dc, previous); ReleaseDC(control, dc); return result; }\n");
         out.push_str("static int flux__win_text_height_for_lines(HWND control, int64_t lines, int64_t line_height_percent) { if (control == NULL) return INT32_MAX; if (lines < 1 || lines > INT32_MAX) { fputs(\"Flux runtime error: Text.maxLines must be between 1 and 2147483647\\n\", stderr); abort(); } if (line_height_percent < 1 || line_height_percent > INT32_MAX) { fputs(\"Flux runtime error: Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); } HDC dc = GetDC(control); if (dc == NULL) return INT32_MAX; HFONT font = (HFONT)SendMessageW(control, WM_GETFONT, 0, 0); HGDIOBJ previous = font != NULL ? SelectObject(dc, font) : NULL; TEXTMETRICA metrics = {0}; int result = INT32_MAX; if (GetTextMetricsA(dc, &metrics)) { int base_line_height = metrics.tmHeight + metrics.tmExternalLeading; if (base_line_height < 1) base_line_height = 1; int64_t scaled_line_height = ((int64_t)base_line_height * line_height_percent + INT64_C(50)) / INT64_C(100); if (scaled_line_height < 1) scaled_line_height = 1; int64_t measured = lines * scaled_line_height; result = measured > INT32_MAX ? INT32_MAX : (int)measured; } if (previous != NULL && previous != HGDI_ERROR) SelectObject(dc, previous); ReleaseDC(control, dc); return result; }\n");
     }
@@ -22105,7 +22136,119 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             let row_offset = i64::from(element.row) - 1;
             let column_span = i64::from(element.column_span);
             let row_span = i64::from(element.row_span);
-            out.push_str(&format!("HWND control_{index} = context->control_windows[{index}]; if (control_{index} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height{secondary_scroll_offset}; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; if (control_width < 1) control_width = 1; if (control_height < 1) control_height = 1; MoveWindow(control_{index}, x, y, control_width, control_height, TRUE); }}\n"));
+            let secondary_text_padding_value = |property_name: &str| -> Result<String, Diagnostic> {
+                if let Some(property) = view_property(element, property_name) {
+                    if let Some(value) = static_expr_i64(&property.value, signatures) {
+                        return Ok(format!("INT64_C({value})"));
+                    }
+                    return ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    );
+                }
+                if let Some(property) = view_property(element, "padding") {
+                    if let Some(value) = static_expr_i64(&property.value, signatures) {
+                        return Ok(format!("INT64_C({value})"));
+                    }
+                    return ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    );
+                }
+                Ok("INT64_C(0)".to_string())
+            };
+            let secondary_text_width_limit = if element.kind == "Text" {
+                let (_, _, _, default_max_width_chars) =
+                    text_semantic_typography(element, signatures)?;
+                let max_width_chars = match view_property(element, "max_width_chars") {
+                    Some(property) => match static_expr_i64(&property.value, signatures) {
+                        Some(value) => format!("INT64_C({value})"),
+                        None => ui_expr_c_for_view_identity(
+                            &property.value,
+                            secondary_view,
+                            signatures,
+                            Some(*view_identity),
+                        )?,
+                    },
+                    None => format!("INT64_C({default_max_width_chars})"),
+                };
+                let padding = if windows_text_has_padding(element) {
+                    let padding_start = secondary_text_padding_value("padding_start")?;
+                    let padding_end = secondary_text_padding_value("padding_end")?;
+                    format!(
+                        "int64_t flux__win_view_{view_identity}_text_padding_width_{index} = (int64_t)flux__win_scale({padding_start}) + flux__win_scale({padding_end}); if (flux__win_view_{view_identity}_text_padding_width_{index} < 0) flux__win_view_{view_identity}_text_padding_width_{index} = 0; if (flux__win_view_{view_identity}_text_padding_width_{index} > INT32_MAX) flux__win_view_{view_identity}_text_padding_width_{index} = INT32_MAX; "
+                    )
+                } else {
+                    String::new()
+                };
+                let padded_width = if windows_text_has_padding(element) {
+                    format!(
+                        "if (flux__win_view_{view_identity}_text_maximum_width_{index} < INT32_MAX) {{ int64_t flux__win_view_{view_identity}_padded_text_maximum_width_{index} = (int64_t)flux__win_view_{view_identity}_text_maximum_width_{index} + flux__win_view_{view_identity}_text_padding_width_{index}; flux__win_view_{view_identity}_text_maximum_width_{index} = flux__win_view_{view_identity}_padded_text_maximum_width_{index} > INT32_MAX ? INT32_MAX : (int)flux__win_view_{view_identity}_padded_text_maximum_width_{index}; }} "
+                    )
+                } else {
+                    String::new()
+                };
+                format!(
+                    "{padding}int flux__win_view_{view_identity}_text_maximum_width_{index} = flux__win_text_width_for_chars(control_{index}, {max_width_chars}); {padded_width}if (control_width > flux__win_view_{view_identity}_text_maximum_width_{index}) control_width = flux__win_view_{view_identity}_text_maximum_width_{index}; "
+                )
+            } else {
+                String::new()
+            };
+            let secondary_text_height_limit = if element.kind == "Text" {
+                if let Some(property) = view_property(element, "max_lines") {
+                    let max_lines = match static_expr_i64(&property.value, signatures) {
+                        Some(value) => format!("INT64_C({value})"),
+                        None => ui_expr_c_for_view_identity(
+                            &property.value,
+                            secondary_view,
+                            signatures,
+                            Some(*view_identity),
+                        )?,
+                    };
+                    let line_height_percent =
+                        if let Some(property) = view_property(element, "line_height_percent") {
+                            match static_expr_i64(&property.value, signatures) {
+                                Some(value) => format!("INT64_C({value})"),
+                                None => ui_expr_c_for_view_identity(
+                                    &property.value,
+                                    secondary_view,
+                                    signatures,
+                                    Some(*view_identity),
+                                )?,
+                            }
+                        } else {
+                            "INT64_C(100)".to_string()
+                        };
+                    let padding = if windows_text_has_padding(element) {
+                        let padding_top = secondary_text_padding_value("padding_top")?;
+                        let padding_bottom = secondary_text_padding_value("padding_bottom")?;
+                        format!(
+                            "int64_t flux__win_view_{view_identity}_text_padding_height_{index} = (int64_t)flux__win_scale({padding_top}) + flux__win_scale({padding_bottom}); if (flux__win_view_{view_identity}_text_padding_height_{index} < 0) flux__win_view_{view_identity}_text_padding_height_{index} = 0; if (flux__win_view_{view_identity}_text_padding_height_{index} > INT32_MAX) flux__win_view_{view_identity}_text_padding_height_{index} = INT32_MAX; "
+                        )
+                    } else {
+                        String::new()
+                    };
+                    let padded_height = if windows_text_has_padding(element) {
+                        format!(
+                            "if (flux__win_view_{view_identity}_text_maximum_height_{index} < INT32_MAX) {{ int64_t flux__win_view_{view_identity}_padded_text_maximum_height_{index} = (int64_t)flux__win_view_{view_identity}_text_maximum_height_{index} + flux__win_view_{view_identity}_text_padding_height_{index}; flux__win_view_{view_identity}_text_maximum_height_{index} = flux__win_view_{view_identity}_padded_text_maximum_height_{index} > INT32_MAX ? INT32_MAX : (int)flux__win_view_{view_identity}_padded_text_maximum_height_{index}; }} "
+                        )
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "{padding}int flux__win_view_{view_identity}_text_maximum_height_{index} = flux__win_text_height_for_lines(control_{index}, {max_lines}, {line_height_percent}); {padded_height}if (control_height > flux__win_view_{view_identity}_text_maximum_height_{index}) control_height = flux__win_view_{view_identity}_text_maximum_height_{index}; "
+                    )
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+            out.push_str(&format!("HWND control_{index} = context->control_windows[{index}]; if (control_{index} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height{secondary_scroll_offset}; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; if (control_width < 1) control_width = 1; if (control_height < 1) control_height = 1; {secondary_text_width_limit}{secondary_text_height_limit}MoveWindow(control_{index}, x, y, control_width, control_height, TRUE); }}\n"));
         }
         out.push_str("}\n");
         secondary_layout_dispatch.push_str(&format!(" case UINT32_C({view_identity}): flux__win_layout_view_{view_identity}(flux__windows_active_context, width, height); return;"));
@@ -22590,6 +22733,39 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     }
     let mut secondary_refresh_dispatch = String::new();
     for (view_identity, secondary_view) in &secondary_window_views {
+        let secondary_needs_layout_refresh = secondary_view.elements.iter().any(|element| {
+            if element.kind != "Text" {
+                return false;
+            }
+            view_property(element, "max_width_chars").is_some()
+                || view_property(element, "max_lines").is_some()
+                || [
+                    "size",
+                    "bold",
+                    "italic",
+                    "underline",
+                    "strikethrough",
+                    "font_family",
+                    "line_height_percent",
+                    "padding",
+                    "padding_top",
+                    "padding_bottom",
+                    "padding_start",
+                    "padding_end",
+                ]
+                .iter()
+                .any(|property_name| {
+                    view_property(element, property_name).is_some_and(|property| {
+                        match *property_name {
+                            "font_family" => static_expr_str(&property.value, signatures).is_none(),
+                            "bold" | "italic" | "underline" | "strikethrough" => {
+                                static_expr_bool(&property.value, signatures).is_none()
+                            }
+                            _ => static_expr_i64(&property.value, signatures).is_none(),
+                        }
+                    })
+                })
+        });
         out.push_str(&format!(
             "static void flux__win_refresh_view_{view_identity}(void) {{ FluxWindowsWindowContext *context = flux__windows_active_context; if (context == NULL || context->view_identity != UINT32_C({view_identity}) || context->control_windows == NULL) return;\n"
         ));
@@ -23202,6 +23378,11 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     "SendMessageA(context->control_windows[{index}], BM_SETCHECK, ({value}) ? BST_CHECKED : BST_UNCHECKED, 0);\n"
                 ));
             }
+        }
+        if secondary_needs_layout_refresh {
+            out.push_str(&format!(
+                "RECT flux__win_view_{view_identity}_refresh_client = {{0}}; if (context->hwnd != NULL && GetClientRect(context->hwnd, &flux__win_view_{view_identity}_refresh_client)) flux__win_layout_view_{view_identity}(context, flux__win_view_{view_identity}_refresh_client.right - flux__win_view_{view_identity}_refresh_client.left, flux__win_view_{view_identity}_refresh_client.bottom - flux__win_view_{view_identity}_refresh_client.top);\n"
+            ));
         }
         out.push_str("}\n");
         secondary_refresh_dispatch.push_str(&format!(
