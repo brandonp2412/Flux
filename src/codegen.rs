@@ -21118,6 +21118,11 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     }
     out.push_str(&format!("flux__win_set_refreshing(previous_refreshing); }}\nstatic void flux__win_refresh(void) {{ if (flux__windows_active_context == NULL) return; switch (flux__windows_active_context->view_identity) {{ case UINT32_C({root_view_identity}): flux__win_refresh_root_view(); return; default: return; }} }}\n"));
     out.push_str("static bool flux__windows_app_foreground = false;\nstatic int flux__win_handle_root_view_command(WPARAM wparam, LPARAM lparam);\n");
+    if uses_context_menus {
+        out.push_str(
+            "static bool flux__win_handle_root_view_context_menu(HWND control, LPARAM lparam);\n",
+        );
+    }
     out.push_str("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { switch (message) { case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT: { HDC dc = (HDC)wparam; HWND control = (HWND)lparam;\n");
     for (index, element) in view.elements.iter().enumerate().filter(|(_, element)| {
         let presentation_text_color = element.kind != "Image"
@@ -21229,20 +21234,20 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
     }
     let mut context_menu_messages = String::new();
+    let mut context_menu_handler = String::new();
     if uses_context_menus {
-        context_menu_messages.push_str(" case WM_CONTEXTMENU: { flux__windows_activate_context(hwnd); HWND control = (HWND)wparam;");
+        context_menu_messages.push_str(&format!(" case WM_CONTEXTMENU: {{ flux__windows_activate_context(hwnd); HWND control = (HWND)wparam; if (flux__windows_active_context != NULL && flux__windows_active_context->view_identity == UINT32_C({root_view_identity}) && flux__win_handle_root_view_context_menu(control, lparam)) return 0; }} break;"));
         for (index, element) in view.elements.iter().enumerate() {
             if view_property(element, "on_context_menu").is_some()
                 || view_property(element, "context_menu_label").is_some()
                 || view_property(element, "context_menu_items").is_some()
             {
-                context_menu_messages.push_str(&format!(
-                    " if (control == {}) {{ flux__win_context_menu_{index}(control, lparam); return 0; }}",
+                context_menu_handler.push_str(&format!(
+                    "if (control == {}) {{ flux__win_context_menu_{index}(control, lparam); return true; }} ",
                     ui_widget_c_name(&element.name)
                 ));
             }
         }
-        context_menu_messages.push_str(" } break;");
     }
     let dpi_font_refresh = if view.elements.iter().any(|element| element.kind == "Text") {
         " flux__win_apply_fonts();"
@@ -21321,6 +21326,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         exit = exit_callback,
     ));
     out.push_str(&format!("static int flux__win_handle_root_view_command(WPARAM wparam, LPARAM lparam) {{ switch (LOWORD(wparam)) {{ {command_messages} default: return -1; }} }}\n"));
+    if uses_context_menus {
+        out.push_str(&format!("static bool flux__win_handle_root_view_context_menu(HWND control, LPARAM lparam) {{ {context_menu_handler} return false; }}\n"));
+    }
     let accessibility_init = if uses_accessibility {
         " flux__win_accessibility_init();"
     } else {

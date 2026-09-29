@@ -67861,6 +67861,10 @@ app ContextCard
     .expect("context-menu requests should lower to native Win32 menus");
     assert!(windows.contains("case WM_CONTEXTMENU"));
     assert!(windows.contains("case WM_CONTEXTMENU: { flux__windows_activate_context(hwnd);"));
+    assert!(windows.contains(
+        "static bool flux__win_handle_root_view_context_menu(HWND control, LPARAM lparam)"
+    ));
+    assert!(windows.contains("flux__windows_active_context->view_identity == UINT32_C(0) && flux__win_handle_root_view_context_menu(control, lparam)"));
     assert!(windows.contains("CreatePopupMenu()"));
     assert!(windows.contains("AppendMenuW(menu, MF_STRING, (UINT_PTR)1"));
     assert!(windows.contains("while (menu_window != NULL && flux__windows_context_for(menu_window) == NULL) menu_window = GetParent(menu_window)"));
