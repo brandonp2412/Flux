@@ -16887,11 +16887,21 @@ fn emit_windows_native_application(
                             | "onAccessibilityAction"
                             | "on_long_press"
                             | "onLongPress"
+                            | "on_context_menu"
+                            | "onContextMenu"
+                            | "context_menu_label"
+                            | "contextMenuLabel"
+                            | "on_context_menu_select"
+                            | "onContextMenuSelect"
+                            | "context_menu_items"
+                            | "contextMenuItems"
+                            | "on_context_menu_item_select"
+                            | "onContextMenuItemSelect"
                     );
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/long-press action",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/long-press/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -16941,6 +16951,37 @@ fn emit_windows_native_application(
                         "Windows distinct secondary onLongPress requires a named fn() -> void callback or state transition",
                     ));
                 }
+            }
+            for (property_name, source_name) in [
+                ("on_context_menu", "onContextMenu"),
+                ("on_context_menu_select", "onContextMenuSelect"),
+            ] {
+                let Some(property) = view_property(element, property_name) else {
+                    continue;
+                };
+                if property.transition.is_some() {
+                    ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                } else if !matches!(property.value.kind, ExprKind::Var(_)) {
+                    return Err(diag(
+                        property.value.span,
+                        &format!(
+                            "Windows distinct secondary {source_name} requires a named fn() -> void callback or state transition"
+                        ),
+                    ));
+                }
+            }
+            if let Some(property) = view_property(element, "on_context_menu_item_select")
+                && !matches!(property.value.kind, ExprKind::Var(_))
+            {
+                return Err(diag(
+                    property.value.span,
+                    "Windows distinct secondary onContextMenuItemSelect requires a named fn(i64) -> void callback",
+                ));
             }
             if element.kind == "TextInput" {
                 for (property_name, source_name) in
@@ -19659,6 +19700,12 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
         view_property(element, "on_context_menu").is_some()
             || view_property(element, "context_menu_label").is_some()
             || view_property(element, "context_menu_items").is_some()
+    }) || secondary_window_views.iter().any(|(_, secondary_view)| {
+        secondary_view.elements.iter().any(|element| {
+            view_property(element, "on_context_menu").is_some()
+                || view_property(element, "context_menu_label").is_some()
+                || view_property(element, "context_menu_items").is_some()
+        })
     });
     let uses_passive_keyboard_activation = view.elements.iter().any(|element| {
         !matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
@@ -22081,6 +22128,11 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         out.push_str(
             "static bool flux__win_handle_root_view_context_menu(HWND control, LPARAM lparam);\n",
         );
+        for (view_identity, _) in &secondary_window_views {
+            out.push_str(&format!(
+                "static bool flux__win_handle_view_{view_identity}_context_menu(HWND control, LPARAM lparam);\n"
+            ));
+        }
     }
     let mut secondary_validation_paint = String::new();
     for (view_identity, secondary_view) in &secondary_window_views {
@@ -22210,7 +22262,17 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     let mut context_menu_messages = String::new();
     let mut context_menu_handler = String::new();
     if uses_context_menus {
-        context_menu_messages.push_str(&format!(" case WM_CONTEXTMENU: {{ flux__windows_activate_context(hwnd); HWND control = (HWND)wparam; if (flux__windows_active_context != NULL && flux__windows_active_context->view_identity == UINT32_C({root_view_identity}) && flux__win_handle_root_view_context_menu(control, lparam)) return 0; }} break;"));
+        let mut context_menu_dispatch = format!(
+            "if (flux__windows_active_context->view_identity == UINT32_C({root_view_identity}) && flux__win_handle_root_view_context_menu(control, lparam)) return 0; "
+        );
+        for (view_identity, _) in &secondary_window_views {
+            context_menu_dispatch.push_str(&format!(
+                "if (flux__windows_active_context->view_identity == UINT32_C({view_identity}) && flux__win_handle_view_{view_identity}_context_menu(control, lparam)) return 0; "
+            ));
+        }
+        context_menu_messages.push_str(&format!(
+            " case WM_CONTEXTMENU: {{ flux__windows_activate_context(hwnd); HWND control = (HWND)wparam; if (flux__windows_active_context != NULL) {{ {context_menu_dispatch} }} }} break;"
+        ));
         for (index, element) in view.elements.iter().enumerate() {
             if view_property(element, "on_context_menu").is_some()
                 || view_property(element, "context_menu_label").is_some()
@@ -22506,7 +22568,122 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 function_c_name(function)
             ));
         }
+        let mut secondary_context_menu_handler = String::new();
+        if uses_context_menus {
+            for (index, element) in secondary_view.elements.iter().enumerate() {
+                if view_property(element, "on_context_menu").is_none()
+                    && view_property(element, "context_menu_label").is_none()
+                    && view_property(element, "context_menu_items").is_none()
+                {
+                    continue;
+                }
+                let request_body = if let Some(action) = view_property(element, "on_context_menu") {
+                    if let Some(transition) = &action.transition {
+                        let next = ui_expr_c_for_view_identity(
+                            &action.value,
+                            secondary_view,
+                            signatures,
+                            Some(*view_identity),
+                        )?;
+                        format!(
+                            "{} = {next}; flux__win_refresh(); ",
+                            ui_state_c_name_for_view_identity(
+                                &transition.state,
+                                Some(*view_identity)
+                            )
+                        )
+                    } else {
+                        let ExprKind::Var(function) = &action.value.kind else {
+                            unreachable!(
+                                "secondary context-menu callback shape was validated before emission"
+                            );
+                        };
+                        format!("{}(); flux__win_refresh(); ", function_c_name(function))
+                    }
+                } else {
+                    String::new()
+                };
+                let position = "POINT point = {0}; if (position == (LPARAM)-1) { RECT bounds = {0}; if (!GetWindowRect(anchor, &bounds)) return; point.x = bounds.left + (bounds.right - bounds.left) / 2; point.y = bounds.top + (bounds.bottom - bounds.top) / 2; } else { point.x = (int)(short)LOWORD(position); point.y = (int)(short)HIWORD(position); } HWND menu_window = anchor; while (menu_window != NULL && flux__windows_context_for(menu_window) == NULL) menu_window = GetParent(menu_window); if (menu_window == NULL) menu_window = flux__windows_active_window; SetForegroundWindow(menu_window); ";
+                let menu_body = if let Some(items) = static_context_menu_items(element, signatures)?
+                {
+                    let ExprKind::Var(function) =
+                        &view_property(element, "on_context_menu_item_select")
+                            .expect("validated context menu item callback")
+                            .value
+                            .kind
+                    else {
+                        unreachable!(
+                            "secondary context-menu item callback shape was validated before emission"
+                        );
+                    };
+                    let mut body = format!(
+                        "{position}HMENU menu = CreatePopupMenu(); if (menu == NULL) return; "
+                    );
+                    for (item_index, label) in items.iter().enumerate() {
+                        body.push_str(&format!(
+                            "wchar_t *label_{item_index} = flux__windows_utf8_to_wide({}); if (label_{item_index} == NULL || !AppendMenuW(menu, MF_STRING, (UINT_PTR){}, label_{item_index})) {{ free(label_{item_index}); DestroyMenu(menu); return; }} free(label_{item_index}); ",
+                            c_string(label),
+                            item_index + 1,
+                        ));
+                    }
+                    body.push_str(&format!(
+                        "UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, menu_window, NULL); DestroyMenu(menu); if (command >= 1 && command <= {}) {{ {}((int64_t)(command - 1)); flux__win_refresh(); }} ",
+                        items.len(),
+                        function_c_name(function),
+                    ));
+                    body
+                } else if let Some(label_property) = view_property(element, "context_menu_label") {
+                    let Some(label) = static_expr_str(&label_property.value, signatures) else {
+                        return Err(diag(
+                            label_property.value.span,
+                            "contextMenuLabel must be a compile-time string value",
+                        ));
+                    };
+                    let action = view_property(element, "on_context_menu_select")
+                        .expect("validated context menu selection callback");
+                    let select_body = if let Some(transition) = &action.transition {
+                        let next = ui_expr_c_for_view_identity(
+                            &action.value,
+                            secondary_view,
+                            signatures,
+                            Some(*view_identity),
+                        )?;
+                        format!(
+                            "{} = {next}; flux__win_refresh();",
+                            ui_state_c_name_for_view_identity(
+                                &transition.state,
+                                Some(*view_identity)
+                            )
+                        )
+                    } else {
+                        let ExprKind::Var(function) = &action.value.kind else {
+                            unreachable!(
+                                "secondary context-menu select callback shape was validated before emission"
+                            );
+                        };
+                        format!("{}(); flux__win_refresh();", function_c_name(function))
+                    };
+                    format!(
+                        "{position}HMENU menu = CreatePopupMenu(); if (menu == NULL) return; wchar_t *label = flux__windows_utf8_to_wide({}); if (label == NULL || !AppendMenuW(menu, MF_STRING, (UINT_PTR)1, label)) {{ free(label); DestroyMenu(menu); return; }} free(label); UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, menu_window, NULL); DestroyMenu(menu); if (command == 1) {{ {select_body} }} ",
+                        c_string(&label),
+                    )
+                } else {
+                    String::new()
+                };
+                out.push_str(&format!(
+                    "static void flux__win_context_menu_view_{view_identity}_{index}(HWND anchor, LPARAM position) {{ if (anchor == NULL) return; {request_body}{menu_body}}}\n"
+                ));
+                secondary_context_menu_handler.push_str(&format!(
+                    "if (control == context->control_windows[{index}]) {{ flux__win_context_menu_view_{view_identity}_{index}(control, lparam); return true; }} "
+                ));
+            }
+        }
         out.push_str(&format!("static int flux__win_handle_view_{view_identity}_command(WPARAM wparam, LPARAM lparam) {{ (void)lparam; FluxWindowsWindowContext *context = flux__windows_active_context; if (context == NULL || context->view_identity != UINT32_C({view_identity}) || context->control_windows == NULL) return -1; switch (LOWORD(wparam)) {{ {secondary_command_messages} default: return -1; }} }}\n"));
+        if uses_context_menus {
+            out.push_str(&format!(
+                "static bool flux__win_handle_view_{view_identity}_context_menu(HWND control, LPARAM lparam) {{ FluxWindowsWindowContext *context = flux__windows_active_context; if (context == NULL || context->view_identity != UINT32_C({view_identity}) || context->control_windows == NULL) return false; {secondary_context_menu_handler}return false; }}\n"
+            ));
+        }
     }
     if uses_context_menus {
         out.push_str(&format!("static bool flux__win_handle_root_view_context_menu(HWND control, LPARAM lparam) {{ {context_menu_handler} return false; }}\n"));
@@ -23152,9 +23329,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 }
                 _ => unreachable!("secondary element kind was validated above"),
             };
-            let mut style = if view_property(element, "autofocus")
+            let implicitly_focusable = view_property(element, "autofocus")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
                 == Some(true)
+                || view_property(element, "on_context_menu").is_some()
+                || view_property(element, "context_menu_label").is_some()
+                || view_property(element, "context_menu_items").is_some();
+            let mut style = if implicitly_focusable
                 && view_property(element, "focusable").is_none()
                 && !base_style.contains("WS_TABSTOP")
             {
