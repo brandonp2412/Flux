@@ -71368,6 +71368,117 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_background_and_text_colors() {
+    let source = r##"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state tone: str = "accent"
+    grid columns: 1fr
+    grid rows: auto auto
+    Text title at 1,1
+        text: "Styled"
+        color: tone
+        backgroundColor: "#112233"
+    Button action at 2,1
+        text: "Action"
+        backgroundColor: tone
+}
+
+route detail = Detail
+app Screen
+"##;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary styled route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary styled route should lower for Windows");
+
+    assert!(windows.contains(
+        "flux__win_set_dynamic_text_color(context->control_windows[0], 1, flux__ui_view_1_state_tone);"
+    ));
+    assert!(windows.contains(
+        "flux__win_set_dynamic_background(context->control_windows[1], 2, flux__ui_view_1_state_tone);"
+    ));
+    assert!(
+        windows.contains("flux__win_static_brush_for(secondary_paint_context, 0, RGB(17, 34, 51))")
+    );
+    assert!(windows.contains(
+        "flux__win_style_color_for(secondary_paint_context, 1, &flux__win_view_1_text_color_0)"
+    ));
+    assert!(windows.contains("flux__win_style_brush_for(secondary_paint_context, 2)"));
+    assert!(windows.contains("secondary_paint_context->view_identity == UINT32_C(1)"));
+    assert!(windows.contains("flux__windows_release_style_state(context);"));
+    assert!(
+        windows.contains("static bool flux__win_parse_color(const char *value, COLORREF *result)")
+    );
+
+    let invalid = source.replace("backgroundColor: \"#112233\"", "backgroundColor: \"blue\"");
+    let invalid_database = fluxc::semantic::SemanticDatabase::analyze(&invalid, SourceId::UNKNOWN)
+        .expect("invalid static Windows color should still analyze before target lowering");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        invalid_database.program(),
+        invalid_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("invalid secondary Windows backgroundColor must fail lowering");
+    assert!(error.message.contains(
+        "backgroundColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token"
+    ));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-style-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("secondary style syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary style C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary style Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary style Windows C failed syntax validation:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_toggle_and_radio_controls() {
     let source = r#"
 fn openSecondary() -> void {
@@ -73243,9 +73354,9 @@ app Screen
     assert!(windows.contains(
         r#"flux__win_set_bitmap(context->control_windows[1], flux__windows_image_bitmap_storage(context, 1), "backup.bmp", "scaleDown");"#
     ));
-    assert!(windows.contains(
-        "flux__windows_release_image_bitmaps(context); free(context->control_windows); context->control_windows = NULL;"
-    ));
+    assert!(windows.contains("flux__windows_release_image_bitmaps(context);"));
+    assert!(windows.contains("flux__windows_release_style_state(context);"));
+    assert!(windows.contains("free(context->control_windows); context->control_windows = NULL;"));
 
     let header_root = PathBuf::from("/usr/include/wine/windows");
     if header_root.join("windows.h").is_file()
