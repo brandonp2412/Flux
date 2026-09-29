@@ -70691,6 +70691,10 @@ app Screen
     assert!(windows.contains("HWND hwnd; HWND tooltip_window;"));
     assert!(windows.contains("bool primary; uint32_t view_identity;"));
     assert!(windows.contains("static const uint32_t flux__win_root_view_identity = UINT32_C(0);"));
+    assert!(windows.contains("static void flux__win_layout_root_view(int width, int height)"));
+    assert!(windows.contains("switch (flux__windows_active_context->view_identity) { case UINT32_C(0): flux__win_layout_root_view(width, height); return; default: return; }"));
+    assert!(windows.contains("static void flux__win_refresh_root_view(void)"));
+    assert!(windows.contains("switch (flux__windows_active_context->view_identity) { case UINT32_C(0): flux__win_refresh_root_view(); return; default: return; }"));
     assert!(windows.contains("flux__windows_contexts[index].view_identity = view_identity;"));
     assert!(windows.contains("WNDPROC runtime_previous_proc; bool refreshing;"));
     assert!(windows.contains("flux__windows_active_context->refreshing"));
