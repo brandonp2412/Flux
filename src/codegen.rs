@@ -16860,6 +16860,10 @@ fn emit_windows_native_application(
                             | "accessibilityHidden"
                             | "accessibility_order"
                             | "accessibilityOrder"
+                            | "accessibility_action_label"
+                            | "accessibilityActionLabel"
+                            | "accessibility_actions"
+                            | "accessibilityActions"
                             | "focusable"
                             | "autofocus"
                             | "focus_scope"
@@ -16874,20 +16878,31 @@ fn emit_windows_native_application(
                     && ["on_change", "on_submit"].iter().any(|property_name| {
                         property.name == *property_name
                             || property.name == internal_name_to_source(property_name)
-                    }));
+                    }))
+                    || matches!(
+                        property.name.as_str(),
+                        "on_accessibility_action" | "onAccessibilityAction"
+                    );
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change action",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change action",
                     ));
                 }
                 if data_property {
-                    ui_expr_c_for_view_identity(
-                        &property.value,
-                        secondary_view,
-                        signatures,
-                        Some(*view_identity),
-                    )?;
+                    if matches!(
+                        property.name.as_str(),
+                        "accessibility_actions" | "accessibilityActions"
+                    ) {
+                        static_string_list(&property.value, signatures, "accessibilityActions")?;
+                    } else {
+                        ui_expr_c_for_view_identity(
+                            &property.value,
+                            secondary_view,
+                            signatures,
+                            Some(*view_identity),
+                        )?;
+                    }
                 }
             }
             if let Some(action_name) = action_name
@@ -17001,6 +17016,8 @@ fn emit_windows_native_application(
                 || view_property(element, "accessibility_value").is_some()
                 || view_property(element, "accessibility_role").is_some()
                 || view_property(element, "accessibility_hidden").is_some()
+                || view_property(element, "accessibility_action_label").is_some()
+                || view_property(element, "accessibility_actions").is_some()
                 || (element.kind == "TextInput"
                     && view_property(element, "validation_message").is_some())
                 || (element.kind == "Image" && view_property(element, "alt").is_some())
@@ -21900,6 +21917,30 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 out.push_str(&format!(
                     "flux__win_accessibility_set_description(context->control_windows[{index}], {value});
 "
+                ));
+            }
+            if view_property(element, "accessibility_description").is_none()
+                && !(element.kind == "TextInput"
+                    && view_property(element, "validation_message").is_some())
+                && let Some(property) = view_property(element, "accessibility_actions")
+            {
+                let actions =
+                    static_string_list(&property.value, signatures, "accessibilityActions")?;
+                let action_description = format!("Actions: {}", actions.join("; "));
+                out.push_str(&format!(
+                    "flux__win_accessibility_set_description(context->control_windows[{index}], {});\n",
+                    c_string(&action_description)
+                ));
+            }
+            if let Some(property) = view_property(element, "accessibility_action_label") {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                out.push_str(&format!(
+                    "if (context->control_windows[{index}] != NULL && flux__win_accessibility != NULL) {{ wchar_t *flux__win_view_{view_identity}_accessibility_action_{index} = flux__win_accessibility_wide({value}); if (flux__win_view_{view_identity}_accessibility_action_{index} != NULL) {{ (void)flux__win_accessibility->lpVtbl->SetHwndPropStr(flux__win_accessibility, context->control_windows[{index}], OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_DEFAULTACTION, flux__win_view_{view_identity}_accessibility_action_{index}); free(flux__win_view_{view_identity}_accessibility_action_{index}); }} }}\n"
                 ));
             }
             if let Some(property) = view_property(element, "accessibility_value") {
