@@ -73600,6 +73600,129 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_semantic_text_padding() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state inset: i64 = 5
+    grid columns: 1fr
+    grid rows: auto auto auto auto auto
+    Nav navigation at 1,1
+        label: "Navigation"
+        paddingStart: inset
+        paddingEnd: 9
+        alignX: "start"
+    Chart chart at 2,1
+        label: "Chart"
+        padding: 2
+    Card card at 3,1
+        title: "Card"
+        paddingTop: 3
+    Header header at 4,1
+        text: "Header"
+        paddingBottom: 4
+    Content content at 5,1
+        label: "Content"
+        paddingStart: 6
+}
+
+route detail = Detail
+app Screen(layoutDirection: "rtl")
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary semantic text-padding route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary semantic text padding should lower for Windows");
+
+    for index in 0..5 {
+        assert!(windows.contains(&format!(
+            "static const flux__win_text_layout_state flux__win_view_1_text_layout_initial_{index}"
+        )));
+        assert!(windows.contains(&format!(
+            "SetWindowSubclass(context->control_windows[{index}], flux__win_text_layout_proc"
+        )));
+    }
+    assert!(
+        windows.contains("flux__win_view_1_next_padding_start_0 = flux__ui_view_1_state_inset")
+    );
+    assert!(windows.contains(
+        "flux__win_layout_view_1(context, flux__win_view_1_refresh_client.right - flux__win_view_1_refresh_client.left"
+    ));
+    assert!(windows.contains("state->rtl ? physical_padding_end : physical_padding_start"));
+
+    let invalid = source.replace("padding: 2", "padding: -1");
+    let invalid_database = fluxc::semantic::SemanticDatabase::analyze(&invalid, SourceId::UNKNOWN)
+        .expect("invalid static secondary semantic padding should analyze before lowering");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        invalid_database.program(),
+        invalid_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("negative secondary semantic padding must fail lowering");
+    assert!(
+        error
+            .message
+            .contains("padding must be non-negative and fit within a 32-bit signed integer"),
+        "unexpected semantic padding diagnostic: {:?}",
+        error.message
+    );
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-semantic-padding-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)
+            .expect("secondary semantic-padding syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary semantic-padding C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary semantic-padding Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary semantic-padding Windows C failed syntax validation:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_text_input_state() {
     let source = r#"
 fn openSecondary() -> void {

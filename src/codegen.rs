@@ -16969,7 +16969,15 @@ fn emit_windows_native_application(
                         && matches!(property.name.as_str(), "primary" | "size"))
                     || (matches!(
                         element.kind.as_str(),
-                        "Button" | "Toggle" | "Radio" | "TextInput"
+                        "Button"
+                            | "Toggle"
+                            | "Radio"
+                            | "TextInput"
+                            | "Nav"
+                            | "Chart"
+                            | "Card"
+                            | "Header"
+                            | "Content"
                     ) && matches!(
                         property.name.as_str(),
                         "padding"
@@ -17055,7 +17063,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.padding/Toggle.padding/Radio.padding/TextInput.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/clip/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.padding/Toggle.padding/Radio.padding/TextInput.padding/Nav.padding/Chart.padding/Card.padding/Header.padding/Content.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/clip/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -17256,7 +17264,16 @@ fn emit_windows_native_application(
                     }
                     if matches!(
                         element.kind.as_str(),
-                        "Text" | "Button" | "Toggle" | "Radio" | "TextInput"
+                        "Text"
+                            | "Button"
+                            | "Toggle"
+                            | "Radio"
+                            | "TextInput"
+                            | "Nav"
+                            | "Chart"
+                            | "Card"
+                            | "Header"
+                            | "Content"
                     ) && matches!(
                         property.name.as_str(),
                         "padding"
@@ -22757,7 +22774,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 String::new()
             };
             let (secondary_preferred_horizontal_padding, secondary_preferred_vertical_padding) =
-                if element.kind == "Text" && windows_text_has_padding(element) {
+                if windows_text_layout_surface(element) && windows_text_has_padding(element) {
                     let padding_start = secondary_text_padding_value("padding_start")?;
                     let padding_end = secondary_text_padding_value("padding_end")?;
                     let padding_top = secondary_text_padding_value("padding_top")?;
@@ -23693,9 +23710,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     "if (context->text_fonts != NULL && context->text_font_families != NULL && context->text_font_sizes != NULL && context->text_font_bold != NULL && context->text_font_italic != NULL && context->text_font_underline != NULL && context->text_font_strikethrough != NULL && context->text_font_dpis != NULL && context->text_font_initialized != NULL && context->text_font_count > {text_font_slot}) flux__win_apply_font(context->control_windows[{index}], &context->text_fonts[{text_font_slot}], &context->text_font_families[{text_font_slot}], &context->text_font_sizes[{text_font_slot}], &context->text_font_bold[{text_font_slot}], &context->text_font_italic[{text_font_slot}], &context->text_font_underline[{text_font_slot}], &context->text_font_strikethrough[{text_font_slot}], &context->text_font_dpis[{text_font_slot}], &context->text_font_initialized[{text_font_slot}], {font_family}, {size}, {bold}, {italic}, {underline}, {strikethrough});\n"
                 ));
             }
-            if element.kind == "Text"
-                && windows_element_uses_custom_text_layout(element, signatures)
-            {
+            if windows_element_uses_custom_text_layout(element, signatures) {
                 let dynamic_letter_spacing = view_property(element, "letter_spacing")
                     .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none());
                 let dynamic_line_height = view_property(element, "line_height_percent")
