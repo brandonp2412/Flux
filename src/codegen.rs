@@ -16710,6 +16710,22 @@ fn emit_windows_native_application(
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let uses_windows_images = view.elements.iter().any(|element| element.kind == "Image")
+        || secondary_window_views.iter().any(|(_, secondary_view)| {
+            secondary_view
+                .elements
+                .iter()
+                .any(|element| element.kind == "Image")
+        });
+    let windows_image_slots = std::iter::once(view.elements.len())
+        .chain(
+            secondary_window_views
+                .iter()
+                .map(|(_, secondary_view)| secondary_view.elements.len()),
+        )
+        .max()
+        .unwrap_or(0)
+        .max(1);
     for (view_identity, secondary_view) in &secondary_window_views {
         if !secondary_view.params.is_empty() {
             return Err(diag(
@@ -16764,14 +16780,15 @@ fn emit_windows_native_application(
         }
         for element in &secondary_view.elements {
             let action_name = match element.kind.as_str() {
-                "Text" | "TextInput" | "Nav" | "Chart" | "Card" | "Header" | "Content" => None,
+                "Text" | "TextInput" | "Image" | "Nav" | "Chart" | "Card" | "Header"
+                | "Content" => None,
                 "Button" => Some("on_press"),
                 "Toggle" => Some("on_change"),
                 "Radio" => Some("on_select"),
                 _ => {
                     return Err(diag(
                         element.kind_span,
-                        "Windows distinct secondary window views currently support Text, TextInput, Button, Toggle, Radio, Nav, Chart, Card, Header, and Content elements only",
+                        "Windows distinct secondary window views currently support Text, TextInput, Image, Button, Toggle, Radio, Nav, Chart, Card, Header, and Content elements only",
                     ));
                 }
             };
@@ -16796,6 +16813,12 @@ fn emit_windows_native_application(
                                 | "readOnly"
                                 | "visible"
                                 | "enabled"
+                        )
+                    }
+                    "Image" => {
+                        matches!(
+                            property.name.as_str(),
+                            "source" | "fit" | "visible" | "enabled"
                         )
                     }
                     "Toggle" => {
@@ -16823,7 +16846,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title, placeholder/readOnly, checked/selected, visible, enabled, and their supported activation/change action",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit, placeholder/readOnly, checked/selected, visible, enabled, and their supported activation/change action",
                     ));
                 }
                 if data_property {
@@ -18912,7 +18935,7 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
     } else {
         out.push_str("static void flux__windows_release_validation_state(FluxWindowsWindowContext *context) { (void)context; }\n");
     }
-    if view.elements.iter().any(|element| element.kind == "Image") {
+    if uses_windows_images {
         out.push_str("static void flux__windows_release_image_bitmaps(FluxWindowsWindowContext *context) { if (context == NULL || context->image_bitmaps == NULL) return; for (size_t index = 0; index < context->image_bitmap_count; ++index) if (context->image_bitmaps[index] != NULL) DeleteObject(context->image_bitmaps[index]); free(context->image_bitmaps); context->image_bitmaps = NULL; context->image_bitmap_count = 0; }\n");
     } else {
         out.push_str("static void flux__windows_release_image_bitmaps(FluxWindowsWindowContext *context) { (void)context; }\n");
@@ -19292,8 +19315,8 @@ static void flux__win_set_border_style(HWND control, int *current, const char *v
 }
 "#);
     }
-    if view.elements.iter().any(|element| element.kind == "Image") {
-        out.push_str(&format!("static HBITMAP *flux__windows_image_bitmap_storage(FluxWindowsWindowContext *context, size_t slot) {{ if (context == NULL || slot >= {}) return NULL; if (context->image_bitmaps == NULL) {{ context->image_bitmaps = (HBITMAP *)calloc({}, sizeof(HBITMAP)); if (context->image_bitmaps == NULL) abort(); context->image_bitmap_count = {}; }} return &context->image_bitmaps[slot]; }}\n", view.elements.len(), view.elements.len().max(1), view.elements.len()));
+    if uses_windows_images {
+        out.push_str(&format!("static HBITMAP *flux__windows_image_bitmap_storage(FluxWindowsWindowContext *context, size_t slot) {{ if (context == NULL || slot >= {windows_image_slots}) return NULL; if (context->image_bitmaps == NULL) {{ context->image_bitmaps = (HBITMAP *)calloc({windows_image_slots}, sizeof(HBITMAP)); if (context->image_bitmaps == NULL) abort(); context->image_bitmap_count = {windows_image_slots}; }} return &context->image_bitmaps[slot]; }}\n"));
         out.push_str(r#"static char *flux__win_image_source_path(const char *source) { if (source == NULL) return NULL; size_t source_length = 0; while (source_length <= 65536 && source[source_length] != '\0') source_length += 1; if (source_length > 65536) return NULL; if (strncmp(source, "asset://", 8) != 0) return _strdup(source); const char *relative = source + 8; if (*relative == '\0' || *relative == '/' || strstr(relative, "..") != NULL) return NULL; char module[4096]; DWORD length = GetModuleFileNameA(NULL, module, (DWORD)sizeof(module)); if (length == 0 || length >= sizeof(module)) return NULL; char *separator = strrchr(module, '\\'); if (separator == NULL) return NULL; *separator = '\0'; size_t size = strlen(module) + strlen("\\assets\\") + strlen(relative) + 1; char *path = (char *)malloc(size); if (path == NULL) return NULL; snprintf(path, size, "%s\\assets\\%s", module, relative); return path; }
 static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *source, const char *fit) {
     if (control == NULL || current == NULL) return;
@@ -20318,7 +20341,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
         out.push_str(" }\n");
         out.push_str(&format!(
-            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0; free(context->control_windows); context->control_windows = NULL; }}\n"
+            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0; flux__windows_release_image_bitmaps(context); free(context->control_windows); context->control_windows = NULL; }}\n"
         ));
         secondary_save_cases.push_str(&format!(
             " case UINT32_C({view_identity}): flux__windows_save_view_{view_identity}_state(context); return;"
@@ -21523,21 +21546,47 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             ));
         }
         for (index, element) in secondary_view.elements.iter().enumerate() {
-            let text_property_name = match element.kind.as_str() {
-                "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => "label",
-                "Card" => "title",
-                _ => "text",
-            };
-            if let Some(property) = view_property(element, text_property_name) {
-                let value = ui_expr_c_for_view_identity(
-                    &property.value,
-                    secondary_view,
-                    signatures,
-                    Some(*view_identity),
-                )?;
+            if element.kind == "Image" {
+                let source = if let Some(property) = view_property(element, "source") {
+                    ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?
+                } else {
+                    c_string("")
+                };
+                let fit = if let Some(property) = view_property(element, "fit") {
+                    ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?
+                } else {
+                    c_string("contain")
+                };
                 out.push_str(&format!(
-                    "flux__win_set_text_if_changed(context->control_windows[{index}], {value});\n"
+                    "flux__win_set_bitmap(context->control_windows[{index}], flux__windows_image_bitmap_storage(context, {index}), {source}, {fit});\n"
                 ));
+            } else {
+                let text_property_name = match element.kind.as_str() {
+                    "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => "label",
+                    "Card" => "title",
+                    _ => "text",
+                };
+                if let Some(property) = view_property(element, text_property_name) {
+                    let value = ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                    out.push_str(&format!(
+                        "flux__win_set_text_if_changed(context->control_windows[{index}], {value});\n"
+                    ));
+                }
             }
             if let Some(property) = view_property(element, "visible") {
                 let value = ui_expr_c_for_view_identity(
@@ -22435,14 +22484,18 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             out.push_str(&format!("context->control_windows = (HWND *)calloc({}, sizeof(HWND)); if (context->control_windows == NULL) return flux__win_create_view_window_failure(window, primary);\n", secondary_view.elements.len()));
         }
         for (index, element) in secondary_view.elements.iter().enumerate() {
-            let text_property_name = match element.kind.as_str() {
-                "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => "label",
-                "Card" => "title",
-                _ => "text",
+            let text = if element.kind == "Image" {
+                String::new()
+            } else {
+                let text_property_name = match element.kind.as_str() {
+                    "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => "label",
+                    "Card" => "title",
+                    _ => "text",
+                };
+                view_property(element, text_property_name)
+                    .and_then(|property| static_expr_str(&property.value, signatures))
+                    .unwrap_or_else(|| element.name.clone())
             };
-            let text = view_property(element, text_property_name)
-                .and_then(|property| static_expr_str(&property.value, signatures))
-                .unwrap_or_else(|| element.name.clone());
             let (class, style, id) = match element.kind.as_str() {
                 "Button" => (
                     "BUTTON",
@@ -22472,6 +22525,11 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     "EDIT",
                     "WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_LEFT | ES_AUTOHSCROLL",
                     (1000 + index).to_string(),
+                ),
+                "Image" => (
+                    "STATIC",
+                    "WS_CHILD | WS_VISIBLE | SS_BITMAP | SS_CENTERIMAGE",
+                    "0".to_string(),
                 ),
                 "Text" | "Nav" | "Chart" | "Card" | "Header" | "Content" => {
                     ("STATIC", "WS_CHILD | WS_VISIBLE | SS_LEFT", "0".to_string())

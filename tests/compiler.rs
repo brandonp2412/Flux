@@ -71572,6 +71572,103 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_image_controls() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state imageSource: str = "cover.bmp"
+    state imageFit: str = "contain"
+    grid columns: 1fr
+    grid rows: auto auto
+    Image hero at 1,1
+        source: imageSource
+        fit: imageFit
+    Image backup at 2,1
+        source: "backup.bmp"
+        fit: "scaleDown"
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary Image route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary Image route should lower for Windows");
+
+    assert!(windows.contains(
+        "if (context == NULL || slot >= 2) return NULL; if (context->image_bitmaps == NULL) { context->image_bitmaps = (HBITMAP *)calloc(2, sizeof(HBITMAP));"
+    ));
+    assert!(
+        windows
+            .matches(r#"CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_BITMAP | SS_CENTERIMAGE"#)
+            .count()
+            >= 2
+    );
+    assert!(windows.contains(
+        "flux__win_set_bitmap(context->control_windows[0], flux__windows_image_bitmap_storage(context, 0), flux__ui_view_1_state_imageSource, flux__ui_view_1_state_imageFit);"
+    ));
+    assert!(windows.contains(
+        r#"flux__win_set_bitmap(context->control_windows[1], flux__windows_image_bitmap_storage(context, 1), "backup.bmp", "scaleDown");"#
+    ));
+    assert!(windows.contains(
+        "flux__windows_release_image_bitmaps(context); free(context->control_windows); context->control_windows = NULL;"
+    ));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-image-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("secondary Image syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary Image C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary Image Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary Image Windows C failed syntax validation:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_window_route_identity_invalidates_application_codegen_cache() {
     let first_source = r#"
 fn openSecondary() -> void {
