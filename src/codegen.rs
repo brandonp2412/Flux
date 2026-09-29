@@ -16894,7 +16894,8 @@ fn emit_windows_native_application(
                                 | "wrapMode"
                                 | "ellipsize"
                         ))
-                    || (element.kind == "Button" && property.name == "primary")
+                    || (element.kind == "Button"
+                        && matches!(property.name.as_str(), "primary" | "size"))
                     || matches!(
                         property.name.as_str(),
                         "accessibility_label"
@@ -16968,7 +16969,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Button.primary/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -16984,6 +16985,16 @@ fn emit_windows_native_application(
                                 "{} must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token",
                                 internal_name_to_source(&property.name)
                             ),
+                        ));
+                    }
+                    if element.kind == "Button"
+                        && property.name == "size"
+                        && let Some(value) = static_expr_i64(&property.value, signatures)
+                        && (value <= 0 || value > i64::from(i32::MAX))
+                    {
+                        return Err(diag(
+                            property.value.span,
+                            "Button.size must be greater than zero and fit within a 32-bit signed integer",
                         ));
                     }
                     if element.kind == "Text"
@@ -19312,7 +19323,7 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
         }
         out.push_str("}\nstatic void flux__windows_release_button_fonts(FluxWindowsWindowContext *context) { if (context == NULL) return; if (context->button_fonts != NULL) for (size_t index = 0; index < context->button_font_count; ++index) if (context->button_fonts[index] != NULL) DeleteObject(context->button_fonts[index]); free(context->button_fonts); free(context->button_font_sizes); free(context->button_font_dpis); context->button_fonts = NULL; context->button_font_sizes = NULL; context->button_font_dpis = NULL; context->button_font_count = 0; }\n");
     } else {
-        out.push_str("static void flux__windows_save_button_fonts(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_restore_button_fonts(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_release_button_fonts(FluxWindowsWindowContext *context) { (void)context; }\n");
+        out.push_str("static void flux__windows_save_button_fonts(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_restore_button_fonts(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_release_button_fonts(FluxWindowsWindowContext *context) { if (context == NULL) return; if (context->button_fonts != NULL) for (size_t index = 0; index < context->button_font_count; ++index) if (context->button_fonts[index] != NULL) DeleteObject(context->button_fonts[index]); free(context->button_fonts); free(context->button_font_sizes); free(context->button_font_dpis); context->button_fonts = NULL; context->button_font_sizes = NULL; context->button_font_dpis = NULL; context->button_font_count = 0; }\n");
     }
     let text_layout_elements = view
         .elements
@@ -19571,6 +19582,12 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
         .elements
         .iter()
         .any(|element| element.kind == "Button" && view_property(element, "size").is_some())
+        || secondary_window_views.iter().any(|(_, secondary_view)| {
+            secondary_view
+                .elements
+                .iter()
+                .any(|element| element.kind == "Button" && view_property(element, "size").is_some())
+        })
     {
         out.push_str("static void flux__win_set_button_size(HWND control, HFONT *font, int64_t *current_size, UINT *current_dpi, int64_t size) { if (control == NULL || font == NULL || current_size == NULL || current_dpi == NULL) return; if (size <= 0 || size > INT32_MAX) { fputs(\"Flux runtime error: Button.size must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); } if (*font != NULL && *current_size == size && *current_dpi == flux__win_dpi) return; if (*font != NULL) { DeleteObject(*font); *font = NULL; } *font = CreateFontW(-flux__win_scale(size), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L\"Segoe UI\"); if (*font == NULL) { fputs(\"Flux runtime error: unable to create Windows Button font\\n\", stderr); abort(); } *current_size = size; *current_dpi = flux__win_dpi; SendMessageW(control, WM_SETFONT, (WPARAM)*font, TRUE); }\n");
     }
@@ -21209,7 +21226,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             format!(" flux__windows_release_view_{view_identity}_params(context);")
         };
         out.push_str(&format!(
-            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0; free(context->text_layout_states); context->text_layout_states = NULL; context->text_layout_count = 0;{release_params}{secondary_subclass_release} flux__windows_release_drop_targets(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_image_bitmaps(context); flux__windows_release_style_state(context); free(context->control_windows); context->control_windows = NULL; }}\n"
+            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0; free(context->text_layout_states); context->text_layout_states = NULL; context->text_layout_count = 0; flux__windows_release_button_fonts(context);{release_params}{secondary_subclass_release} flux__windows_release_drop_targets(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_image_bitmaps(context); flux__windows_release_style_state(context); free(context->control_windows); context->control_windows = NULL; }}\n"
         ));
         secondary_save_cases.push_str(&format!(
             " case UINT32_C({view_identity}): flux__windows_save_view_{view_identity}_state(context); return;"
@@ -22592,6 +22609,25 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 out.push_str(&format!(
                     "flux__win_set_button_primary(context->control_windows[{index}], {value});
 "
+                ));
+            }
+            if element.kind == "Button"
+                && let Some(property) = view_property(element, "size")
+            {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                let button_font_slot = secondary_view.elements[..index]
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.kind == "Button" && view_property(candidate, "size").is_some()
+                    })
+                    .count();
+                out.push_str(&format!(
+                    "if (context->button_fonts != NULL && context->button_font_sizes != NULL && context->button_font_dpis != NULL && context->button_font_count > {button_font_slot}) flux__win_set_button_size(context->control_windows[{index}], &context->button_fonts[{button_font_slot}], &context->button_font_sizes[{button_font_slot}], &context->button_font_dpis[{button_font_slot}], {value});\n"
                 ));
             }
             if let Some(property) = view_property(element, "background_color")
@@ -24336,6 +24372,14 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             .enumerate()
             .filter(|(_, element)| windows_element_uses_custom_text_layout(element, signatures))
             .collect::<Vec<_>>();
+        let secondary_sized_buttons = secondary_view
+            .elements
+            .iter()
+            .enumerate()
+            .filter(|(_, element)| {
+                element.kind == "Button" && view_property(element, "size").is_some()
+            })
+            .collect::<Vec<_>>();
         let secondary_uses_tooltips = secondary_view.elements.iter().any(|element| {
             view_property(element, "tooltip").is_some()
                 || (element.kind == "TextInput"
@@ -24359,6 +24403,15 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     "text_layout_states[{slot}] = flux__win_view_{view_identity}_text_layout_initial_{element_index};\n"
                 ));
             }
+        }
+        if !secondary_sized_buttons.is_empty() {
+            out.push_str(&format!(
+                "context->button_fonts = (HFONT *)calloc({}, sizeof(HFONT)); context->button_font_sizes = (int64_t *)calloc({}, sizeof(int64_t)); context->button_font_dpis = (UINT *)calloc({}, sizeof(UINT)); if (context->button_fonts == NULL || context->button_font_sizes == NULL || context->button_font_dpis == NULL) return flux__win_create_view_window_failure(window, primary); context->button_font_count = {};\n",
+                secondary_sized_buttons.len(),
+                secondary_sized_buttons.len(),
+                secondary_sized_buttons.len(),
+                secondary_sized_buttons.len()
+            ));
         }
         let secondary_submit_subclasses = secondary_view
             .elements
