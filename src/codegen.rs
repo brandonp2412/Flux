@@ -16710,18 +16710,37 @@ fn emit_windows_native_application(
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    for (_, secondary_view) in &secondary_window_views {
+    for (view_identity, secondary_view) in &secondary_window_views {
         if !secondary_view.params.is_empty() {
             return Err(diag(
                 secondary_view.name_span,
                 "Windows secondary window views with parameters are not supported yet",
             ));
         }
-        if !secondary_view.states.is_empty() || !secondary_view.derived.is_empty() {
+        if !secondary_view.derived.is_empty() {
             return Err(diag(
                 secondary_view.name_span,
-                "Windows distinct secondary window views are currently limited to stateless static content",
+                "Windows distinct secondary window derived values are not supported yet",
             ));
+        }
+        for state in &secondary_view.states {
+            let valid_initial = match signatures.canonical_type(&state.ty) {
+                Type::Bool => static_expr_bool(&state.initial, signatures).is_some(),
+                Type::I64 => static_expr_i64(&state.initial, signatures).is_some(),
+                Type::Str => static_expr_str(&state.initial, signatures).is_some(),
+                _ => {
+                    return Err(diag(
+                        state.type_span,
+                        "Windows distinct secondary window state currently supports bool, i64, and str",
+                    ));
+                }
+            };
+            if !valid_initial {
+                return Err(diag(
+                    state.initial.span,
+                    "Windows distinct secondary window state requires a compile-time initial value",
+                ));
+            }
         }
         if secondary_view.grid.flow.is_some()
             || secondary_view.grid.scroll == Some(true)
@@ -16741,29 +16760,36 @@ fn emit_windows_native_application(
             }
             let on_press_source = internal_name_to_source("on_press");
             for property in &element.properties {
-                let supported = property.name == "text"
+                let supported = matches!(property.name.as_str(), "text" | "visible" | "enabled")
                     || (element.kind == "Button"
                         && (property.name == "on_press" || property.name == on_press_source));
                 if !supported {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support static text and Button.onPress only",
+                        "Windows distinct secondary window elements currently support text, visible, enabled, and Button.onPress only",
                     ));
                 }
-                if property.name == "text" && static_expr_str(&property.value, signatures).is_none()
-                {
-                    return Err(diag(
-                        property.value.span,
-                        "Windows distinct secondary window text must be a compile-time string value",
-                    ));
+                if matches!(property.name.as_str(), "text" | "visible" | "enabled") {
+                    ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
                 }
             }
             if let Some(property) = view_property(element, "on_press") {
-                if property.transition.is_some() || !matches!(property.value.kind, ExprKind::Var(_))
-                {
+                if property.transition.is_some() {
+                    ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                } else if !matches!(property.value.kind, ExprKind::Var(_)) {
                     return Err(diag(
                         property.value.span,
-                        "Windows distinct secondary window Button.onPress requires a named fn() -> void callback",
+                        "Windows distinct secondary window Button.onPress requires a named fn() -> void callback or state transition",
                     ));
                 }
             }
@@ -18272,6 +18298,37 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
                     state.type_span,
                     "bootstrap Windows view state currently supports bool, i64, and borrowed str; owned aggregate state remains pending",
                 ));
+            }
+        }
+    }
+    for (view_identity, secondary_view) in &secondary_window_views {
+        for state in &secondary_view.states {
+            let state_name = ui_state_c_name_for_view_identity(&state.name, Some(*view_identity));
+            match signatures.canonical_type(&state.ty) {
+                Type::Bool => {
+                    let initial = static_expr_bool(&state.initial, signatures)
+                        .expect("secondary Windows bool state initial was validated above");
+                    out.push_str(&format!(
+                        "static bool {state_name} = {};\n",
+                        if initial { "true" } else { "false" }
+                    ));
+                }
+                Type::I64 => {
+                    let initial = static_expr_i64(&state.initial, signatures)
+                        .expect("secondary Windows i64 state initial was validated above");
+                    out.push_str(&format!(
+                        "static int64_t {state_name} = INT64_C({initial});\n"
+                    ));
+                }
+                Type::Str => {
+                    let initial = static_expr_str(&state.initial, signatures)
+                        .expect("secondary Windows str state initial was validated above");
+                    out.push_str(&format!(
+                        "static const char *{state_name} = {};\n",
+                        c_string(&initial)
+                    ));
+                }
+                _ => unreachable!("secondary Windows state type was validated above"),
             }
         }
     }
@@ -20057,10 +20114,113 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     let mut secondary_save_cases = String::new();
     let mut secondary_restore_cases = String::new();
     let mut secondary_release_cases = String::new();
-    for (view_identity, _) in &secondary_window_views {
-        secondary_save_cases.push_str(&format!(" case UINT32_C({view_identity}): return;"));
-        secondary_restore_cases.push_str(&format!(" case UINT32_C({view_identity}): break;"));
-        secondary_release_cases.push_str(&format!(" case UINT32_C({view_identity}): free(context->control_windows); context->control_windows = NULL; return;"));
+    for (view_identity, secondary_view) in &secondary_window_views {
+        let secondary_scalar_states = secondary_view
+            .states
+            .iter()
+            .filter(|state| matches!(signatures.canonical_type(&state.ty), Type::Bool | Type::I64))
+            .collect::<Vec<_>>();
+        let secondary_string_states = secondary_view
+            .states
+            .iter()
+            .filter(|state| signatures.canonical_type(&state.ty) == Type::Str)
+            .collect::<Vec<_>>();
+        let scalar_type = format!("FluxWindowsView{view_identity}ScalarState");
+        if !secondary_scalar_states.is_empty() {
+            out.push_str("typedef struct {");
+            for (index, state) in secondary_scalar_states.iter().enumerate() {
+                let field_type = match signatures.canonical_type(&state.ty) {
+                    Type::Bool => "bool",
+                    Type::I64 => "int64_t",
+                    _ => unreachable!(),
+                };
+                out.push_str(&format!(" {field_type} value_{index};"));
+            }
+            out.push_str(&format!(" }} {scalar_type};\n"));
+        }
+        out.push_str(&format!(
+            "static void flux__windows_save_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return;"
+        ));
+        if !secondary_scalar_states.is_empty() {
+            out.push_str(&format!(
+                " if (context->scalar_view_state == NULL) {{ context->scalar_view_state = calloc(1, sizeof({scalar_type})); if (context->scalar_view_state == NULL) abort(); }} {scalar_type} *scalar_state = ({scalar_type} *)context->scalar_view_state;"
+            ));
+            for (index, state) in secondary_scalar_states.iter().enumerate() {
+                out.push_str(&format!(
+                    " scalar_state->value_{index} = {};",
+                    ui_state_c_name_for_view_identity(&state.name, Some(*view_identity))
+                ));
+            }
+        }
+        if !secondary_string_states.is_empty() {
+            out.push_str(&format!(
+                " if (context->string_view_state == NULL) {{ context->string_view_state = (char **)calloc({}, sizeof(char *)); if (context->string_view_state == NULL) abort(); context->string_view_state_count = {}; }}",
+                secondary_string_states.len(),
+                secondary_string_states.len()
+            ));
+            for (index, state) in secondary_string_states.iter().enumerate() {
+                let state_name =
+                    ui_state_c_name_for_view_identity(&state.name, Some(*view_identity));
+                out.push_str(&format!(
+                    " const char *string_value_{index} = {state_name} != NULL ? {state_name} : \"\"; size_t string_length_{index} = 0; if (!flux__win_bounded_length(string_value_{index}, 65536, &string_length_{index})) abort(); char *string_copy_{index} = (char *)malloc(string_length_{index} + 1); if (string_copy_{index} == NULL) abort(); memcpy(string_copy_{index}, string_value_{index}, string_length_{index} + 1); free(context->string_view_state[{index}]); context->string_view_state[{index}] = string_copy_{index};"
+                ));
+            }
+        }
+        out.push_str(" }\n");
+        out.push_str(&format!(
+            "static void flux__windows_restore_view_{view_identity}_state(FluxWindowsWindowContext *context) {{"
+        ));
+        if !secondary_scalar_states.is_empty() {
+            out.push_str(&format!(
+                " {scalar_type} *scalar_state = context != NULL ? ({scalar_type} *)context->scalar_view_state : NULL;"
+            ));
+            for (index, state) in secondary_scalar_states.iter().enumerate() {
+                let state_name =
+                    ui_state_c_name_for_view_identity(&state.name, Some(*view_identity));
+                let initial = match signatures.canonical_type(&state.ty) {
+                    Type::Bool => {
+                        if static_expr_bool(&state.initial, signatures)
+                            .expect("secondary Windows bool state initial was validated above")
+                        {
+                            "true".to_owned()
+                        } else {
+                            "false".to_owned()
+                        }
+                    }
+                    Type::I64 => format!(
+                        "INT64_C({})",
+                        static_expr_i64(&state.initial, signatures)
+                            .expect("secondary Windows i64 state initial was validated above")
+                    ),
+                    _ => unreachable!(),
+                };
+                out.push_str(&format!(
+                    " {state_name} = scalar_state != NULL ? scalar_state->value_{index} : {initial};"
+                ));
+            }
+        }
+        for (index, state) in secondary_string_states.iter().enumerate() {
+            let state_name = ui_state_c_name_for_view_identity(&state.name, Some(*view_identity));
+            let initial = static_expr_str(&state.initial, signatures)
+                .expect("secondary Windows str state initial was validated above");
+            out.push_str(&format!(
+                " {state_name} = context != NULL && context->string_view_state != NULL && context->string_view_state[{index}] != NULL ? context->string_view_state[{index}] : {};",
+                c_string(&initial)
+            ));
+        }
+        out.push_str(" }\n");
+        out.push_str(&format!(
+            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0; free(context->control_windows); context->control_windows = NULL; }}\n"
+        ));
+        secondary_save_cases.push_str(&format!(
+            " case UINT32_C({view_identity}): flux__windows_save_view_{view_identity}_state(context); return;"
+        ));
+        secondary_restore_cases.push_str(&format!(
+            " case UINT32_C({view_identity}): flux__windows_restore_view_{view_identity}_state(context); break;"
+        ));
+        secondary_release_cases.push_str(&format!(
+            " case UINT32_C({view_identity}): flux__windows_release_view_{view_identity}_state(context); return;"
+        ));
     }
     out.push_str(&format!("static void flux__windows_save_root_view_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; flux__windows_save_scalar_view_state(context); flux__windows_save_string_view_state(context); flux__windows_save_control_windows(context); flux__windows_save_text_fonts(context); flux__windows_save_button_fonts(context); flux__windows_save_text_layouts(context); flux__windows_save_borders(context); flux__windows_save_control_subclasses(context); flux__windows_save_control_gestures(context); }}\nstatic void flux__windows_restore_root_view_state(FluxWindowsWindowContext *context) {{ flux__windows_restore_scalar_view_state(context); flux__windows_restore_string_view_state(context); flux__windows_restore_control_windows(context); flux__windows_restore_text_fonts(context); flux__windows_restore_button_fonts(context); flux__windows_restore_text_layouts(context); flux__windows_restore_borders(context); flux__windows_restore_control_subclasses(context); flux__windows_restore_control_gestures(context); }}\nstatic void flux__windows_release_root_view_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; flux__windows_release_string_view_state(context); flux__windows_release_scalar_view_state(context); flux__windows_release_drop_targets(context); flux__windows_release_control_gestures(context); flux__windows_release_control_subclasses(context); flux__windows_release_borders(context); flux__windows_release_text_layouts(context); flux__windows_release_button_fonts(context); flux__windows_release_text_fonts(context); flux__windows_release_style_state(context); flux__windows_release_image_bitmaps(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_control_windows(context); }}\nstatic void flux__windows_save_view_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; switch (context->view_identity) {{ case UINT32_C({root_view_identity}): flux__windows_save_root_view_state(context); return;{secondary_save_cases} default: return; }} }}\nstatic void flux__windows_restore_view_state(FluxWindowsWindowContext *context, HWND hwnd) {{ if (context == NULL) return; switch (context->view_identity) {{ case UINT32_C({root_view_identity}): flux__windows_restore_root_view_state(context); break;{secondary_restore_cases} default: return; }} if (hwnd != NULL) flux__windows_restore_metrics(hwnd); }}\nstatic void flux__windows_release_view_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; switch (context->view_identity) {{ case UINT32_C({root_view_identity}): flux__windows_release_root_view_state(context); return;{secondary_release_cases} default: return; }} }}\n"));
     if uses_key_events || uses_passive_keyboard_activation || uses_shortcuts {
@@ -21237,10 +21397,51 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             ));
         }
     }
-    let secondary_refresh_dispatch = secondary_window_views
-        .iter()
-        .map(|(view_identity, _)| format!(" case UINT32_C({view_identity}): return;"))
-        .collect::<String>();
+    let mut secondary_refresh_dispatch = String::new();
+    for (view_identity, secondary_view) in &secondary_window_views {
+        out.push_str(&format!(
+            "static void flux__win_refresh_view_{view_identity}(void) {{ FluxWindowsWindowContext *context = flux__windows_active_context; if (context == NULL || context->view_identity != UINT32_C({view_identity}) || context->control_windows == NULL) return;\n"
+        ));
+        for (index, element) in secondary_view.elements.iter().enumerate() {
+            if let Some(property) = view_property(element, "text") {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                out.push_str(&format!(
+                    "flux__win_set_text_if_changed(context->control_windows[{index}], {value});\n"
+                ));
+            }
+            if let Some(property) = view_property(element, "visible") {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                out.push_str(&format!(
+                    "ShowWindow(context->control_windows[{index}], ({value}) ? SW_SHOW : SW_HIDE);\n"
+                ));
+            }
+            if let Some(property) = view_property(element, "enabled") {
+                let value = ui_expr_c_for_view_identity(
+                    &property.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                out.push_str(&format!(
+                    "EnableWindow(context->control_windows[{index}], ({value}) ? TRUE : FALSE);\n"
+                ));
+            }
+        }
+        out.push_str("}\n");
+        secondary_refresh_dispatch.push_str(&format!(
+            " case UINT32_C({view_identity}): flux__win_refresh_view_{view_identity}(); return;"
+        ));
+    }
     out.push_str(&format!("flux__win_set_refreshing(previous_refreshing); }}\nstatic void flux__win_refresh(void) {{ if (flux__windows_active_context == NULL) return; switch (flux__windows_active_context->view_identity) {{ case UINT32_C({root_view_identity}): flux__win_refresh_root_view(); return;{secondary_refresh_dispatch} default: return; }} }}\n"));
     out.push_str("static bool flux__windows_app_foreground = false;\nstatic int flux__win_handle_root_view_command(WPARAM wparam, LPARAM lparam);\n");
     for (view_identity, _) in &secondary_window_views {
@@ -21471,6 +21672,20 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             let Some(action) = view_property(element, "on_press") else {
                 continue;
             };
+            if let Some(transition) = &action.transition {
+                let next = ui_expr_c_for_view_identity(
+                    &action.value,
+                    secondary_view,
+                    signatures,
+                    Some(*view_identity),
+                )?;
+                secondary_command_messages.push_str(&format!(
+                    "case {}: if (HIWORD(wparam) == BN_CLICKED) {{ {} = {next}; flux__win_refresh(); }} return 0;\n",
+                    1000 + index,
+                    ui_state_c_name_for_view_identity(&transition.state, Some(*view_identity))
+                ));
+                continue;
+            }
             let ExprKind::Var(function) = &action.value.kind else {
                 unreachable!("secondary Button.onPress shape was validated before emission");
             };
@@ -28180,6 +28395,18 @@ fn ui_state_c_name(name: &str) -> String {
     format!("flux__ui_state_{name}")
 }
 
+fn ui_state_c_name_for_view_identity(name: &str, view_identity: Option<usize>) -> String {
+    view_identity
+        .map(|view_identity| format!("flux__ui_view_{view_identity}_state_{name}"))
+        .unwrap_or_else(|| ui_state_c_name(name))
+}
+
+fn ui_derived_c_name_for_view_identity(name: &str, view_identity: Option<usize>) -> String {
+    view_identity
+        .map(|view_identity| format!("flux__ui_view_{view_identity}_derived_{name}"))
+        .unwrap_or_else(|| ui_derived_c_name(name))
+}
+
 fn ui_owned_state_c_name(name: &str) -> String {
     format!("flux__ui_state_owned_{name}")
 }
@@ -28729,6 +28956,15 @@ fn ui_expr_c(
     view: &crate::ast::ViewDef,
     signatures: &Signatures,
 ) -> Result<String, Diagnostic> {
+    ui_expr_c_for_view_identity(expr, view, signatures, None)
+}
+
+fn ui_expr_c_for_view_identity(
+    expr: &Expr,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+    view_identity: Option<usize>,
+) -> Result<String, Diagnostic> {
     if let Some(value) = fold_ui_primitive_expr(expr, signatures)? {
         return Ok(constant_c_value(&value));
     }
@@ -28765,10 +29001,10 @@ fn ui_expr_c(
                 return Ok(format!("INT64_C({value})"));
             }
             if view.states.iter().any(|state| state.name == *name) {
-                return Ok(ui_state_c_name(name));
+                return Ok(ui_state_c_name_for_view_identity(name, view_identity));
             }
             if view.derived.iter().any(|derived| derived.name == *name) {
-                return Ok(ui_derived_c_name(name));
+                return Ok(ui_derived_c_name_for_view_identity(name, view_identity));
             }
             let Some(constant) = signatures.constant(name) else {
                 return Err(diag(
@@ -28789,7 +29025,12 @@ fn ui_expr_c(
                     expr: double_negated,
                 } = &inner.kind
                 {
-                    return ui_expr_c(double_negated, view, signatures);
+                    return ui_expr_c_for_view_identity(
+                        double_negated,
+                        view,
+                        signatures,
+                        view_identity,
+                    );
                 }
             }
             if matches!(op, UnaryOp::Neg) {
@@ -28798,15 +29039,21 @@ fn ui_expr_c(
                     expr: double_negated,
                 } = &inner.kind
                 {
-                    let inner = ui_expr_c(double_negated, view, signatures)?;
+                    let inner = ui_expr_c_for_view_identity(
+                        double_negated,
+                        view,
+                        signatures,
+                        view_identity,
+                    )?;
                     return Ok(format!("(-flux_neg_i64({inner}))"));
                 }
                 if i64_expr_result_excludes_min(inner, signatures) {
-                    let inner = ui_expr_c(inner, view, signatures)?;
+                    let inner =
+                        ui_expr_c_for_view_identity(inner, view, signatures, view_identity)?;
                     return Ok(format!("(-({inner}))"));
                 }
             }
-            let inner = ui_expr_c(inner, view, signatures)?;
+            let inner = ui_expr_c_for_view_identity(inner, view, signatures, view_identity)?;
             Ok(match op {
                 UnaryOp::Neg => format!("flux_neg_i64({inner})"),
                 UnaryOp::Not => format!("(!({inner}))"),
@@ -28816,8 +29063,8 @@ fn ui_expr_c(
         ExprKind::Binary { left, op, right } => {
             let string_comparison =
                 matches!(op, BinOp::Eq | BinOp::Ne) && ui_expr_is_str(left, view, signatures);
-            let left_code = ui_expr_c(left, view, signatures)?;
-            let right_code = ui_expr_c(right, view, signatures)?;
+            let left_code = ui_expr_c_for_view_identity(left, view, signatures, view_identity)?;
+            let right_code = ui_expr_c_for_view_identity(right, view, signatures, view_identity)?;
             if let Some(code) =
                 same_checked_negated_binding_comparison_c(*op, left, right, &left_code)
             {
@@ -28837,11 +29084,13 @@ fn ui_expr_c(
                 return Ok(code);
             }
             if let Some(other) = boolean_resolution_other(*op, left, right, signatures) {
-                let other_code = ui_expr_c(other, view, signatures)?;
+                let other_code =
+                    ui_expr_c_for_view_identity(other, view, signatures, view_identity)?;
                 return Ok(format!("({left_code} {} {other_code})", c_operator(*op)));
             }
             if let Some(other) = boolean_left_resolution_other(*op, left, right, signatures) {
-                let other_code = ui_expr_c(other, view, signatures)?;
+                let other_code =
+                    ui_expr_c_for_view_identity(other, view, signatures, view_identity)?;
                 return Ok(format!("({right_code} {} {other_code})", c_operator(*op)));
             }
             if let Some(code) =
@@ -28872,9 +29121,9 @@ fn ui_expr_c(
             else_expr,
         } => Ok(format!(
             "(({}) ? ({}) : ({}))",
-            ui_expr_c(cond, view, signatures)?,
-            ui_expr_c(then_expr, view, signatures)?,
-            ui_expr_c(else_expr, view, signatures)?,
+            ui_expr_c_for_view_identity(cond, view, signatures, view_identity)?,
+            ui_expr_c_for_view_identity(then_expr, view, signatures, view_identity)?,
+            ui_expr_c_for_view_identity(else_expr, view, signatures, view_identity)?,
         )),
         _ => Err(diag(
             expr.span,

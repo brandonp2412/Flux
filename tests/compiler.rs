@@ -71065,9 +71065,10 @@ app Screen
     assert!(distinct_windows.contains("case UINT32_C(1): flux__win_command_result = flux__win_handle_view_1_command(wparam, lparam); break;"));
     assert!(distinct_windows.contains("static inline void flux__fn_closeDetail(void)"));
     assert!(distinct_windows.contains("case UINT32_C(1): return flux__win_create_view_1_window(instance, class_name, primary, view_identity);"));
-    assert!(distinct_windows.contains(
-        "case UINT32_C(1): free(context->control_windows); context->control_windows = NULL; return;"
-    ));
+    assert!(
+        distinct_windows
+            .contains("case UINT32_C(1): flux__windows_release_view_1_state(context); return;")
+    );
     let header_root = PathBuf::from("/usr/include/wine/windows");
     if header_root.join("windows.h").is_file()
         && Command::new("clang").arg("--version").output().is_ok()
@@ -71119,10 +71120,20 @@ view Screen {
 
 view Detail {
     state count: i64 = 0
+    state showing: bool = false
+    state label: str = "Detail"
     grid columns: 1fr
-    grid rows: auto
-    Text label at 1,1
-        text: "Detail"
+    grid rows: auto auto auto
+    Text labelText at 1,1
+        text: label
+        visible: showing
+    Button toggle at 2,1
+        text: "Toggle"
+        onPress: showing => !showing
+    Button increment at 3,1
+        text: "Increment"
+        enabled: count < 2
+        onPress: count => count + 1
 }
 
 route detail = Detail
@@ -71130,17 +71141,85 @@ app Screen
 "#;
     let stateful_database =
         fluxc::semantic::SemanticDatabase::analyze(stateful_distinct_source, SourceId::UNKNOWN)
-            .expect("stateful distinct route remains a valid language-level window target");
-    let stateful_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+            .expect("stateful distinct route should typecheck");
+    let stateful_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
         stateful_database.program(),
         stateful_database.signatures(),
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Windows,
     )
-    .expect_err("stateful distinct Windows windows should stay explicit until state schemas lower");
-    assert!(stateful_error.message.contains(
-        "Windows distinct secondary window views are currently limited to stateless static content"
+    .expect("stateful distinct Windows window should lower");
+    assert!(stateful_windows.contains("static int64_t flux__ui_view_1_state_count = INT64_C(0);"));
+    assert!(stateful_windows.contains("static bool flux__ui_view_1_state_showing = false;"));
+    assert!(
+        stateful_windows.contains(r#"static const char *flux__ui_view_1_state_label = "Detail";"#)
+    );
+    assert!(stateful_windows.contains("FluxWindowsView1ScalarState"));
+    assert!(
+        stateful_windows
+            .contains("case UINT32_C(1): flux__windows_save_view_1_state(context); return;")
+    );
+    assert!(
+        stateful_windows
+            .contains("case UINT32_C(1): flux__windows_restore_view_1_state(context); break;")
+    );
+    assert!(
+        stateful_windows
+            .contains("case UINT32_C(1): flux__windows_release_view_1_state(context); return;")
+    );
+    assert!(stateful_windows.contains("static void flux__win_refresh_view_1(void)"));
+    assert!(stateful_windows.contains(
+        "flux__win_set_text_if_changed(context->control_windows[0], flux__ui_view_1_state_label);"
     ));
+    assert!(stateful_windows.contains(
+        "ShowWindow(context->control_windows[0], (flux__ui_view_1_state_showing) ? SW_SHOW : SW_HIDE);"
+    ));
+    assert!(stateful_windows.contains(
+        "EnableWindow(context->control_windows[2], ((flux__ui_view_1_state_count < INT64_C(2))) ? TRUE : FALSE);"
+    ));
+    assert!(stateful_windows.contains(
+        "flux__ui_view_1_state_showing = (!(flux__ui_view_1_state_showing)); flux__win_refresh();"
+    ));
+    assert!(stateful_windows.contains(
+        "flux__ui_view_1_state_count = flux_add_i64(flux__ui_view_1_state_count, INT64_C(1)); flux__win_refresh();"
+    ));
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-stateful-distinct-window-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)
+            .expect("stateful distinct-window syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &stateful_windows)
+            .expect("stateful distinct-window C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate stateful distinct-window Win32 C");
+        assert!(
+            result.status.success(),
+            "stateful distinct-window Windows C failed syntax validation:
+{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 
     let parameterized_source = r#"
 fn openSecondary() -> void {
