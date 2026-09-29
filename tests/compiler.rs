@@ -68066,7 +68066,11 @@ app DragDrop
         "flux__win_register_drop_target(flux__ui_target, flux__win_drop_target_1, flux__fn_dropped)"
     ));
     assert!(windows.contains("flux__windows_release_drop_targets(context)"));
-    assert!(windows.contains("if (close_context->control_windows != NULL) flux__win_revoke_drop_target(close_context->control_windows[1]);"));
+    assert!(
+        windows.contains(
+            "if (close_context != NULL) flux__windows_release_drop_targets(close_context);"
+        )
+    );
     assert!(windows.contains("WideCharToMultiByte("));
     assert!(windows.contains("self->callback(utf8);"));
     assert!(windows.contains("flux__win_ole_shutdown();"));
@@ -72158,6 +72162,125 @@ app Screen
         assert!(
             result.status.success(),
             "secondary long-press Windows C failed syntax validation:
+{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn windows_distinct_route_windows_lower_drop_targets() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+fn dropped(value: str) -> void {
+    print(value)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state query: str = "Ready"
+    grid columns: 1fr
+    grid rows: auto auto
+    Text target at 1,1
+        text: "Drop here"
+        onDrop: dropped
+    TextInput input at 2,1
+        text: query
+        onDrop: dropped
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary drop source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary Windows drops should lower through per-window OLE targets");
+
+    assert!(windows.contains("typedef struct FluxWinDropTarget"));
+    assert!(windows.contains("HWND owner_window;"));
+    assert!(windows.contains(
+        "if (self->owner_window != NULL) flux__windows_activate_context(self->owner_window);"
+    ));
+    assert!(
+        windows.contains("target->owner_window = flux__windows_registered_window_for(control);")
+    );
+    assert!(windows.contains(
+        "static FluxWinDropTarget *flux__windows_drop_target_storage(FluxWindowsWindowContext *context, size_t slot)"
+    ));
+    assert!(windows.contains("slot >= 2"));
+    assert!(windows.contains(
+        "FluxWinDropTarget *flux__win_drop_target_view_1_0 = flux__windows_drop_target_storage(context, 0);"
+    ));
+    assert!(windows.contains(
+        "FluxWinDropTarget *flux__win_drop_target_view_1_1 = flux__windows_drop_target_storage(context, 1);"
+    ));
+    assert!(windows.contains(
+        "flux__win_register_drop_target(context->control_windows[0], flux__win_drop_target_view_1_0, flux__fn_dropped)"
+    ));
+    assert!(windows.contains(
+        "flux__win_register_drop_target(context->control_windows[1], flux__win_drop_target_view_1_1, flux__fn_dropped)"
+    ));
+    assert!(windows.contains(
+        "case UINT32_C(1): if (context->control_windows != NULL && context->control_windows[0] != NULL) flux__win_revoke_drop_target(context->control_windows[0]); if (context->control_windows != NULL && context->control_windows[1] != NULL) flux__win_revoke_drop_target(context->control_windows[1]); break;"
+    ));
+    assert!(
+        windows.contains(
+            "if (close_context != NULL) flux__windows_release_drop_targets(close_context);"
+        )
+    );
+    assert!(windows.contains(
+        "flux__windows_release_drop_targets(context); flux__windows_release_validation_state(context);"
+    ));
+    assert!(windows.contains("if (!flux__win_ole_init()) return 1;"));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-drop-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("secondary drop syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary drop C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary drop Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary drop Windows C failed syntax validation:
 {}",
             String::from_utf8_lossy(&result.stderr)
         );

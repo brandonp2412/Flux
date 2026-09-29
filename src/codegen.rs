@@ -16198,6 +16198,7 @@ typedef struct FluxWinDropTarget {
     LONG refs;
     bool accepts_text;
     FluxWinDropCallback callback;
+    HWND owner_window;
 } FluxWinDropTarget;
 
 static const IID flux__win_iid_iunknown = {0x00000000, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
@@ -16606,6 +16607,7 @@ static HRESULT STDMETHODCALLTYPE flux__win_target_drop(
                     );
                     if (converted == required) {
                         utf8[required] = '\0';
+                        if (self->owner_window != NULL) flux__windows_activate_context(self->owner_window);
                         self->callback(utf8);
                         flux__win_refresh();
                         delivered = true;
@@ -16644,7 +16646,8 @@ static bool flux__win_register_drop_target(
     target->iface.lpVtbl = &flux__win_target_vtable;
     target->refs = 1;
     target->callback = callback;
-    return SUCCEEDED(RegisterDragDrop(control, &target->iface));
+    target->owner_window = flux__windows_registered_window_for(control);
+    return target->owner_window != NULL && SUCCEEDED(RegisterDragDrop(control, &target->iface));
 }
 
 static void flux__win_revoke_drop_target(HWND control) {
@@ -16897,6 +16900,8 @@ fn emit_windows_native_application(
                             | "onDrag"
                             | "on_swipe"
                             | "onSwipe"
+                            | "on_drop"
+                            | "onDrop"
                             | "on_accessibility_action"
                             | "onAccessibilityAction"
                             | "on_long_press"
@@ -16915,7 +16920,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/tap/double-tap/long-press/hover/drag/swipe/scale/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -17007,6 +17012,15 @@ fn emit_windows_native_application(
                     return Err(diag(
                         property.value.span,
                         "Windows distinct secondary onSwipe requires a named fn(i64, i64) -> void callback",
+                    ));
+                }
+            }
+            if let Some(property) = view_property(element, "on_drop") {
+                if property.transition.is_some() || !matches!(property.value.kind, ExprKind::Var(_))
+                {
+                    return Err(diag(
+                        property.value.span,
+                        "Windows distinct secondary onDrop requires a named fn(str) -> void callback",
                     ));
                 }
             }
@@ -17219,7 +17233,21 @@ fn emit_windows_native_application(
         .max(1);
     let uses_text_drag_drop = view.elements.iter().any(|element| {
         view_property(element, "drag_text").is_some() || view_property(element, "on_drop").is_some()
+    }) || secondary_window_views.iter().any(|(_, secondary_view)| {
+        secondary_view
+            .elements
+            .iter()
+            .any(|element| view_property(element, "on_drop").is_some())
     });
+    let windows_drop_target_slots = std::iter::once(view.elements.len())
+        .chain(
+            secondary_window_views
+                .iter()
+                .map(|(_, secondary_view)| secondary_view.elements.len()),
+        )
+        .max()
+        .unwrap_or(0)
+        .max(1);
     let uses_alignment = view.elements.iter().any(|element| {
         view_property(element, "align_x").is_some() || view_property(element, "align_y").is_some()
     });
@@ -19380,19 +19408,52 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
     );
     if uses_text_drag_drop {
         emit_windows_text_drag_drop_runtime(out);
-        if view
+        let uses_drop_targets = view
             .elements
             .iter()
             .any(|element| view_property(element, "on_drop").is_some())
-        {
-            out.push_str(&format!("static FluxWinDropTarget *flux__windows_drop_target_storage(FluxWindowsWindowContext *context, size_t slot) {{ if (context == NULL || slot >= {}) return NULL; if (context->drop_targets == NULL) {{ context->drop_targets = calloc({}, sizeof(FluxWinDropTarget)); if (context->drop_targets == NULL) abort(); context->drop_target_count = {}; }} return &((FluxWinDropTarget *)context->drop_targets)[slot]; }}\n", view.elements.len(), view.elements.len().max(1), view.elements.len()));
-            out.push_str("static void flux__windows_release_drop_targets(FluxWindowsWindowContext *context) { if (context == NULL) return;\n");
+            || secondary_window_views.iter().any(|(_, secondary_view)| {
+                secondary_view
+                    .elements
+                    .iter()
+                    .any(|element| view_property(element, "on_drop").is_some())
+            });
+        if uses_drop_targets {
+            out.push_str(&format!(
+                "static FluxWinDropTarget *flux__windows_drop_target_storage(FluxWindowsWindowContext *context, size_t slot) {{ if (context == NULL || slot >= {windows_drop_target_slots}) return NULL; if (context->drop_targets == NULL) {{ context->drop_targets = calloc({windows_drop_target_slots}, sizeof(FluxWinDropTarget)); if (context->drop_targets == NULL) abort(); context->drop_target_count = {windows_drop_target_slots}; }} return &((FluxWinDropTarget *)context->drop_targets)[slot]; }}\n"
+            ));
+            let mut release_cases = String::new();
+            let mut root_release = String::new();
             for (index, element) in view.elements.iter().enumerate() {
                 if view_property(element, "on_drop").is_some() {
-                    out.push_str(&format!("if (context->control_windows != NULL && context->control_windows[{index}] != NULL) (void)RevokeDragDrop(context->control_windows[{index}]);\n"));
+                    root_release.push_str(&format!(
+                        " if (context->control_windows != NULL && context->control_windows[{index}] != NULL) flux__win_revoke_drop_target(context->control_windows[{index}]);"
+                    ));
                 }
             }
-            out.push_str("free(context->drop_targets); context->drop_targets = NULL; context->drop_target_count = 0; }\n");
+            if !root_release.is_empty() {
+                release_cases.push_str(&format!(
+                    " case UINT32_C({root_view_identity}):{root_release} break;"
+                ));
+            }
+            for (view_identity, secondary_view) in &secondary_window_views {
+                let mut secondary_release = String::new();
+                for (index, element) in secondary_view.elements.iter().enumerate() {
+                    if view_property(element, "on_drop").is_some() {
+                        secondary_release.push_str(&format!(
+                            " if (context->control_windows != NULL && context->control_windows[{index}] != NULL) flux__win_revoke_drop_target(context->control_windows[{index}]);"
+                        ));
+                    }
+                }
+                if !secondary_release.is_empty() {
+                    release_cases.push_str(&format!(
+                        " case UINT32_C({view_identity}):{secondary_release} break;"
+                    ));
+                }
+            }
+            out.push_str(&format!(
+                "static void flux__windows_release_drop_targets(FluxWindowsWindowContext *context) {{ if (context == NULL || context->drop_targets == NULL) return; switch (context->view_identity) {{{release_cases} default: break; }} free(context->drop_targets); context->drop_targets = NULL; context->drop_target_count = 0; }}\n"
+            ));
         } else {
             out.push_str("static void flux__windows_release_drop_targets(FluxWindowsWindowContext *context) { (void)context; }\n");
         }
@@ -20837,7 +20898,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
         out.push_str(" }\n");
         out.push_str(&format!(
-            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0;{secondary_subclass_release} flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_image_bitmaps(context); free(context->control_windows); context->control_windows = NULL; }}\n"
+            "static void flux__windows_release_view_{view_identity}_state(FluxWindowsWindowContext *context) {{ if (context == NULL) return; free(context->scalar_view_state); context->scalar_view_state = NULL; if (context->string_view_state != NULL) for (size_t index = 0; index < context->string_view_state_count; ++index) free(context->string_view_state[index]); free(context->string_view_state); context->string_view_state = NULL; context->string_view_state_count = 0;{secondary_subclass_release} flux__windows_release_drop_targets(context); flux__windows_release_validation_state(context); flux__windows_release_tooltip_texts(context); flux__windows_release_image_bitmaps(context); free(context->control_windows); context->control_windows = NULL; }}\n"
         ));
         secondary_save_cases.push_str(&format!(
             " case UINT32_C({view_identity}): flux__windows_save_view_{view_identity}_state(context); return;"
@@ -22633,20 +22694,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             }
         }
         if uses_text_drag_drop {
-            cleanup.push_str(&format!(
-                " if (close_context != NULL && close_context->view_identity == UINT32_C({root_view_identity})) {{"
-            ));
-            for (index, _) in view
-                .elements
-                .iter()
-                .enumerate()
-                .filter(|(_, element)| view_property(element, "on_drop").is_some())
-            {
-                cleanup.push_str(&format!(
-                    " if (close_context->control_windows != NULL) flux__win_revoke_drop_target(close_context->control_windows[{index}]);"
-                ));
-            }
-            cleanup.push_str(" }");
+            cleanup.push_str(
+                " if (close_context != NULL) flux__windows_release_drop_targets(close_context);",
+            );
         }
         cleanup.push_str(" DestroyWindow(hwnd); return 0; }");
         cleanup
@@ -23965,6 +24015,15 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 style.push_str(" | SS_NOTIFY");
             }
             out.push_str(&format!("context->control_windows[{index}] = CreateWindowExW(0, L\"{class}\", L\"\", {style}, 0, 0, 1, 1, window, (HMENU)(INT_PTR){id}, instance, NULL); if (context->control_windows[{index}] == NULL) return flux__win_create_view_window_failure(window, primary); SendMessageW(context->control_windows[{index}], WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE); flux__win_set_text_if_changed(context->control_windows[{index}], {});\n", c_string(&text)));
+            if let Some(action) = view_property(element, "on_drop") {
+                let ExprKind::Var(function) = &action.value.kind else {
+                    unreachable!("secondary drop callback shape was validated before emission");
+                };
+                out.push_str(&format!(
+                    "FluxWinDropTarget *flux__win_drop_target_view_{view_identity}_{index} = flux__windows_drop_target_storage(context, {index}); if (flux__win_drop_target_view_{view_identity}_{index} == NULL || !flux__win_register_drop_target(context->control_windows[{index}], flux__win_drop_target_view_{view_identity}_{index}, {})) return flux__win_create_view_window_failure(window, primary);\n",
+                    function_c_name(function)
+                ));
+            }
             if let Some(property) = view_property(element, "focus_scope") {
                 let scope = static_expr_i64(&property.value, signatures).ok_or_else(|| {
                     diag(
