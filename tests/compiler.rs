@@ -70956,7 +70956,7 @@ app Screen
 }
 
 #[test]
-fn windows_window_open_accepts_typed_root_route_identity() {
+fn windows_window_open_accepts_typed_zero_parameter_route_identity() {
     let source = r#"
 fn openSecondary() -> void {
     if window.open(home):
@@ -71026,13 +71026,199 @@ view Detail {
 route detail = Detail
 app Screen
 "#;
-    let error = fluxc::semantic::SemanticDatabase::analyze(distinct_source, SourceId::UNKNOWN)
-        .expect_err("distinct route window construction should stay explicit until lowered");
-    assert!(error.iter().any(|diagnostic| {
+    let distinct_database =
+        fluxc::semantic::SemanticDatabase::analyze(distinct_source, SourceId::UNKNOWN)
+            .expect("stateless distinct route window should typecheck");
+    let distinct_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        distinct_database.program(),
+        distinct_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("stateless distinct route window should lower for Windows");
+    assert!(distinct_windows.contains("flux__window_open_view(UINT32_C(1))"));
+    assert!(distinct_windows.contains("static void flux__win_layout_view_1(FluxWindowsWindowContext *context, int width, int height)"));
+    assert!(distinct_windows.contains("static HWND flux__win_create_view_1_window(HINSTANCE instance, LPCWSTR class_name, bool primary, uint32_t view_identity)"));
+    assert!(
+        distinct_windows.contains("context->control_windows[0] = CreateWindowExW(0, L\"STATIC\"")
+    );
+    assert!(
+        distinct_windows
+            .contains("flux__win_set_text_if_changed(context->control_windows[0], \"Detail\")")
+    );
+    assert!(distinct_windows.contains("case UINT32_C(1): return flux__win_create_view_1_window(instance, class_name, primary, view_identity);"));
+    assert!(distinct_windows.contains(
+        "case UINT32_C(1): free(context->control_windows); context->control_windows = NULL; return;"
+    ));
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-distinct-window-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("distinct-window syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &distinct_windows).expect("distinct-window C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate distinct-window Win32 C");
+        assert!(
+            result.status.success(),
+            "distinct-window Windows C failed syntax validation:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    let stateful_distinct_source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state count: i64 = 0
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Detail"
+}
+
+route detail = Detail
+app Screen
+"#;
+    let stateful_database =
+        fluxc::semantic::SemanticDatabase::analyze(stateful_distinct_source, SourceId::UNKNOWN)
+            .expect("stateful distinct route remains a valid language-level window target");
+    let stateful_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        stateful_database.program(),
+        stateful_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("stateful distinct Windows windows should stay explicit until state schemas lower");
+    assert!(stateful_error.message.contains(
+        "Windows distinct secondary window views are currently limited to stateless static Text content"
+    ));
+
+    let parameterized_source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+
+view Detail(id: i64) {
+    grid columns: 1fr
+    grid rows: auto
+}
+
+route detail = Detail
+app Screen
+"#;
+    let parameterized_error =
+        fluxc::semantic::SemanticDatabase::analyze(parameterized_source, SourceId::UNKNOWN)
+            .expect_err("parameterized route windows remain unsupported at the language boundary");
+    assert!(parameterized_error.iter().any(|diagnostic| {
         diagnostic
             .message
-            .contains("distinct secondary view construction is not supported yet")
+            .contains("parameterized route windows are not supported yet")
     }));
+}
+
+#[test]
+fn windows_window_route_identity_invalidates_application_codegen_cache() {
+    let first_source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Detail"
+}
+
+view Other {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Other"
+}
+
+route detail = Detail
+route other = Other
+app Screen
+"#;
+    let second_source = first_source.replace("window.open(detail)", "window.open(other)");
+    let first = fluxc::semantic::SemanticDatabase::analyze(first_source, SourceId::UNKNOWN)
+        .expect("first distinct-window cache fixture should analyze");
+    let second = fluxc::semantic::SemanticDatabase::analyze(&second_source, SourceId::UNKNOWN)
+        .expect("second distinct-window cache fixture should analyze");
+    let mut cache = fluxc::codegen::FunctionCodegenCache::default();
+    let (first_c, first_stats) = fluxc::codegen::emit_c_for_target_with_source_metadata_cached(
+        first.program(),
+        first.signatures(),
+        &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
+        &std::collections::BTreeMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+        &mut cache,
+    )
+    .expect("first distinct-window cache fixture should lower");
+    assert_eq!(first_stats.regenerated_application_fragments, 1);
+    assert!(first_c.contains("static HWND flux__win_create_view_1_window"));
+    assert!(!first_c.contains("static HWND flux__win_create_view_2_window"));
+
+    let (second_c, second_stats) = fluxc::codegen::emit_c_for_target_with_source_metadata_cached(
+        second.program(),
+        second.signatures(),
+        &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
+        &std::collections::BTreeMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+        &mut cache,
+    )
+    .expect("changed distinct-window route should lower");
+    assert_eq!(second_stats.reused_application_fragments, 0);
+    assert_eq!(second_stats.regenerated_application_fragments, 1);
+    assert!(!second_c.contains("static HWND flux__win_create_view_1_window"));
+    assert!(second_c.contains("static HWND flux__win_create_view_2_window"));
 }
 
 #[test]

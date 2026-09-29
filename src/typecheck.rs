@@ -15530,15 +15530,6 @@ fn check_qualified_call_fallback(
                         ),
                     ));
                 }
-                if signatures.application_view_identity() != Some(route.view_identity) {
-                    return Err(diag(
-                        args[0].span,
-                        &format!(
-                            "window.open route '{}' targets view '{}'; distinct secondary view construction is not supported yet",
-                            route_name, route.view_name
-                        ),
-                    ));
-                }
                 return Ok(vec![Type::Bool]);
             }
             "close" => {

@@ -1067,17 +1067,9 @@ fn add_window_route_completions(
     if call_name != "window.open" || active_parameter != 0 {
         return;
     }
-    let application_view_name = program
-        .application
-        .as_ref()
-        .map(|application| application.view_name.clone())
-        .or_else(|| recover_application_view_name(source, source_id_for_uri(uri)));
-    let Some(application_view_name) = application_view_name else {
-        return;
-    };
     let current_id = source_id_for_uri(uri);
     for route in &program.routes {
-        if route.name_span.source_id != current_id || route.view_name != application_view_name {
+        if route.name_span.source_id != current_id {
             continue;
         }
         let Some(view) = program
@@ -1098,23 +1090,6 @@ fn add_window_route_completions(
             &format!("route {} = {}", route.name, route.view_name),
         );
     }
-}
-
-fn recover_application_view_name(source: &str, source_id: SourceId) -> Option<String> {
-    source.lines().find_map(|line| {
-        if leading_spaces(line) != 0 || !line.trim_start().starts_with("app ") {
-            return None;
-        }
-        let snippet = format!(
-            "{}
-",
-            line.trim_end()
-        );
-        crate::parser::parse_all_with_source(&snippet, source_id)
-            .ok()?
-            .application
-            .map(|application| application.view_name)
-    })
 }
 
 fn completion_items_at_position(
@@ -10407,13 +10382,19 @@ mod tests {
     grid rows: auto
 }
 
-view Detail(id: i64) {
+view Detail {
+    grid columns: 1fr
+    grid rows: auto
+}
+
+view Parameterized(id: i64) {
     grid columns: 1fr
     grid rows: auto
 }
 
 route home = Screen
 route detail = Detail
+route parameterized = Parameterized
 
 fn openSecondary() -> void {
     window.open()
@@ -10440,7 +10421,9 @@ app Screen
 
         assert!(items.contains(r#""label":"home""#));
         assert!(items.contains("route home = Screen"));
-        assert!(!items.contains(r#""label":"detail""#));
+        assert!(items.contains(r#""label":"detail""#));
+        assert!(items.contains("route detail = Detail"));
+        assert!(!items.contains(r#""label":"parameterized""#));
     }
 
     #[test]
