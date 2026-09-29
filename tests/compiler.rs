@@ -72842,6 +72842,121 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_alignment_constraints() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state horizontal: str = "center"
+    grid columns: 1fr
+    grid rows: auto auto
+    Button dynamic at 1,1
+        text: "Dynamic"
+        alignX: horizontal
+        alignY: "end"
+    Text fixed at 2,1
+        text: "Fixed"
+        alignX: "center"
+        alignY: "start"
+        padding: 3
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary alignment route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary alignment should lower for Windows");
+
+    assert!(windows.contains("static void flux__win_preferred_size("));
+    assert!(
+        windows
+            .contains("const char *requested_align_x_1_0_name = flux__ui_view_1_state_horizontal;")
+    );
+    assert!(windows.contains("requested_align_x_1_0 = FLUX__WIN_ALIGN_CENTER"));
+    assert!(windows.contains(
+        "int horizontal_space = available_width > control_width ? available_width - control_width : 0;"
+    ));
+    assert!(
+        windows.contains("FLUX__WIN_ALIGN_CENTER == FLUX__WIN_ALIGN_CENTER ? horizontal_space / 2")
+    );
+    assert!(windows.contains("(flux__win_scale(INT64_C(3)) + flux__win_scale(INT64_C(3)))"));
+    assert!(windows.contains(
+        "flux__win_layout_view_1(context, flux__win_view_1_refresh_client.right - flux__win_view_1_refresh_client.left"
+    ));
+
+    let invalid = source.replace(r#"alignY: "start""#, r#"alignY: "middle""#);
+    let invalid_database = fluxc::semantic::SemanticDatabase::analyze(&invalid, SourceId::UNKNOWN)
+        .expect("invalid static secondary alignment should analyze before lowering");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        invalid_database.program(),
+        invalid_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("unsupported secondary alignment must fail lowering");
+    assert!(
+        error
+            .message
+            .contains("alignY must be one of 'start', 'center', 'end', or 'fill'"),
+        "unexpected alignment diagnostic: {:?}",
+        error.message
+    );
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-alignment-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("secondary alignment syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary alignment C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary alignment Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary alignment Windows C failed syntax validation:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_semantic_text_controls() {
     let source = r#"
 fn openSecondary() -> void {
