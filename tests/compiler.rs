@@ -71684,8 +71684,10 @@ view Detail {
         text: "Focused"
         autofocus: true
         focusScope: 7
+        accessibilityOrder: 20
     Text body at 2,1
         text: "Body"
+        accessibilityOrder: 10
 }
 
 route detail = Detail
@@ -71711,6 +71713,12 @@ app Screen
         "case UINT32_C(1): if (flux__windows_active_context != NULL && flux__windows_active_context->control_windows != NULL && flux__windows_active_context->control_windows[0] != NULL) SetFocus(flux__windows_active_context->control_windows[0]); return;"
     ));
     assert!(windows.contains("UpdateWindow(window); flux__win_autofocus_view(view_identity);"));
+    assert!(windows.contains(
+        "SetWindowPos(context->control_windows[1], HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)"
+    ));
+    assert!(windows.contains(
+        "SetWindowPos(context->control_windows[0], context->control_windows[1], 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)"
+    ));
 
     let header_root = PathBuf::from("/usr/include/wine/windows");
     if header_root.join("windows.h").is_file()

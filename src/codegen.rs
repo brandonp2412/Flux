@@ -16858,6 +16858,8 @@ fn emit_windows_native_application(
                             | "accessibilityRole"
                             | "accessibility_hidden"
                             | "accessibilityHidden"
+                            | "accessibility_order"
+                            | "accessibilityOrder"
                             | "focusable"
                             | "autofocus"
                             | "focus_scope"
@@ -16876,7 +16878,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change action",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder, placeholder/readOnly/keyboardType/validationState/validationMessage, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change action",
                     ));
                 }
                 if data_property {
@@ -22849,6 +22851,8 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     let mut secondary_constructor_dispatch = String::new();
     let mut secondary_autofocus_dispatch = String::new();
     for (view_identity, secondary_view) in &secondary_window_views {
+        let secondary_accessibility_order =
+            ordered_accessibility_elements(secondary_view, signatures)?;
         let secondary_uses_tooltips = secondary_view.elements.iter().any(|element| {
             view_property(element, "tooltip").is_some()
                 || (element.kind == "TextInput"
@@ -23019,6 +23023,33 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             if secondary_submit_subclasses.contains(&index) {
                 out.push_str(&format!(
                     "SetLastError(0); context->control_subclass_originals[{index}] = (WNDPROC)(LONG_PTR)SetWindowLongPtrW(context->control_windows[{index}], GWLP_WNDPROC, (LONG_PTR)flux__win_input_proc_view_{view_identity}_{index}); if (context->control_subclass_originals[{index}] == NULL && GetLastError() != 0) return flux__win_create_view_window_failure(window, primary);\n"
+                ));
+            }
+        }
+        if let Some(first) = secondary_accessibility_order.first() {
+            let first_index = secondary_view
+                .elements
+                .iter()
+                .position(|element| element.name == first.name)
+                .expect("ordered secondary accessibility element belongs to view");
+            out.push_str(&format!(
+                "if (!SetWindowPos(context->control_windows[{first_index}], HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)) return flux__win_create_view_window_failure(window, primary);
+"
+            ));
+            for pair in secondary_accessibility_order.windows(2) {
+                let previous_index = secondary_view
+                    .elements
+                    .iter()
+                    .position(|element| element.name == pair[0].name)
+                    .expect("ordered secondary accessibility element belongs to view");
+                let current_index = secondary_view
+                    .elements
+                    .iter()
+                    .position(|element| element.name == pair[1].name)
+                    .expect("ordered secondary accessibility element belongs to view");
+                out.push_str(&format!(
+                    "if (!SetWindowPos(context->control_windows[{current_index}], context->control_windows[{previous_index}], 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)) return flux__win_create_view_window_failure(window, primary);
+"
                 ));
             }
         }
