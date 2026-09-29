@@ -71584,7 +71584,7 @@ app Screen
 }
 
 #[test]
-fn windows_distinct_route_windows_lower_native_end_ellipsizing() {
+fn windows_distinct_route_windows_lower_text_wrapping_and_ellipsizing() {
     let source = r#"
 fn openSecondary() -> void {
     window.open(detail)
@@ -71599,87 +71599,123 @@ view Screen {
 }
 
 view Detail {
+    state wraps: bool = false
+    state wrapping: str = "wordChar"
+    state overflow: str = "middle"
     grid columns: 1fr
-    grid rows: auto auto
-    Text clipped at 1,1
-        text: "A long secondary label"
+    grid rows: auto auto auto
+    Text dynamic at 1,1
+        text: "Dynamic secondary layout"
+        wrap: wraps
+        wrapMode: wrapping
+        ellipsize: overflow
+        textAlign: "center"
+    Text clipped at 2,1
+        text: "Native end ellipsis"
         ellipsize: "end"
-    Text plain at 2,1
-        text: "Plain"
-        ellipsize: "none"
+    Text noWrap at 3,1
+        text: "Native no wrap"
+        wrap: false
 }
 
 route detail = Detail
 app Screen
 "#;
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
-        .expect("secondary ellipsize route should typecheck");
+        .expect("secondary text-layout route should typecheck");
     let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
         database.program(),
         database.signatures(),
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Windows,
     )
-    .expect("secondary end ellipsize should lower for Windows");
+    .expect("secondary wrapping and ellipsizing should lower for Windows");
 
     assert!(windows.contains(
-        "context->control_windows[0] = CreateWindowExW(0, L\"STATIC\", L\"\", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS"
+        "static const flux__win_text_layout_state flux__win_view_1_text_layout_initial_0"
     ));
-    assert!(windows.contains(
-        "context->control_windows[1] = CreateWindowExW(0, L\"STATIC\", L\"\", WS_CHILD | WS_VISIBLE | SS_LEFT,"
-    ));
-
-    let unsupported = source.replace("ellipsize: \"end\"", "ellipsize: \"middle\"");
-    let unsupported_database =
-        fluxc::semantic::SemanticDatabase::analyze(&unsupported, SourceId::UNKNOWN)
-            .expect("secondary middle ellipsize should analyze before target lowering");
-    let unsupported_error = fluxc::codegen::emit_c_for_target_with_source_paths(
-        unsupported_database.program(),
-        unsupported_database.signatures(),
-        &std::collections::HashMap::new(),
-        fluxc::codegen::NativeTarget::Windows,
-    )
-    .expect_err("secondary middle ellipsize should stay explicitly unsupported");
+    assert!(!windows.contains("static flux__win_text_layout_state flux__win_view_1_text_layout_0"));
     assert!(
-        unsupported_error.message.contains(
-            "Windows distinct secondary Text currently supports ellipsize: 'none' or 'end'"
+        windows.contains(
+            "context->text_layout_states = calloc(1, sizeof(flux__win_text_layout_state));"
         )
     );
+    assert!(windows.contains("text_layout_states[0] = flux__win_view_1_text_layout_initial_0;"));
+    assert!(windows.contains(
+        "SetWindowSubclass(context->control_windows[0], flux__win_text_layout_proc, (UINT_PTR)1, (DWORD_PTR)(uintptr_t)&text_layout_states[0])"
+    ));
+    assert!(!windows.contains("(DWORD_PTR)(uintptr_t)&flux__win_view_1_text_layout_0"));
+    assert!(windows.contains(
+        "flux__win_text_layout_state *flux__win_view_1_text_layout_0 = context->text_layout_states != NULL && context->text_layout_count > 0 ? &((flux__win_text_layout_state *)context->text_layout_states)[0] : NULL;"
+    ));
+    assert!(windows.contains("flux__win_view_1_next_wrap_0 = flux__ui_view_1_state_wraps"));
+    assert!(
+        windows.contains("flux__win_view_1_next_wrap_mode_text_0 = flux__ui_view_1_state_wrapping")
+    );
+    assert!(
+        windows.contains("flux__win_view_1_next_ellipsize_text_0 = flux__ui_view_1_state_overflow")
+    );
+    assert!(windows.contains("flux__win_text_ellipsize_line("));
+    assert!(windows.contains(
+        "context->control_windows[1] = CreateWindowExW(0, L\"STATIC\", L\"\", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS"
+    ));
+    assert!(windows.contains(
+        "context->control_windows[2] = CreateWindowExW(0, L\"STATIC\", L\"\", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP"
+    ));
+    assert!(windows.contains(
+        "free(context->text_layout_states); context->text_layout_states = NULL; context->text_layout_count = 0;"
+    ));
 
-    let dynamic = source
-        .replace(
-            "grid columns: 1fr",
-            "state overflow: str = \"end\"\n    grid columns: 1fr",
-        )
-        .replace("ellipsize: \"end\"", "ellipsize: overflow");
-    let dynamic_database = fluxc::semantic::SemanticDatabase::analyze(&dynamic, SourceId::UNKNOWN)
-        .expect("secondary dynamic ellipsize should analyze before target lowering");
-    let dynamic_error = fluxc::codegen::emit_c_for_target_with_source_paths(
-        dynamic_database.program(),
-        dynamic_database.signatures(),
+    let invalid_wrap_mode = source.replace("wrapMode: wrapping", "wrapMode: \"words\"");
+    let invalid_wrap_database =
+        fluxc::semantic::SemanticDatabase::analyze(&invalid_wrap_mode, SourceId::UNKNOWN)
+            .expect("invalid static secondary wrap mode should analyze before target lowering");
+    let wrap_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        invalid_wrap_database.program(),
+        invalid_wrap_database.signatures(),
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Windows,
     )
-    .expect_err("secondary dynamic ellipsize should stay explicitly unsupported");
-    assert!(dynamic_error.message.contains(
-        "Windows distinct secondary Text currently requires ellipsize to be a compile-time str value"
-    ));
+    .expect_err("invalid static secondary wrapMode must fail lowering");
+    assert!(
+        wrap_error
+            .message
+            .contains("Text.wrapMode must be one of 'word', 'char', or 'wordChar'")
+    );
+
+    let invalid_ellipsize = source.replace("ellipsize: overflow", "ellipsize: \"sideways\"");
+    let invalid_ellipsize_database =
+        fluxc::semantic::SemanticDatabase::analyze(&invalid_ellipsize, SourceId::UNKNOWN)
+            .expect("invalid static secondary ellipsize should analyze before target lowering");
+    let ellipsize_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        invalid_ellipsize_database.program(),
+        invalid_ellipsize_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("invalid static secondary ellipsize must fail lowering");
+    assert!(
+        ellipsize_error
+            .message
+            .contains("Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'")
+    );
 
     let header_root = PathBuf::from("/usr/include/wine/windows");
     if header_root.join("windows.h").is_file()
         && Command::new("clang").arg("--version").output().is_ok()
     {
         let root = std::env::temp_dir().join(format!(
-            "flux-windows-secondary-end-ellipsize-syntax-{}-{}",
+            "flux-windows-secondary-text-layout-syntax-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos()
         ));
-        fs::create_dir_all(&root).expect("secondary ellipsize syntax directory should be writable");
+        fs::create_dir_all(&root)
+            .expect("secondary text-layout syntax directory should be writable");
         let c_path = root.join("generated.c");
-        fs::write(&c_path, &windows).expect("secondary ellipsize C should be writable");
+        fs::write(&c_path, &windows).expect("secondary text-layout C should be writable");
         let result = Command::new("clang")
             .args([
                 "-fsyntax-only",
@@ -71692,10 +71728,10 @@ app Screen
             ])
             .arg(&c_path)
             .output()
-            .expect("clang should validate secondary ellipsize Win32 C");
+            .expect("clang should validate secondary text-layout Win32 C");
         assert!(
             result.status.success(),
-            "secondary ellipsize Windows C failed syntax validation:\n{}",
+            "secondary text-layout Windows C failed syntax validation:\n{}",
             String::from_utf8_lossy(&result.stderr)
         );
         let _ = fs::remove_dir_all(root);
