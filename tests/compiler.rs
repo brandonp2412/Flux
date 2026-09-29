@@ -72663,7 +72663,7 @@ app Screen
         r#"requested_margin_end = flux__win_checked_margin((flux__ui_view_1_state_trailing), "marginEnd")"#
     ));
     assert!(windows.contains(
-        "int64_t adjusted_x = (int64_t)x + physical_margin_start; int64_t adjusted_y = (int64_t)y + physical_margin_top;"
+        "int64_t adjusted_x = (int64_t)x + physical_margin_start + physical_translate_x; int64_t adjusted_y = (int64_t)y + physical_margin_top + physical_translate_y;"
     ));
     assert!(windows.contains(
         "int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end;"
@@ -72721,6 +72721,120 @@ app Screen
         assert!(
             result.status.success(),
             "secondary margins Windows C failed syntax validation:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn windows_distinct_route_windows_lower_translation() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state offsetX: i64 = 11
+    state offsetY: i64 = -6
+    grid columns: 1fr
+    grid rows: auto auto
+    Button dynamic at 1,1
+        text: "Dynamic"
+        translateX: offsetX
+        translateY: offsetY
+    Text fixed at 2,1
+        text: "Fixed"
+        translateX: 7
+        translateY: -9
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary translation route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary translation should lower for Windows");
+
+    assert!(windows.contains(
+        "requested_translate_x = flux__ui_view_1_state_offsetX; int64_t requested_translate_y = flux__ui_view_1_state_offsetY;"
+    ));
+    assert!(windows.contains(
+        "requested_translate_x = INT64_C(7); int64_t requested_translate_y = INT64_C(-9);"
+    ));
+    assert!(windows.contains("translateX must fit within a 32-bit signed integer"));
+    assert!(windows.contains("translateY must fit within a 32-bit signed integer"));
+    assert!(windows.contains(
+        "int64_t adjusted_x = (int64_t)x + physical_margin_start + physical_translate_x; int64_t adjusted_y = (int64_t)y + physical_margin_top + physical_translate_y;"
+    ));
+    assert!(windows.contains(
+        "flux__win_layout_view_1(context, flux__win_view_1_refresh_client.right - flux__win_view_1_refresh_client.left"
+    ));
+
+    let invalid = source.replace("translateX: 7", "translateX: 2147483648");
+    let invalid_database = fluxc::semantic::SemanticDatabase::analyze(&invalid, SourceId::UNKNOWN)
+        .expect("invalid static secondary translation should analyze before lowering");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        invalid_database.program(),
+        invalid_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("out-of-range secondary translation must fail lowering");
+    assert!(
+        error
+            .message
+            .contains("translateX must fit within a 32-bit signed integer"),
+        "unexpected translation diagnostic: {:?}",
+        error.message
+    );
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-translation-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)
+            .expect("secondary translation syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary translation C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary translation Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary translation Windows C failed syntax validation:\n{}",
             String::from_utf8_lossy(&result.stderr)
         );
         let _ = fs::remove_dir_all(root);
