@@ -73159,6 +73159,120 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_button_padding() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    state inset: i64 = 6
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Button dynamic at 1,1
+        text: "Dynamic"
+        padding: inset
+    Toggle checked at 2,1
+        label: "Checked"
+        checked: true
+        paddingTop: 3
+        paddingEnd: inset
+    Radio fixed at 3,1
+        label: "Fixed"
+        selected: true
+        padding: 4
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary button-padding route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary button padding should lower for Windows");
+
+    assert!(windows.contains("BCM_SETTEXTMARGIN"));
+    assert!(windows.contains("requested_button_padding_left_1_0 = flux__ui_view_1_state_inset"));
+    assert!(windows.contains("requested_button_padding_top_1_1 = INT64_C(3)"));
+    assert!(windows.contains("requested_button_padding_right_1_1 = flux__ui_view_1_state_inset"));
+    assert!(windows.contains("requested_button_padding_left_1_2 = INT64_C(4)"));
+    assert!(windows.contains(
+        "Flux runtime error: padding must be non-negative and fit within a 32-bit signed integer"
+    ));
+    assert!(windows.contains(
+        "flux__win_layout_view_1(context, flux__win_view_1_refresh_client.right - flux__win_view_1_refresh_client.left"
+    ));
+
+    let invalid = source.replace("padding: 4", "padding: -1");
+    let invalid_database = fluxc::semantic::SemanticDatabase::analyze(&invalid, SourceId::UNKNOWN)
+        .expect("invalid static secondary button padding should analyze before lowering");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        invalid_database.program(),
+        invalid_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("negative secondary button padding must fail lowering");
+    assert!(
+        error
+            .message
+            .contains("padding must be non-negative and fit within a 32-bit signed integer"),
+        "unexpected padding diagnostic: {:?}",
+        error.message
+    );
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-button-padding-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)
+            .expect("secondary button-padding syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary button-padding C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary button-padding Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary button-padding Windows C failed syntax validation:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_alignment_constraints() {
     let source = r#"
 fn openSecondary() -> void {
