@@ -71122,17 +71122,19 @@ view Detail {
     state count: i64 = 0
     state showing: bool = false
     state label: str = "Detail"
+    derived canIncrement: bool = count < 2
+    derived caption: str = label
     grid columns: 1fr
     grid rows: auto auto auto
     Text labelText at 1,1
-        text: label
+        text: caption
         visible: showing
     Button toggle at 2,1
         text: "Toggle"
         onPress: showing => !showing
     Button increment at 3,1
         text: "Increment"
-        enabled: count < 2
+        enabled: canIncrement
         onPress: count => count + 1
 }
 
@@ -71154,6 +71156,10 @@ app Screen
     assert!(
         stateful_windows.contains(r#"static const char *flux__ui_view_1_state_label = "Detail";"#)
     );
+    assert!(stateful_windows.contains("static bool flux__ui_view_1_derived_canIncrement = false;"));
+    assert!(
+        stateful_windows.contains("static const char * flux__ui_view_1_derived_caption = NULL;")
+    );
     assert!(stateful_windows.contains("FluxWindowsView1ScalarState"));
     assert!(
         stateful_windows
@@ -71169,13 +71175,19 @@ app Screen
     );
     assert!(stateful_windows.contains("static void flux__win_refresh_view_1(void)"));
     assert!(stateful_windows.contains(
-        "flux__win_set_text_if_changed(context->control_windows[0], flux__ui_view_1_state_label);"
+        "flux__ui_view_1_derived_canIncrement = (flux__ui_view_1_state_count < INT64_C(2));"
+    ));
+    assert!(
+        stateful_windows.contains("flux__ui_view_1_derived_caption = flux__ui_view_1_state_label;")
+    );
+    assert!(stateful_windows.contains(
+        "flux__win_set_text_if_changed(context->control_windows[0], flux__ui_view_1_derived_caption);"
     ));
     assert!(stateful_windows.contains(
         "ShowWindow(context->control_windows[0], (flux__ui_view_1_state_showing) ? SW_SHOW : SW_HIDE);"
     ));
     assert!(stateful_windows.contains(
-        "EnableWindow(context->control_windows[2], ((flux__ui_view_1_state_count < INT64_C(2))) ? TRUE : FALSE);"
+        "EnableWindow(context->control_windows[2], (flux__ui_view_1_derived_canIncrement) ? TRUE : FALSE);"
     ));
     assert!(stateful_windows.contains(
         "flux__ui_view_1_state_showing = (!(flux__ui_view_1_state_showing)); flux__win_refresh();"

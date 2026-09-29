@@ -16717,11 +16717,22 @@ fn emit_windows_native_application(
                 "Windows secondary window views with parameters are not supported yet",
             ));
         }
-        if !secondary_view.derived.is_empty() {
-            return Err(diag(
-                secondary_view.name_span,
-                "Windows distinct secondary window derived values are not supported yet",
-            ));
+        for derived in &secondary_view.derived {
+            if !matches!(
+                signatures.canonical_type(&derived.ty),
+                Type::Bool | Type::I64 | Type::Str
+            ) {
+                return Err(diag(
+                    derived.type_span,
+                    "Windows distinct secondary window derived values currently support bool, i64, and str",
+                ));
+            }
+            ui_expr_c_for_view_identity(
+                &derived.value,
+                secondary_view,
+                signatures,
+                Some(*view_identity),
+            )?;
         }
         for state in &secondary_view.states {
             let valid_initial = match signatures.canonical_type(&state.ty) {
@@ -18330,6 +18341,20 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
                 }
                 _ => unreachable!("secondary Windows state type was validated above"),
             }
+        }
+        for derived in &secondary_view.derived {
+            let derived_name =
+                ui_derived_c_name_for_view_identity(&derived.name, Some(*view_identity));
+            let initial = match signatures.canonical_type(&derived.ty) {
+                Type::I64 => "INT64_C(0)",
+                Type::Bool => "false",
+                Type::Str => "NULL",
+                _ => unreachable!("secondary Windows derived type was validated above"),
+            };
+            out.push_str(&format!(
+                "static {} {derived_name} = {initial};\n",
+                c_type(&derived.ty, signatures)
+            ));
         }
     }
     let scalar_states = view
@@ -21402,6 +21427,18 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         out.push_str(&format!(
             "static void flux__win_refresh_view_{view_identity}(void) {{ FluxWindowsWindowContext *context = flux__windows_active_context; if (context == NULL || context->view_identity != UINT32_C({view_identity}) || context->control_windows == NULL) return;\n"
         ));
+        for derived in &secondary_view.derived {
+            let value = ui_expr_c_for_view_identity(
+                &derived.value,
+                secondary_view,
+                signatures,
+                Some(*view_identity),
+            )?;
+            out.push_str(&format!(
+                "{} = {value};\n",
+                ui_derived_c_name_for_view_identity(&derived.name, Some(*view_identity))
+            ));
+        }
         for (index, element) in secondary_view.elements.iter().enumerate() {
             if let Some(property) = view_property(element, "text") {
                 let value = ui_expr_c_for_view_identity(
