@@ -6433,7 +6433,8 @@ app Screen
         generated.contains("flux__win_set_input_scope(flux__ui_dynamic, flux__ui_state_scope)")
     );
     assert!(generated.contains("flux__win_set_input_scope(flux__ui_phone, \"phone\")"));
-    assert!(generated.contains("case WM_CLOSE: { flux__win_clear_input_scope(flux__ui_dynamic);"));
+    assert!(generated.contains("case WM_CLOSE: { FluxWindowsWindowContext *close_context = flux__windows_context_for(hwnd); if (close_context != NULL && close_context->view_identity == UINT32_C(0)) {"));
+    assert!(generated.contains("flux__win_clear_input_scope(flux__ui_dynamic);"));
     assert!(generated.contains("flux__win_clear_input_scope(flux__ui_phone);"));
     assert!(generated.contains("flux__win_input_scope_shutdown();"));
 
@@ -70850,6 +70851,10 @@ app Screen
         windows
             .contains("if (dialog_window != NULL) flux__windows_activate_context(dialog_window);")
     );
+    assert!(windows.contains("FluxWindowsWindowContext *paint_context = flux__windows_context_for(hwnd); if (paint_context == NULL || paint_context->view_identity != UINT32_C(0)) break;"));
+    assert!(windows.contains(
+        "if (context != NULL && context->view_identity == UINT32_C(0)) flux__win_apply_fonts();"
+    ));
     assert!(windows.contains("case WM_COMMAND: flux__windows_activate_context(hwnd);"));
     assert!(
         windows.contains(

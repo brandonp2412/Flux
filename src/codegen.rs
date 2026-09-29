@@ -21123,7 +21123,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             "static bool flux__win_handle_root_view_context_menu(HWND control, LPARAM lparam);\n",
         );
     }
-    out.push_str("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { switch (message) { case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT: { HDC dc = (HDC)wparam; HWND control = (HWND)lparam;\n");
+    out.push_str(&format!("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ switch (message) {{ case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT: {{ HDC dc = (HDC)wparam; HWND control = (HWND)lparam; FluxWindowsWindowContext *paint_context = flux__windows_context_for(hwnd); if (paint_context == NULL || paint_context->view_identity != UINT32_C({root_view_identity})) break;\n"));
     for (index, element) in view.elements.iter().enumerate().filter(|(_, element)| {
         let presentation_text_color = element.kind != "Image"
             && view_property(element, "status")
@@ -21250,9 +21250,11 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         }
     }
     let dpi_font_refresh = if view.elements.iter().any(|element| element.kind == "Text") {
-        " flux__win_apply_fonts();"
+        format!(
+            " if (context != NULL && context->view_identity == UINT32_C({root_view_identity})) flux__win_apply_fonts();"
+        )
     } else {
-        ""
+        String::new()
     };
     let save_callback = if on_save_state.is_some() {
         "flux__win_save_app_state();"
@@ -21293,7 +21295,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         String::new()
     };
     let input_scope_close = if uses_input_scopes || uses_text_drag_drop {
-        let mut cleanup = String::from(" case WM_CLOSE: {");
+        let mut cleanup = format!(
+            " case WM_CLOSE: {{ FluxWindowsWindowContext *close_context = flux__windows_context_for(hwnd); if (close_context != NULL && close_context->view_identity == UINT32_C({root_view_identity})) {{"
+        );
         if uses_input_scopes {
             for element in view.elements.iter().filter(|element| {
                 element.kind == "TextInput" && view_property(element, "keyboard_type").is_some()
@@ -21316,7 +21320,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 ));
             }
         }
-        cleanup.push_str(" DestroyWindow(hwnd); return 0; }");
+        cleanup.push_str(" } DestroyWindow(hwnd); return 0; }");
         cleanup
     } else {
         String::new()
