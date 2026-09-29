@@ -71584,6 +71584,125 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_native_end_ellipsizing() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text clipped at 1,1
+        text: "A long secondary label"
+        ellipsize: "end"
+    Text plain at 2,1
+        text: "Plain"
+        ellipsize: "none"
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary ellipsize route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary end ellipsize should lower for Windows");
+
+    assert!(windows.contains(
+        "context->control_windows[0] = CreateWindowExW(0, L\"STATIC\", L\"\", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS"
+    ));
+    assert!(windows.contains(
+        "context->control_windows[1] = CreateWindowExW(0, L\"STATIC\", L\"\", WS_CHILD | WS_VISIBLE | SS_LEFT,"
+    ));
+
+    let unsupported = source.replace("ellipsize: \"end\"", "ellipsize: \"middle\"");
+    let unsupported_database =
+        fluxc::semantic::SemanticDatabase::analyze(&unsupported, SourceId::UNKNOWN)
+            .expect("secondary middle ellipsize should analyze before target lowering");
+    let unsupported_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        unsupported_database.program(),
+        unsupported_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("secondary middle ellipsize should stay explicitly unsupported");
+    assert!(
+        unsupported_error.message.contains(
+            "Windows distinct secondary Text currently supports ellipsize: 'none' or 'end'"
+        )
+    );
+
+    let dynamic = source
+        .replace(
+            "grid columns: 1fr",
+            "state overflow: str = \"end\"\n    grid columns: 1fr",
+        )
+        .replace("ellipsize: \"end\"", "ellipsize: overflow");
+    let dynamic_database = fluxc::semantic::SemanticDatabase::analyze(&dynamic, SourceId::UNKNOWN)
+        .expect("secondary dynamic ellipsize should analyze before target lowering");
+    let dynamic_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        dynamic_database.program(),
+        dynamic_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("secondary dynamic ellipsize should stay explicitly unsupported");
+    assert!(dynamic_error.message.contains(
+        "Windows distinct secondary Text currently requires ellipsize to be a compile-time str value"
+    ));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-end-ellipsize-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("secondary ellipsize syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary ellipsize C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary ellipsize Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary ellipsize Windows C failed syntax validation:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_toggle_and_radio_controls() {
     let source = r#"
 fn openSecondary() -> void {
