@@ -17064,6 +17064,8 @@ fn emit_windows_native_application(
                             | "onFocus"
                             | "on_blur"
                             | "onBlur"
+                            | "on_key"
+                            | "onKey"
                             | "on_scale"
                             | "onScale"
                             | "on_drag"

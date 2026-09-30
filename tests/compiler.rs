@@ -74390,6 +74390,112 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_key_events() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+fn keyed(key: str) -> void {
+    print(key)
+}
+
+fn tapped() -> void {
+    print("tap")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text keyOnly at 1,1
+        text: "Key"
+        onKey: keyed
+    Text keyAndTap at 2,1
+        text: "Key + tap"
+        onKey: keyed
+        onTap: tapped
+    TextInput input at 3,1
+        text: "Input"
+        onKey: keyed
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary key-event route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary key events should lower for Windows");
+
+    assert!(windows.contains("static const char *flux__win_key_name(WPARAM key, char utf8[8])"));
+    assert!(windows.contains("static bool flux__win_dispatch_key_view_1(const MSG *message)"));
+    assert!(windows.contains("HWND focused = GetFocus(); char utf8[8] = {0};"));
+    assert!(windows.contains(
+        r#"CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT | WS_TABSTOP"#
+    ));
+    assert!(windows.contains(
+        "if (focused != NULL && focused == context->control_windows[0]) { const char *key = flux__win_key_name(message->wParam, utf8); flux__fn_keyed(key); flux__win_refresh(); return false; }"
+    ));
+    assert!(windows.contains(
+        "if (focused != NULL && focused == context->control_windows[1]) { const char *key = flux__win_key_name(message->wParam, utf8); flux__fn_keyed(key); flux__win_refresh(); if (message->wParam == VK_RETURN || message->wParam == VK_SPACE) return true; return false; }"
+    ));
+    assert!(windows.contains(
+        "if (focused != NULL && focused == context->control_windows[2]) { const char *key = flux__win_key_name(message->wParam, utf8); flux__fn_keyed(key); flux__win_refresh(); return false; }"
+    ));
+    assert!(windows.contains("case UINT32_C(1): return flux__win_dispatch_key_view_1(message);"));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-key-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("secondary key syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary key C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary key Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary key Windows C failed syntax validation:
+{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_custom_accessibility_metadata() {
     let source = r#"
 fn openSecondary() -> void {
