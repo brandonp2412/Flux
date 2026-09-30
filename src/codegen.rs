@@ -16884,6 +16884,9 @@ fn emit_windows_native_application(
                         "background_color"
                             | "backgroundColor"
                             | "status"
+                            | "shortcut"
+                            | "shortcut_scope"
+                            | "shortcutScope"
                             | "min_width"
                             | "minWidth"
                             | "min_height"
@@ -17092,7 +17095,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.padding/Toggle.padding/Radio.padding/TextInput.padding/Nav.padding/Chart.padding/Card.padding/Header.padding/Content.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/clip/borderColor/borderTopColor/borderEndColor/borderBottomColor/borderStartColor/borderWidth/borderTopWidth/borderEndWidth/borderBottomWidth/borderStartWidth/borderStyle/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/focus/blur/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/shortcut/shortcutScope/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.padding/Toggle.padding/Radio.padding/TextInput.padding/Nav.padding/Chart.padding/Card.padding/Header.padding/Content.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/clip/borderColor/borderTopColor/borderEndColor/borderBottomColor/borderStartColor/borderWidth/borderTopWidth/borderEndWidth/borderBottomWidth/borderStartWidth/borderStyle/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/focus/blur/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -20597,7 +20600,13 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
     let uses_shortcuts = view
         .elements
         .iter()
-        .any(|element| view_property(element, "shortcut").is_some());
+        .any(|element| view_property(element, "shortcut").is_some())
+        || secondary_window_views.iter().any(|(_, secondary_view)| {
+            secondary_view
+                .elements
+                .iter()
+                .any(|element| view_property(element, "shortcut").is_some())
+        });
     let uses_context_menus = view.elements.iter().any(|element| {
         view_property(element, "on_context_menu").is_some()
             || view_property(element, "context_menu_label").is_some()
@@ -21888,21 +21897,94 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         out.push_str("return false; }\n");
         let mut secondary_key_dispatch = String::new();
         for (view_identity, secondary_view) in &secondary_window_views {
-            let has_secondary_key_events = secondary_view
-                .elements
-                .iter()
-                .any(|element| view_property(element, "on_key").is_some());
-            let has_passive_taps = secondary_view.elements.iter().any(|element| {
-                element.kind != "TextInput"
-                    && !matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
-                    && view_property(element, "on_tap").is_some()
+            let has_secondary_key_dispatch = secondary_view.elements.iter().any(|element| {
+                view_property(element, "on_key").is_some()
+                    || view_property(element, "shortcut").is_some()
+                    || (element.kind != "TextInput"
+                        && !matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
+                        && view_property(element, "on_tap").is_some())
             });
-            if !has_secondary_key_events && !has_passive_taps {
+            if !has_secondary_key_dispatch {
                 continue;
             }
             out.push_str(&format!(
                 "static bool flux__win_dispatch_key_view_{view_identity}(const MSG *message) {{ if (message == NULL || (message->message != WM_KEYDOWN && message->message != WM_SYSKEYDOWN)) return false; FluxWindowsWindowContext *context = flux__windows_active_context; if (context == NULL || context->view_identity != UINT32_C({view_identity}) || context->control_windows == NULL) return false; HWND focused = GetFocus(); char utf8[8] = {{0}};\n"
             ));
+            for (index, element) in secondary_view.elements.iter().enumerate() {
+                let Some(property) = view_property(element, "shortcut") else {
+                    continue;
+                };
+                let Some(shortcut) = static_expr_str(&property.value, signatures) else {
+                    return Err(diag(
+                        property.value.span,
+                        "shortcut must be a compile-time string",
+                    ));
+                };
+                let Some((control, shift, alt, key)) =
+                    crate::typecheck::parse_ui_shortcut(&shortcut)
+                else {
+                    return Err(diag(
+                        property.value.span,
+                        "shortcut must use modifiers Ctrl/Shift/Alt plus one key, for example 'Ctrl+K' or 'Ctrl+Shift+Enter'",
+                    ));
+                };
+                let virtual_key = match key.as_str() {
+                    "Enter" => "VK_RETURN".to_string(),
+                    "Space" => "VK_SPACE".to_string(),
+                    "Tab" => "VK_TAB".to_string(),
+                    "Escape" => "VK_ESCAPE".to_string(),
+                    "Delete" => "VK_DELETE".to_string(),
+                    "Up" => "VK_UP".to_string(),
+                    "Down" => "VK_DOWN".to_string(),
+                    "Left" => "VK_LEFT".to_string(),
+                    "Right" => "VK_RIGHT".to_string(),
+                    key if key.len() == 1 && key.as_bytes()[0].is_ascii_alphanumeric() => {
+                        format!("'{}'", key)
+                    }
+                    _ => unreachable!("validated portable shortcut key"),
+                };
+                let focus_condition = match view_property(element, "shortcut_scope") {
+                    Some(scope) => {
+                        let Some(scope_name) = static_expr_str(&scope.value, signatures) else {
+                            return Err(diag(
+                                scope.value.span,
+                                "shortcutScope must be a compile-time string value",
+                            ));
+                        };
+                        match scope_name.as_str() {
+                            "window" => String::new(),
+                            "focused" => {
+                                format!(" && focused == context->control_windows[{index}]")
+                            }
+                            _ => {
+                                return Err(diag(
+                                    scope.value.span,
+                                    "shortcutScope must be 'window' or 'focused'",
+                                ));
+                            }
+                        }
+                    }
+                    None => String::new(),
+                };
+                let action = if element.kind == "Button"
+                    && view_property(element, "on_press").is_some()
+                {
+                    format!(
+                        "SendMessageW(context->hwnd, WM_COMMAND, MAKEWPARAM({}, BN_CLICKED), (LPARAM)context->control_windows[{index}]);",
+                        1000 + index
+                    )
+                } else if view_property(element, "on_tap").is_some() {
+                    format!("flux__win_tap_view_{view_identity}_{index}();")
+                } else {
+                    continue;
+                };
+                out.push_str(&format!(
+                    "if (message->wParam == {virtual_key} && (((GetKeyState(VK_CONTROL) & 0x8000) != 0) == {}) && (((GetKeyState(VK_SHIFT) & 0x8000) != 0) == {}) && (((GetKeyState(VK_MENU) & 0x8000) != 0) == {}){focus_condition}) {{ {action} return true; }}\n",
+                    if control { "true" } else { "false" },
+                    if shift { "true" } else { "false" },
+                    if alt { "true" } else { "false" },
+                ));
+            }
             for (index, element) in secondary_view.elements.iter().enumerate() {
                 let on_key = view_property(element, "on_key");
                 let passive_tap = element.kind != "TextInput"
