@@ -16883,6 +16883,7 @@ fn emit_windows_native_application(
                         property.name.as_str(),
                         "background_color"
                             | "backgroundColor"
+                            | "status"
                             | "min_width"
                             | "minWidth"
                             | "min_height"
@@ -24372,7 +24373,20 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             } else {
                 None
             };
-            if !validation && background.is_none() && text_color.is_none() {
+            let presentation_status = if element.kind != "Image" {
+                view_property(element, "status")
+                    .and_then(|property| static_expr_str(&property.value, signatures))
+            } else {
+                None
+            };
+            let presentation_text_color = presentation_status
+                .as_deref()
+                .is_some_and(|status| matches!(status, "empty" | "error"));
+            if !validation
+                && background.is_none()
+                && text_color.is_none()
+                && !presentation_text_color
+            {
                 continue;
             }
             secondary_paint.push_str(&format!(
@@ -24393,6 +24407,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         " COLORREF flux__win_view_{view_identity}_text_color_{index}; if (flux__win_style_color_for(secondary_paint_context, {}, &flux__win_view_{view_identity}_text_color_{index})) SetTextColor(dc, flux__win_view_{view_identity}_text_color_{index});",
                         index * 2 + 1
                     ));
+                }
+            }
+            if let Some(status) = presentation_status.as_deref() {
+                match status {
+                    "empty" => secondary_paint.push_str(" SetTextColor(dc, RGB(87, 96, 106));"),
+                    "error" => secondary_paint.push_str(" SetTextColor(dc, RGB(207, 34, 46));"),
+                    _ => {}
                 }
             }
             if let Some(property) = background {
@@ -26104,7 +26125,20 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             {
                 style.push_str(" | SS_NOTIFY");
             }
-            out.push_str(&format!("context->control_windows[{index}] = CreateWindowExW(0, L\"{class}\", L\"\", {style}, 0, 0, 1, 1, window, (HMENU)(INT_PTR){id}, instance, NULL); if (context->control_windows[{index}] == NULL) return flux__win_create_view_window_failure(window, primary); SendMessageW(context->control_windows[{index}], WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE); flux__win_set_text_if_changed(context->control_windows[{index}], {});\n", c_string(&text)));
+            let presentation_status = view_property(element, "status")
+                .and_then(|property| static_expr_str(&property.value, signatures))
+                .unwrap_or_else(|| "normal".to_string());
+            let element_ex_style = if presentation_status == "loading" {
+                "WS_EX_LAYERED"
+            } else {
+                "0"
+            };
+            out.push_str(&format!("context->control_windows[{index}] = CreateWindowExW({element_ex_style}, L\"{class}\", L\"\", {style}, 0, 0, 1, 1, window, (HMENU)(INT_PTR){id}, instance, NULL); if (context->control_windows[{index}] == NULL) return flux__win_create_view_window_failure(window, primary); SendMessageW(context->control_windows[{index}], WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE); flux__win_set_text_if_changed(context->control_windows[{index}], {});\n", c_string(&text)));
+            if presentation_status == "loading" {
+                out.push_str(&format!(
+                    "if (!SetLayeredWindowAttributes(context->control_windows[{index}], 0, (BYTE)173, LWA_ALPHA)) return flux__win_create_view_window_failure(window, primary);\n"
+                ));
+            }
             if let Some(action) = view_property(element, "on_drop") {
                 let ExprKind::Var(function) = &action.value.kind else {
                     unreachable!("secondary drop callback shape was validated before emission");
