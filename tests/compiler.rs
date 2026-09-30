@@ -75235,6 +75235,143 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_gesture_transforms() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+fn dragged(x: i64, y: i64) -> void {
+    print(x)
+    print(y)
+}
+
+fn scaled(percent: i64) -> void {
+    print(percent)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    grid columns: 1fr
+    grid rows: auto auto auto auto
+    Text dragOnly at 1,1
+        text: "Drag"
+        translateX: 8
+        dragTranslate: true
+    Text dragComposed at 2,1
+        text: "Drag callback"
+        dragTranslate: true
+        onDrag: dragged
+    Text scaleOnly at 3,1
+        text: "Pinch"
+        scalePercent: 120
+        pinchScale: true
+    TextInput scaleComposed at 4,1
+        text: "Pinch input"
+        pinchScale: true
+        onScale: scaled
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary gesture-transform route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary gesture transforms should lower for Windows");
+
+    assert!(windows.contains("int64_t gesture_translate_x[4]"));
+    assert!(windows.contains("int64_t gesture_translate_y[4]"));
+    assert!(windows.contains("int64_t gesture_scale[4]"));
+    assert!(windows.contains(
+        "((FluxWindowsView1GestureState *)context->control_gesture_state)->gesture_scale[2] = INT64_C(100);"
+    ));
+    assert!(windows.contains(
+        "((FluxWindowsView1GestureState *)context->control_gesture_state)->gesture_scale[3] = INT64_C(100);"
+    ));
+    assert!(windows.contains(
+        "static LRESULT CALLBACK flux__win_drag_proc_view_1_0(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)"
+    ));
+    assert!(windows.contains(
+        "static LRESULT CALLBACK flux__win_drag_proc_view_1_1(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)"
+    ));
+    assert!(windows.contains("drag_gesture->gesture_translate_x[0] = flux__win_unscale(offset_x)"));
+    assert!(windows.contains("drag_gesture->gesture_translate_y[1] = flux__win_unscale(offset_y)"));
+    assert!(
+        windows.contains(
+            "flux__fn_dragged(flux__win_unscale(offset_x), flux__win_unscale(offset_y));"
+        )
+    );
+    assert!(windows.contains(
+        "static LRESULT CALLBACK flux__win_scale_proc_view_1_2(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)"
+    ));
+    assert!(windows.contains(
+        "static LRESULT CALLBACK flux__win_input_proc_view_1_3(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)"
+    ));
+    assert!(windows.contains("scale_gesture->gesture_scale[2] = scale_percent"));
+    assert!(windows.contains("flux__fn_scaled(scale_percent);"));
+    assert!(windows.contains(
+        "((FluxWindowsView1GestureState *)context->control_gesture_state)->gesture_translate_x[0]"
+    ));
+    assert!(windows.contains(
+        "((FluxWindowsView1GestureState *)context->control_gesture_state)->gesture_scale[2]"
+    ));
+    assert!(windows.contains(
+        "RECT flux__win_view_1_refresh_client = {0}; if (context->hwnd != NULL && GetClientRect(context->hwnd"
+    ));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-gesture-transform-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)
+            .expect("secondary gesture-transform syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows).expect("secondary gesture-transform C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary gesture-transform Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary gesture-transform Windows C failed syntax validation:
+{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_composed_swipe_interaction() {
     let source = r#"
 fn openSecondary() -> void {

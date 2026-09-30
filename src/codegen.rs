@@ -16889,6 +16889,10 @@ fn emit_windows_native_application(
                             | "shortcutScope"
                             | "drag_text"
                             | "dragText"
+                            | "drag_translate"
+                            | "dragTranslate"
+                            | "pinch_scale"
+                            | "pinchScale"
                             | "min_width"
                             | "minWidth"
                             | "min_height"
@@ -17097,7 +17101,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/shortcut/shortcutScope/dragText/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.padding/Toggle.padding/Radio.padding/TextInput.padding/Nav.padding/Chart.padding/Card.padding/Header.padding/Content.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/clip/borderColor/borderTopColor/borderEndColor/borderBottomColor/borderStartColor/borderWidth/borderTopWidth/borderEndWidth/borderBottomWidth/borderStartWidth/borderStyle/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/focus/blur/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/shortcut/shortcutScope/dragText/dragTranslate/pinchScale/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.padding/Toggle.padding/Radio.padding/TextInput.padding/Nav.padding/Chart.padding/Card.padding/Header.padding/Content.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/clip/borderColor/borderTopColor/borderEndColor/borderBottomColor/borderStartColor/borderWidth/borderTopWidth/borderEndWidth/borderBottomWidth/borderStartWidth/borderStyle/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/focus/blur/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -21493,7 +21497,11 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             .iter()
             .enumerate()
             .filter_map(|(index, element)| {
-                view_property(element, "on_drag").is_some().then_some(index)
+                (view_property(element, "on_drag").is_some()
+                    || view_property(element, "drag_translate")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        == Some(true))
+                .then_some(index)
             })
             .collect::<Vec<_>>();
         let secondary_swipe_subclasses = secondary_view
@@ -21511,9 +21519,11 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             .iter()
             .enumerate()
             .filter_map(|(index, element)| {
-                view_property(element, "on_scale")
-                    .is_some()
-                    .then_some(index)
+                (view_property(element, "on_scale").is_some()
+                    || view_property(element, "pinch_scale")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        == Some(true))
+                .then_some(index)
             })
             .collect::<Vec<_>>();
         let secondary_subclass_indices = secondary_view
@@ -21577,6 +21587,15 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 gesture_fields.push_str(&format!(
                     "bool dragging[{slots}]; LONG drag_start_screen_x[{slots}]; LONG drag_start_screen_y[{slots}];"
                 ));
+                if secondary_view.elements.iter().any(|element| {
+                    view_property(element, "drag_translate")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        == Some(true)
+                }) {
+                    gesture_fields.push_str(&format!(
+                        " int64_t gesture_translate_x[{slots}]; int64_t gesture_translate_y[{slots}];"
+                    ));
+                }
             }
             if !secondary_swipe_subclasses.is_empty() {
                 if !gesture_fields.is_empty() {
@@ -21591,6 +21610,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     gesture_fields.push(' ');
                 }
                 gesture_fields.push_str(&format!("ULONGLONG pinch_start[{slots}];"));
+                if secondary_view.elements.iter().any(|element| {
+                    view_property(element, "pinch_scale")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        == Some(true)
+                }) {
+                    gesture_fields.push_str(&format!(" int64_t gesture_scale[{slots}];"));
+                }
             }
             out.push_str(&format!(
                 "typedef struct {{ {gesture_fields} }} FluxWindowsView{view_identity}GestureState;
@@ -22754,8 +22780,18 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     Some(*view_identity),
                 )
             };
-            let secondary_translate_x_value = secondary_translate_value("translate_x")?;
-            let secondary_translate_y_value = secondary_translate_value("translate_y")?;
+            let secondary_drag_translate =
+                static_gesture_transform_enabled(element, "drag_translate", signatures)?;
+            let mut secondary_translate_x_value = secondary_translate_value("translate_x")?;
+            let mut secondary_translate_y_value = secondary_translate_value("translate_y")?;
+            if secondary_drag_translate {
+                secondary_translate_x_value = format!(
+                    "({secondary_translate_x_value}) + (context->control_gesture_state != NULL ? ((FluxWindowsView{view_identity}GestureState *)context->control_gesture_state)->gesture_translate_x[{index}] : INT64_C(0))"
+                );
+                secondary_translate_y_value = format!(
+                    "({secondary_translate_y_value}) + (context->control_gesture_state != NULL ? ((FluxWindowsView{view_identity}GestureState *)context->control_gesture_state)->gesture_translate_y[{index}] : INT64_C(0))"
+                );
+            }
             let secondary_scale_value =
                 |property_name: &str, fallback: String| -> Result<String, Diagnostic> {
                     let Some(property) = view_property(element, property_name) else {
@@ -22787,10 +22823,23 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             };
             let secondary_scale_percent_value =
                 secondary_scale_value("scale_percent", "INT64_C(100)".to_string())?;
-            let secondary_scale_x_percent_value =
+            let mut secondary_scale_x_percent_value =
                 secondary_scale_value("scale_x_percent", secondary_scale_percent_value.clone())?;
-            let secondary_scale_y_percent_value =
+            let mut secondary_scale_y_percent_value =
                 secondary_scale_value("scale_y_percent", secondary_scale_percent_value)?;
+            let secondary_pinch_scale =
+                static_gesture_transform_enabled(element, "pinch_scale", signatures)?;
+            if secondary_pinch_scale {
+                let gesture_scale = format!(
+                    "(context->control_gesture_state != NULL ? ((FluxWindowsView{view_identity}GestureState *)context->control_gesture_state)->gesture_scale[{index}] : INT64_C(100))"
+                );
+                secondary_scale_x_percent_value = format!(
+                    "((int64_t)({secondary_scale_x_percent_value}) * {gesture_scale} / INT64_C(100))"
+                );
+                secondary_scale_y_percent_value = format!(
+                    "((int64_t)({secondary_scale_y_percent_value}) * {gesture_scale} / INT64_C(100))"
+                );
+            }
             let secondary_transform_origin_x_percent_value =
                 secondary_origin_value("transform_origin_x_percent")?;
             let secondary_transform_origin_y_percent_value =
@@ -22800,6 +22849,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 || view_property(element, "scale_y_percent").is_some()
                 || view_property(element, "transform_origin_x_percent").is_some()
                 || view_property(element, "transform_origin_y_percent").is_some()
+                || secondary_pinch_scale
             {
                 format!(
                     "int64_t requested_scale_x = {secondary_scale_x_percent_value}; int64_t requested_scale_y = {secondary_scale_y_percent_value}; int64_t requested_transform_origin_x = {secondary_transform_origin_x_percent_value}; int64_t requested_transform_origin_y = {secondary_transform_origin_y_percent_value}; if (requested_scale_x < 0 || requested_scale_x > INT32_MAX) {{ fputs(\"Flux runtime error: scaleXPercent must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_scale_y < 0 || requested_scale_y > INT32_MAX) {{ fputs(\"Flux runtime error: scaleYPercent must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_transform_origin_x < INT32_MIN || requested_transform_origin_x > INT32_MAX) {{ fputs(\"Flux runtime error: transformOriginXPercent must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_transform_origin_y < INT32_MIN || requested_transform_origin_y > INT32_MAX) {{ fputs(\"Flux runtime error: transformOriginYPercent must fit within a 32-bit signed integer\\n\", stderr); abort(); }} int previous_control_width = control_width; int previous_control_height = control_height; int64_t scaled_control_width = ((int64_t)previous_control_width * requested_scale_x) / INT64_C(100); int64_t scaled_control_height = ((int64_t)previous_control_height * requested_scale_y) / INT64_C(100); if (scaled_control_width > INT32_MAX) scaled_control_width = INT32_MAX; if (scaled_control_height > INT32_MAX) scaled_control_height = INT32_MAX; control_width = (int)scaled_control_width; control_height = (int)scaled_control_height; int64_t scale_origin_delta_x = ((int64_t)previous_control_width - control_width) * requested_transform_origin_x / INT64_C(100); int64_t scale_origin_delta_y = ((int64_t)previous_control_height - control_height) * requested_transform_origin_y / INT64_C(100); int64_t transformed_x = (int64_t)x + scale_origin_delta_x; int64_t transformed_y = (int64_t)y + scale_origin_delta_y; x = transformed_x < INT32_MIN ? INT32_MIN : (transformed_x > INT32_MAX ? INT32_MAX : (int)transformed_x); y = transformed_y < INT32_MIN ? INT32_MIN : (transformed_y > INT32_MAX ? INT32_MAX : (int)transformed_y); "
@@ -23673,7 +23723,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             });
             let dynamic_clip = view_property(element, "clip")
                 .is_some_and(|property| static_expr_bool(&property.value, signatures).is_none());
-            if dynamic_layout_constraint || dynamic_alignment || dynamic_clip {
+            let gesture_layout = view_property(element, "drag_translate")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                == Some(true)
+                || view_property(element, "pinch_scale")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    == Some(true);
+            if dynamic_layout_constraint || dynamic_alignment || dynamic_clip || gesture_layout {
                 return true;
             }
             if element.kind != "Text" {
@@ -24882,29 +24938,66 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             } else {
                 String::new()
             };
-            let drag_handler = if let Some(action) = view_property(element, "on_drag") {
-                let ExprKind::Var(function) = &action.value.kind else {
-                    unreachable!("secondary drag callback shape was validated before emission");
-                };
-                let callback = function_c_name(function);
-                format!(
-                    "FluxWindowsView{view_identity}GestureState *drag_gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (drag_gesture != NULL) {{ if (message == WM_LBUTTONDOWN) {{ POINT drag_start = {{ (LONG)(short)LOWORD(lparam), (LONG)(short)HIWORD(lparam) }}; if (ClientToScreen(hwnd, &drag_start)) {{ drag_gesture->dragging[{index}] = true; drag_gesture->drag_start_screen_x[{index}] = drag_start.x; drag_gesture->drag_start_screen_y[{index}] = drag_start.y; SetCapture(hwnd); }} }} if (message == WM_MOUSEMOVE && drag_gesture->dragging[{index}]) {{ if ((wparam & MK_LBUTTON) == 0) {{ drag_gesture->dragging[{index}] = false; if (GetCapture() == hwnd) ReleaseCapture(); }} else {{ POINT cursor; if (GetCursorPos(&cursor)) {{ int64_t physical_offset_x_wide = (int64_t)cursor.x - (int64_t)drag_gesture->drag_start_screen_x[{index}]; int64_t physical_offset_y_wide = (int64_t)cursor.y - (int64_t)drag_gesture->drag_start_screen_y[{index}]; int offset_x = physical_offset_x_wide < INT32_MIN ? INT32_MIN : (physical_offset_x_wide > INT32_MAX ? INT32_MAX : (int)physical_offset_x_wide); int offset_y = physical_offset_y_wide < INT32_MIN ? INT32_MIN : (physical_offset_y_wide > INT32_MAX ? INT32_MAX : (int)physical_offset_y_wide); {callback}(flux__win_unscale(offset_x), flux__win_unscale(offset_y)); flux__win_refresh(); }} }} }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ drag_gesture->dragging[{index}] = false; }} }} "
-                )
-            } else {
-                String::new()
+            let drag_translate =
+                static_gesture_transform_enabled(element, "drag_translate", signatures)?;
+            let drag_handler = {
+                let action = view_property(element, "on_drag");
+                if action.is_none() && !drag_translate {
+                    String::new()
+                } else {
+                    let callback = if let Some(action) = action {
+                        let ExprKind::Var(function) = &action.value.kind else {
+                            unreachable!(
+                                "secondary drag callback shape was validated before emission"
+                            );
+                        };
+                        format!(
+                            "{}(flux__win_unscale(offset_x), flux__win_unscale(offset_y)); ",
+                            function_c_name(function)
+                        )
+                    } else {
+                        String::new()
+                    };
+                    let gesture_update = if drag_translate {
+                        format!(
+                            "drag_gesture->gesture_translate_x[{index}] = flux__win_unscale(offset_x); drag_gesture->gesture_translate_y[{index}] = flux__win_unscale(offset_y); "
+                        )
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "FluxWindowsView{view_identity}GestureState *drag_gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (drag_gesture != NULL) {{ if (message == WM_LBUTTONDOWN) {{ POINT drag_start = {{ (LONG)(short)LOWORD(lparam), (LONG)(short)HIWORD(lparam) }}; if (ClientToScreen(hwnd, &drag_start)) {{ drag_gesture->dragging[{index}] = true; drag_gesture->drag_start_screen_x[{index}] = drag_start.x; drag_gesture->drag_start_screen_y[{index}] = drag_start.y; SetCapture(hwnd); }} }} if (message == WM_MOUSEMOVE && drag_gesture->dragging[{index}]) {{ if ((wparam & MK_LBUTTON) == 0) {{ drag_gesture->dragging[{index}] = false; if (GetCapture() == hwnd) ReleaseCapture(); }} else {{ POINT cursor; if (GetCursorPos(&cursor)) {{ int64_t physical_offset_x_wide = (int64_t)cursor.x - (int64_t)drag_gesture->drag_start_screen_x[{index}]; int64_t physical_offset_y_wide = (int64_t)cursor.y - (int64_t)drag_gesture->drag_start_screen_y[{index}]; int offset_x = physical_offset_x_wide < INT32_MIN ? INT32_MIN : (physical_offset_x_wide > INT32_MAX ? INT32_MAX : (int)physical_offset_x_wide); int offset_y = physical_offset_y_wide < INT32_MIN ? INT32_MIN : (physical_offset_y_wide > INT32_MAX ? INT32_MAX : (int)physical_offset_y_wide); {callback}{gesture_update}flux__win_refresh(); }} }} }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ drag_gesture->dragging[{index}] = false; }} }} "
+                    )
+                }
             };
-            let scale_handler = if let Some(action) = view_property(element, "on_scale") {
-                let ExprKind::Var(function) = &action.value.kind else {
-                    unreachable!("secondary scale callback shape was validated before emission");
-                };
-                let callback = function_c_name(function);
-                format!(
-                    "FluxWindowsView{view_identity}GestureState *scale_gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (scale_gesture != NULL && message == WM_GESTURE) {{ GESTUREINFO info = {{0}}; info.cbSize = sizeof(info); HGESTUREINFO handle = (HGESTUREINFO)lparam; if (GetGestureInfo(handle, &info) && info.dwID == GID_ZOOM) {{ if ((info.dwFlags & GF_BEGIN) != 0 || scale_gesture->pinch_start[{index}] == 0) scale_gesture->pinch_start[{index}] = info.ullArguments; else if (scale_gesture->pinch_start[{index}] > 0) {{ double ratio = (double)info.ullArguments / (double)scale_gesture->pinch_start[{index}]; double requested_gesture_scale = ratio * 100.0; int64_t scale_percent = requested_gesture_scale <= 0.0 ? INT64_C(0) : (requested_gesture_scale >= (double)INT32_MAX ? INT64_C(INT32_MAX) : (int64_t)(requested_gesture_scale + 0.5)); {callback}(scale_percent); flux__win_refresh(); }} if ((info.dwFlags & GF_END) != 0) scale_gesture->pinch_start[{index}] = 0; CloseGestureInfoHandle(handle); return 0; }} }} "
-                )
-            } else {
-                String::new()
+            let pinch_scale = static_gesture_transform_enabled(element, "pinch_scale", signatures)?;
+            let scale_handler = {
+                let action = view_property(element, "on_scale");
+                if action.is_none() && !pinch_scale {
+                    String::new()
+                } else {
+                    let callback = if let Some(action) = action {
+                        let ExprKind::Var(function) = &action.value.kind else {
+                            unreachable!(
+                                "secondary scale callback shape was validated before emission"
+                            );
+                        };
+                        format!("{}(scale_percent); ", function_c_name(function))
+                    } else {
+                        String::new()
+                    };
+                    let gesture_update = if pinch_scale {
+                        format!("scale_gesture->gesture_scale[{index}] = scale_percent; ")
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "FluxWindowsView{view_identity}GestureState *scale_gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (scale_gesture != NULL && message == WM_GESTURE) {{ GESTUREINFO info = {{0}}; info.cbSize = sizeof(info); HGESTUREINFO handle = (HGESTUREINFO)lparam; if (GetGestureInfo(handle, &info) && info.dwID == GID_ZOOM) {{ if ((info.dwFlags & GF_BEGIN) != 0 || scale_gesture->pinch_start[{index}] == 0) scale_gesture->pinch_start[{index}] = info.ullArguments; else if (scale_gesture->pinch_start[{index}] > 0) {{ double ratio = (double)info.ullArguments / (double)scale_gesture->pinch_start[{index}]; double requested_gesture_scale = ratio * 100.0; int64_t scale_percent = requested_gesture_scale <= 0.0 ? INT64_C(0) : (requested_gesture_scale >= (double)INT32_MAX ? INT64_C(INT32_MAX) : (int64_t)(requested_gesture_scale + 0.5)); {callback}{gesture_update}flux__win_refresh(); }} if ((info.dwFlags & GF_END) != 0) scale_gesture->pinch_start[{index}] = 0; CloseGestureInfoHandle(handle); return 0; }} }} "
+                    )
+                }
             };
             let capture_release_after_previous = if view_property(element, "on_drag").is_some()
+                || drag_translate
                 || view_property(element, "on_swipe").is_some()
             {
                 "if (message == WM_LBUTTONUP && GetCapture() == hwnd) ReleaseCapture(); "
@@ -26147,7 +26240,11 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             .iter()
             .enumerate()
             .filter_map(|(index, element)| {
-                view_property(element, "on_drag").is_some().then_some(index)
+                (view_property(element, "on_drag").is_some()
+                    || view_property(element, "drag_translate")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        == Some(true))
+                .then_some(index)
             })
             .collect::<Vec<_>>();
         let secondary_swipe_subclasses = secondary_view
@@ -26165,9 +26262,11 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             .iter()
             .enumerate()
             .filter_map(|(index, element)| {
-                view_property(element, "on_scale")
-                    .is_some()
-                    .then_some(index)
+                (view_property(element, "on_scale").is_some()
+                    || view_property(element, "pinch_scale")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        == Some(true))
+                .then_some(index)
             })
             .collect::<Vec<_>>();
         if !secondary_submit_subclasses.is_empty()
@@ -26197,6 +26296,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             out.push_str(&format!(
                 "context->control_gesture_state = calloc(1, sizeof(FluxWindowsView{view_identity}GestureState)); if (context->control_gesture_state == NULL) return flux__win_create_view_window_failure(window, primary);\n"
             ));
+            for (index, element) in secondary_view.elements.iter().enumerate() {
+                if static_gesture_transform_enabled(element, "pinch_scale", signatures)? {
+                    out.push_str(&format!(
+                        "((FluxWindowsView{view_identity}GestureState *)context->control_gesture_state)->gesture_scale[{index}] = INT64_C(100);\n"
+                    ));
+                }
+            }
         }
         for (index, element) in secondary_view.elements.iter().enumerate() {
             let text = if element.kind == "Image" {
