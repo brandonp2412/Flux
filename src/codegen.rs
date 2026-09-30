@@ -16887,6 +16887,8 @@ fn emit_windows_native_application(
                             | "shortcut"
                             | "shortcut_scope"
                             | "shortcutScope"
+                            | "drag_text"
+                            | "dragText"
                             | "min_width"
                             | "minWidth"
                             | "min_height"
@@ -17095,7 +17097,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/shortcut/shortcutScope/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.padding/Toggle.padding/Radio.padding/TextInput.padding/Nav.padding/Chart.padding/Card.padding/Header.padding/Content.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/clip/borderColor/borderTopColor/borderEndColor/borderBottomColor/borderStartColor/borderWidth/borderTopWidth/borderEndWidth/borderBottomWidth/borderStartWidth/borderStyle/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/focus/blur/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/shortcut/shortcutScope/dragText/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.padding/Toggle.padding/Radio.padding/TextInput.padding/Nav.padding/Chart.padding/Card.padding/Header.padding/Content.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/clip/borderColor/borderTopColor/borderEndColor/borderBottomColor/borderStartColor/borderWidth/borderTopWidth/borderEndWidth/borderBottomWidth/borderStartWidth/borderStyle/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/focus/blur/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -17767,10 +17769,10 @@ fn emit_windows_native_application(
     let uses_text_drag_drop = view.elements.iter().any(|element| {
         view_property(element, "drag_text").is_some() || view_property(element, "on_drop").is_some()
     }) || secondary_window_views.iter().any(|(_, secondary_view)| {
-        secondary_view
-            .elements
-            .iter()
-            .any(|element| view_property(element, "on_drop").is_some())
+        secondary_view.elements.iter().any(|element| {
+            view_property(element, "drag_text").is_some()
+                || view_property(element, "on_drop").is_some()
+        })
     });
     let windows_drop_target_slots = std::iter::once(view.elements.len())
         .chain(
@@ -21476,6 +21478,16 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 .then_some(index)
             })
             .collect::<Vec<_>>();
+        let secondary_text_drag_subclasses = secondary_view
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(index, element)| {
+                view_property(element, "drag_text")
+                    .is_some()
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
         let secondary_drag_subclasses = secondary_view
             .elements
             .iter()
@@ -21514,6 +21526,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     || secondary_double_tap_subclasses.contains(&index)
                     || secondary_hover_subclasses.contains(&index)
                     || secondary_focus_subclasses.contains(&index)
+                    || secondary_text_drag_subclasses.contains(&index)
                     || secondary_drag_subclasses.contains(&index)
                     || secondary_swipe_subclasses.contains(&index)
                     || secondary_scale_subclasses.contains(&index))
@@ -21523,6 +21536,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         if !secondary_long_press_subclasses.is_empty()
             || !secondary_double_tap_subclasses.is_empty()
             || !secondary_hover_subclasses.is_empty()
+            || !secondary_text_drag_subclasses.is_empty()
             || !secondary_drag_subclasses.is_empty()
             || !secondary_swipe_subclasses.is_empty()
             || !secondary_scale_subclasses.is_empty()
@@ -21547,6 +21561,14 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     gesture_fields.push(' ');
                 }
                 gesture_fields.push_str(&format!("bool hovering[{slots}];"));
+            }
+            if !secondary_text_drag_subclasses.is_empty() {
+                if !gesture_fields.is_empty() {
+                    gesture_fields.push(' ');
+                }
+                gesture_fields.push_str(&format!(
+                    "bool text_drag_tracking[{slots}]; int text_drag_start_x[{slots}]; int text_drag_start_y[{slots}];"
+                ));
             }
             if !secondary_drag_subclasses.is_empty() {
                 if !gesture_fields.is_empty() {
@@ -21594,6 +21616,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         if !secondary_long_press_subclasses.is_empty()
             || !secondary_double_tap_subclasses.is_empty()
             || !secondary_hover_subclasses.is_empty()
+            || !secondary_text_drag_subclasses.is_empty()
             || !secondary_drag_subclasses.is_empty()
             || !secondary_swipe_subclasses.is_empty()
             || !secondary_scale_subclasses.is_empty()
@@ -24834,6 +24857,20 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     )
                 }
             };
+            let text_drag_handler = if let Some(property) = view_property(element, "drag_text") {
+                let Some(text) = static_expr_str(&property.value, signatures) else {
+                    return Err(diag(
+                        property.value.span,
+                        "dragText must be a compile-time string value",
+                    ));
+                };
+                let payload = c_string(&text);
+                format!(
+                    "FluxWindowsView{view_identity}GestureState *text_drag_gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (text_drag_gesture != NULL) {{ if (message == WM_LBUTTONDOWN) {{ text_drag_gesture->text_drag_tracking[{index}] = true; text_drag_gesture->text_drag_start_x[{index}] = (int)(short)LOWORD(lparam); text_drag_gesture->text_drag_start_y[{index}] = (int)(short)HIWORD(lparam); }} if (message == WM_MOUSEMOVE && text_drag_gesture->text_drag_tracking[{index}]) {{ if ((wparam & MK_LBUTTON) == 0) text_drag_gesture->text_drag_tracking[{index}] = false; else {{ int dx = (int)(short)LOWORD(lparam) - text_drag_gesture->text_drag_start_x[{index}]; int dy = (int)(short)HIWORD(lparam) - text_drag_gesture->text_drag_start_y[{index}]; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) {{ text_drag_gesture->text_drag_tracking[{index}] = false; if (GetCapture() == hwnd) ReleaseCapture(); flux__win_begin_text_drag({payload}); }} }} }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) text_drag_gesture->text_drag_tracking[{index}] = false; }} "
+                )
+            } else {
+                String::new()
+            };
             let swipe_handler = if let Some(action) = view_property(element, "on_swipe") {
                 let ExprKind::Var(function) = &action.value.kind else {
                     unreachable!("secondary swipe callback shape was validated before emission");
@@ -25056,6 +25093,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 };
                 if !submit_handler.is_empty()
                     || !focus_handler.is_empty()
+                    || !text_drag_handler.is_empty()
                     || !swipe_handler.is_empty()
                     || !drag_handler.is_empty()
                     || !hover_handler.is_empty()
@@ -25064,7 +25102,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     || !scale_handler.is_empty()
                 {
                     out.push_str(&format!(
-                        "static LRESULT CALLBACK flux__win_input_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_original_count > {index} && context->control_subclass_originals != NULL ? context->control_subclass_originals[{index}] : NULL; {submit_handler}{focus_handler}{swipe_handler}{drag_handler}{hover_handler}{double_tap_handler}{long_press_handler}{scale_handler}{final_previous_dispatch} }}\n"
+                        "static LRESULT CALLBACK flux__win_input_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_original_count > {index} && context->control_subclass_originals != NULL ? context->control_subclass_originals[{index}] : NULL; {submit_handler}{focus_handler}{text_drag_handler}{swipe_handler}{drag_handler}{hover_handler}{double_tap_handler}{long_press_handler}{scale_handler}{final_previous_dispatch} }}\n"
                     ));
                 }
                 continue;
@@ -25173,7 +25211,8 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             } else {
                 String::new()
             };
-            let has_gesture_handler = !swipe_handler.is_empty()
+            let has_gesture_handler = !text_drag_handler.is_empty()
+                || !swipe_handler.is_empty()
                 || !drag_handler.is_empty()
                 || !hover_handler.is_empty()
                 || !double_tap_handler.is_empty()
@@ -25190,6 +25229,8 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     "swipe"
                 } else if !drag_handler.is_empty() {
                     "drag"
+                } else if !text_drag_handler.is_empty() {
+                    "text_drag"
                 } else if !scale_handler.is_empty() {
                     "scale"
                 } else {
@@ -25197,7 +25238,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 };
                 if has_gesture_handler {
                     out.push_str(&format!(
-                        "static LRESULT CALLBACK flux__win_{proc_kind}_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_originals != NULL && context->control_subclass_original_count > {index} ? context->control_subclass_originals[{index}] : NULL; FluxWindowsView{view_identity}GestureState *gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (gesture == NULL) return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); {focus_handler}{swipe_handler}{drag_handler}{hover_handler}{double_tap_handler}{long_press_handler}{scale_handler}{final_previous_dispatch} }}
+                        "static LRESULT CALLBACK flux__win_{proc_kind}_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ flux__windows_activate_control_context(hwnd); FluxWindowsWindowContext *context = flux__windows_active_context; WNDPROC previous = context != NULL && context->view_identity == UINT32_C({view_identity}) && context->control_subclass_originals != NULL && context->control_subclass_original_count > {index} ? context->control_subclass_originals[{index}] : NULL; FluxWindowsView{view_identity}GestureState *gesture = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (gesture == NULL) return previous != NULL ? CallWindowProcW(previous, hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam); {focus_handler}{text_drag_handler}{swipe_handler}{drag_handler}{hover_handler}{double_tap_handler}{long_press_handler}{scale_handler}{final_previous_dispatch} }}
 "
                     ));
                 } else {
@@ -26091,6 +26132,16 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 .then_some(index)
             })
             .collect::<Vec<_>>();
+        let secondary_text_drag_subclasses = secondary_view
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(index, element)| {
+                view_property(element, "drag_text")
+                    .is_some()
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
         let secondary_drag_subclasses = secondary_view
             .elements
             .iter()
@@ -26124,6 +26175,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             || !secondary_double_tap_subclasses.is_empty()
             || !secondary_hover_subclasses.is_empty()
             || !secondary_focus_subclasses.is_empty()
+            || !secondary_text_drag_subclasses.is_empty()
             || !secondary_drag_subclasses.is_empty()
             || !secondary_swipe_subclasses.is_empty()
             || !secondary_scale_subclasses.is_empty()
@@ -26137,6 +26189,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         if !secondary_long_press_subclasses.is_empty()
             || !secondary_double_tap_subclasses.is_empty()
             || !secondary_hover_subclasses.is_empty()
+            || !secondary_text_drag_subclasses.is_empty()
             || !secondary_drag_subclasses.is_empty()
             || !secondary_swipe_subclasses.is_empty()
             || !secondary_scale_subclasses.is_empty()
@@ -26285,6 +26338,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     || view_property(element, "on_long_press").is_some()
                     || view_property(element, "on_hover").is_some()
                     || view_property(element, "on_leave").is_some()
+                    || view_property(element, "drag_text").is_some()
                     || view_property(element, "on_drag").is_some()
                     || view_property(element, "on_swipe").is_some())
                 && !style.contains("SS_NOTIFY")
@@ -26376,6 +26430,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         || secondary_double_tap_subclasses.contains(&index)
                         || secondary_hover_subclasses.contains(&index)
                         || secondary_focus_subclasses.contains(&index)
+                        || secondary_text_drag_subclasses.contains(&index)
                         || secondary_drag_subclasses.contains(&index)
                         || secondary_swipe_subclasses.contains(&index)
                         || secondary_scale_subclasses.contains(&index)))
@@ -26389,6 +26444,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     || secondary_double_tap_subclasses.contains(&index)
                     || secondary_hover_subclasses.contains(&index)
                     || secondary_focus_subclasses.contains(&index)
+                    || secondary_text_drag_subclasses.contains(&index)
                     || secondary_drag_subclasses.contains(&index)
                     || secondary_swipe_subclasses.contains(&index)
                     || secondary_scale_subclasses.contains(&index))
@@ -26403,6 +26459,8 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     "swipe"
                 } else if secondary_drag_subclasses.contains(&index) {
                     "drag"
+                } else if secondary_text_drag_subclasses.contains(&index) {
+                    "text_drag"
                 } else if secondary_scale_subclasses.contains(&index) {
                     "scale"
                 } else {
