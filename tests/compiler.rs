@@ -71667,10 +71667,14 @@ app Screen
 }
 
 #[test]
-fn windows_distinct_route_windows_lower_focus_scope_and_autofocus() {
+fn windows_distinct_route_windows_lower_focus_scope_autofocus_and_key_events() {
     let source = r#"
 fn openSecondary() -> void {
     window.open(detail)
+}
+
+fn keyed(key: str) -> void {
+    print(key)
 }
 
 view Screen {
@@ -71686,6 +71690,7 @@ view Detail {
     grid rows: auto auto
     Text focusTarget at 1,1
         text: "Focused"
+        onKey: keyed
         autofocus: true
         focusScope: 7
         accessibilityOrder: 20
@@ -71710,6 +71715,10 @@ app Screen
     assert!(windows.contains(
         r#"CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT | WS_TABSTOP"#
     ));
+    assert!(windows.contains("static const char *flux__win_key_name"));
+    assert!(windows.contains("static bool flux__win_dispatch_key_view_1(const MSG *message)"));
+    assert!(windows.contains("focused == context->control_windows[0]"));
+    assert!(windows.contains("flux__fn_keyed(key); flux__win_refresh();"));
     assert!(windows.contains(
         r#"SetPropA(context->control_windows[0], "flux-focus-scope", (HANDLE)(INT_PTR)INT64_C(8))"#
     ));

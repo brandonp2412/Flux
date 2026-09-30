@@ -16886,7 +16886,9 @@ fn emit_windows_native_application(
                         && matches!(property.name.as_str(), "on_tap" | "onTap"))
                     || matches!(
                         property.name.as_str(),
-                        "on_double_tap"
+                        "on_key"
+                            | "onKey"
+                            | "on_double_tap"
                             | "onDoubleTap"
                             | "on_hover"
                             | "onHover"
@@ -16918,7 +16920,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -16992,6 +16994,15 @@ fn emit_windows_native_application(
                         &format!(
                             "Windows distinct secondary {source_name} requires a named fn() -> void callback or state transition"
                         ),
+                    ));
+                }
+            }
+            if let Some(property) = view_property(element, "on_key") {
+                if property.transition.is_some() || !matches!(property.value.kind, ExprKind::Var(_))
+                {
+                    return Err(diag(
+                        property.value.span,
+                        "Windows distinct secondary onKey requires a named fn(str) -> void callback",
                     ));
                 }
             }
@@ -19835,7 +19846,13 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
     let uses_key_events = view
         .elements
         .iter()
-        .any(|element| view_property(element, "on_key").is_some());
+        .any(|element| view_property(element, "on_key").is_some())
+        || secondary_window_views.iter().any(|(_, secondary_view)| {
+            secondary_view
+                .elements
+                .iter()
+                .any(|element| view_property(element, "on_key").is_some())
+        });
     let uses_shortcuts = view
         .elements
         .iter()
@@ -21015,27 +21032,52 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         out.push_str("return false; }\n");
         let mut secondary_key_dispatch = String::new();
         for (view_identity, secondary_view) in &secondary_window_views {
-            let passive_taps = secondary_view
+            let has_secondary_key_events = secondary_view
                 .elements
                 .iter()
-                .enumerate()
-                .filter(|(_, element)| {
-                    element.kind != "TextInput"
-                        && !matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
-                        && view_property(element, "on_tap").is_some()
-                })
-                .map(|(index, _)| index)
-                .collect::<Vec<_>>();
-            if passive_taps.is_empty() {
+                .any(|element| view_property(element, "on_key").is_some());
+            let has_passive_taps = secondary_view.elements.iter().any(|element| {
+                element.kind != "TextInput"
+                    && !matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
+                    && view_property(element, "on_tap").is_some()
+            });
+            if !has_secondary_key_events && !has_passive_taps {
                 continue;
             }
             out.push_str(&format!(
-                "static bool flux__win_dispatch_key_view_{view_identity}(const MSG *message) {{ if (message == NULL || (message->message != WM_KEYDOWN && message->message != WM_SYSKEYDOWN)) return false; FluxWindowsWindowContext *context = flux__windows_active_context; if (context == NULL || context->view_identity != UINT32_C({view_identity}) || context->control_windows == NULL) return false; HWND focused = GetFocus();\n"
+                "static bool flux__win_dispatch_key_view_{view_identity}(const MSG *message) {{ if (message == NULL || (message->message != WM_KEYDOWN && message->message != WM_SYSKEYDOWN)) return false; FluxWindowsWindowContext *context = flux__windows_active_context; if (context == NULL || context->view_identity != UINT32_C({view_identity}) || context->control_windows == NULL) return false; HWND focused = GetFocus(); char utf8[8] = {{0}};\n"
             ));
-            for index in passive_taps {
+            for (index, element) in secondary_view.elements.iter().enumerate() {
+                let on_key = view_property(element, "on_key");
+                let passive_tap = element.kind != "TextInput"
+                    && !matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
+                    && view_property(element, "on_tap").is_some();
+                if on_key.is_none() && !passive_tap {
+                    continue;
+                }
+                if on_key.is_none() {
+                    out.push_str(&format!(
+                        "if (focused != NULL && focused == context->control_windows[{index}] && (message->wParam == VK_RETURN || message->wParam == VK_SPACE)) {{ flux__win_tap_view_{view_identity}_{index}(); return true; }}\n"
+                    ));
+                    continue;
+                }
                 out.push_str(&format!(
-                    "if (focused != NULL && focused == context->control_windows[{index}] && (message->wParam == VK_RETURN || message->wParam == VK_SPACE)) {{ flux__win_tap_view_{view_identity}_{index}(); return true; }}\n"
+                    "if (focused != NULL && focused == context->control_windows[{index}]) {{ "
                 ));
+                let action = on_key.expect("secondary onKey is present");
+                let ExprKind::Var(function) = &action.value.kind else {
+                    unreachable!("secondary onKey shape was validated before emission");
+                };
+                out.push_str(&format!(
+                    "const char *key = flux__win_key_name(message->wParam, utf8); {}(key); flux__win_refresh(); ",
+                    function_c_name(function)
+                ));
+                if passive_tap {
+                    out.push_str(
+                        "if (message->wParam == VK_RETURN || message->wParam == VK_SPACE) return true; ",
+                    );
+                }
+                out.push_str("return false; }\n");
             }
             out.push_str("return false; }\n");
             secondary_key_dispatch.push_str(&format!(
@@ -24021,6 +24063,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             let implicitly_focusable = view_property(element, "autofocus")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
                 == Some(true)
+                || view_property(element, "on_key").is_some()
                 || view_property(element, "on_tap").is_some()
                 || view_property(element, "on_context_menu").is_some()
                 || view_property(element, "context_menu_label").is_some()
