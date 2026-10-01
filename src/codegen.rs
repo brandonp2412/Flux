@@ -34372,40 +34372,41 @@ fn static_ui_slice_bound(len: i64, value: Option<i64>, end: bool, step: i64) -> 
     resolved
 }
 
-fn reusable_ui_static_slice_args(
+fn reusable_ui_runtime_slice_args_c(
     start: Option<&Expr>,
     end: Option<&Expr>,
     step: Option<&Expr>,
+    view: &crate::ast::ViewDef,
     signatures: &Signatures,
-) -> Result<Option<(Option<i64>, Option<i64>, i64)>, Diagnostic> {
+    view_identity: Option<usize>,
+) -> Result<Option<(bool, String, bool, String, String)>, Diagnostic> {
+    let start_present = start.is_some();
     let start = if let Some(start) = start {
-        let Some(ConstantValue::I64(value)) = fold_ui_primitive_expr(start, signatures)? else {
+        if !transparent_native_component_argument_is_reusable(start) {
             return Ok(None);
-        };
-        Some(value)
+        }
+        ui_expr_c_for_view_identity(start, view, signatures, view_identity)?
     } else {
-        None
+        "INT64_C(0)".to_string()
     };
+    let end_present = end.is_some();
     let end = if let Some(end) = end {
-        let Some(ConstantValue::I64(value)) = fold_ui_primitive_expr(end, signatures)? else {
+        if !transparent_native_component_argument_is_reusable(end) {
             return Ok(None);
-        };
-        Some(value)
+        }
+        ui_expr_c_for_view_identity(end, view, signatures, view_identity)?
     } else {
-        None
+        "INT64_C(0)".to_string()
     };
     let step = if let Some(step) = step {
-        let Some(ConstantValue::I64(value)) = fold_ui_primitive_expr(step, signatures)? else {
+        if !transparent_native_component_argument_is_reusable(step) {
             return Ok(None);
-        };
-        value
+        }
+        ui_expr_c_for_view_identity(step, view, signatures, view_identity)?
     } else {
-        1
+        "INT64_C(1)".to_string()
     };
-    if step == 0 {
-        return Ok(None);
-    }
-    Ok(Some((start, end, step)))
+    Ok(Some((start_present, start, end_present, end, step)))
 }
 
 fn ui_constant_expr(value: ConstantValue, template: &Expr) -> Expr {
@@ -34740,12 +34741,15 @@ fn reusable_ui_runtime_list_length_c(
         optional: false,
     } = &expr.kind
     {
-        let Some((start, end, step)) = reusable_ui_static_slice_args(
-            start.as_deref(),
-            end.as_deref(),
-            step.as_deref(),
-            signatures,
-        )?
+        let Some((start_present, start, end_present, end, step)) =
+            reusable_ui_runtime_slice_args_c(
+                start.as_deref(),
+                end.as_deref(),
+                step.as_deref(),
+                view,
+                signatures,
+                view_identity,
+            )?
         else {
             return Ok(None);
         };
@@ -34759,12 +34763,8 @@ fn reusable_ui_runtime_list_length_c(
         let first_name = format!("flux__ui_component_slice_first_{suffix}");
         let last_name = format!("flux__ui_component_slice_last_{suffix}");
         let count_name = format!("flux__ui_component_slice_length_{suffix}");
-        let start_present = start.is_some();
-        let end_present = end.is_some();
-        let start = start.unwrap_or(0);
-        let end = end.unwrap_or(0);
         return Ok(Some(format!(
-            r#"__extension__ ({{ int64_t {base_name} = ({base_length}); int64_t {first_name} = flux_slice_bound((size_t){base_name}, {start_present}, INT64_C({start}), false, INT64_C({step})); int64_t {last_name} = flux_slice_bound((size_t){base_name}, {end_present}, INT64_C({end}), true, INT64_C({step})); int64_t {count_name} = INT64_C(0); if (INT64_C({step}) > INT64_C(0) && {first_name} < {last_name}) {{ {count_name} = INT64_C(1) + ({last_name} - INT64_C(1) - {first_name}) / INT64_C({step}); }} else if (INT64_C({step}) < INT64_C(0) && {first_name} > {last_name}) {{ uint64_t flux__ui_component_slice_magnitude = (uint64_t)(-(INT64_C({step}) + INT64_C(1))) + UINT64_C(1); {count_name} = INT64_C(1) + (int64_t)((uint64_t)({first_name} - INT64_C(1) - {last_name}) / flux__ui_component_slice_magnitude); }} {count_name}; }})"#
+            r#"__extension__ ({{ int64_t {base_name} = ({base_length}); if (({step}) == INT64_C(0)) {{ fputs("Flux runtime error: list slice step cannot be zero\n", stderr); abort(); }} int64_t {first_name} = flux_slice_bound((size_t){base_name}, {start_present}, ({start}), false, ({step})); int64_t {last_name} = flux_slice_bound((size_t){base_name}, {end_present}, ({end}), true, ({step})); int64_t {count_name} = INT64_C(0); if (({step}) > INT64_C(0) && {first_name} < {last_name}) {{ {count_name} = INT64_C(1) + ({last_name} - INT64_C(1) - {first_name}) / ({step}); }} else if (({step}) < INT64_C(0) && {first_name} > {last_name}) {{ uint64_t flux__ui_component_slice_magnitude = (uint64_t)(-(({step}) + INT64_C(1))) + UINT64_C(1); {count_name} = INT64_C(1) + (int64_t)((uint64_t)({first_name} - INT64_C(1) - {last_name}) / flux__ui_component_slice_magnitude); }} {count_name}; }})"#
         )));
     }
 
@@ -34902,12 +34902,15 @@ fn reusable_ui_runtime_list_index_c(
         optional: false,
     } = &candidate_expr.kind
     {
-        let Some((start, end, step)) = reusable_ui_static_slice_args(
-            start.as_deref(),
-            end.as_deref(),
-            step.as_deref(),
-            signatures,
-        )?
+        let Some((start_present, start, end_present, end, step)) =
+            reusable_ui_runtime_slice_args_c(
+                start.as_deref(),
+                end.as_deref(),
+                step.as_deref(),
+                view,
+                signatures,
+                view_identity,
+            )?
         else {
             return Ok(None);
         };
@@ -34925,12 +34928,8 @@ fn reusable_ui_runtime_list_index_c(
         let last_name = format!("flux__ui_component_slice_index_last_{suffix}");
         let count_name = format!("flux__ui_component_slice_index_length_{suffix}");
         let slice_index_name = format!("flux__ui_component_slice_index_{suffix}");
-        let start_present = start.is_some();
-        let end_present = end.is_some();
-        let start = start.unwrap_or(0);
-        let end = end.unwrap_or(0);
         index_code = format!(
-            r#"__extension__ ({{ int64_t {base_name} = ({base_length}); int64_t {first_name} = flux_slice_bound((size_t){base_name}, {start_present}, INT64_C({start}), false, INT64_C({step})); int64_t {last_name} = flux_slice_bound((size_t){base_name}, {end_present}, INT64_C({end}), true, INT64_C({step})); int64_t {count_name} = INT64_C(0); if (INT64_C({step}) > INT64_C(0) && {first_name} < {last_name}) {{ {count_name} = INT64_C(1) + ({last_name} - INT64_C(1) - {first_name}) / INT64_C({step}); }} else if (INT64_C({step}) < INT64_C(0) && {first_name} > {last_name}) {{ uint64_t flux__ui_component_slice_index_magnitude = (uint64_t)(-(INT64_C({step}) + INT64_C(1))) + UINT64_C(1); {count_name} = INT64_C(1) + (int64_t)((uint64_t)({first_name} - INT64_C(1) - {last_name}) / flux__ui_component_slice_index_magnitude); }} int64_t {slice_index_name} = ({index_code}); if ({slice_index_name} < INT64_C(0)) {slice_index_name} += {count_name}; if ({slice_index_name} < INT64_C(0) || {slice_index_name} >= {count_name}) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {first_name} + {slice_index_name} * INT64_C({step}); }})"#
+            r#"__extension__ ({{ int64_t {base_name} = ({base_length}); if (({step}) == INT64_C(0)) {{ fputs("Flux runtime error: list slice step cannot be zero\n", stderr); abort(); }} int64_t {first_name} = flux_slice_bound((size_t){base_name}, {start_present}, ({start}), false, ({step})); int64_t {last_name} = flux_slice_bound((size_t){base_name}, {end_present}, ({end}), true, ({step})); int64_t {count_name} = INT64_C(0); if (({step}) > INT64_C(0) && {first_name} < {last_name}) {{ {count_name} = INT64_C(1) + ({last_name} - INT64_C(1) - {first_name}) / ({step}); }} else if (({step}) < INT64_C(0) && {first_name} > {last_name}) {{ uint64_t flux__ui_component_slice_index_magnitude = (uint64_t)(-(({step}) + INT64_C(1))) + UINT64_C(1); {count_name} = INT64_C(1) + (int64_t)((uint64_t)({first_name} - INT64_C(1) - {last_name}) / flux__ui_component_slice_index_magnitude); }} int64_t {slice_index_name} = ({index_code}); if ({slice_index_name} < INT64_C(0)) {slice_index_name} += {count_name}; if ({slice_index_name} < INT64_C(0) || {slice_index_name} >= {count_name}) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {first_name} + {slice_index_name} * ({step}); }})"#
         );
         candidate_expr = base;
     }

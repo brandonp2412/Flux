@@ -82042,25 +82042,26 @@ app App
 #[test]
 fn lowers_composed_view_runtime_conditional_static_slices_on_all_native_backends() {
     let source = r#"
-view Badge(indexed: bool, reversed: bool, nested: bool, firstVisible: bool, lastVisible: bool, singleVisible: bool, lengthMatches: bool) {
+view Badge(indexed: bool, reversed: bool, nested: bool, dynamic: bool, firstVisible: bool, lastVisible: bool, singleVisible: bool, lengthMatches: bool) {
     grid columns: 1fr
     grid rows: 1fr
     Text title at 1,1
         text: "Flux"
-        visible: indexed && reversed && nested && firstVisible && lastVisible && singleVisible && lengthMatches
+        visible: indexed && reversed && nested && dynamic && firstVisible && lastVisible && singleVisible && lengthMatches
 }
 
-view Wrapper(index: i64, enabled: bool) {
+view Wrapper(index: i64, start: i64, step: i64, enabled: bool) {
     grid columns: 1fr
     grid rows: 1fr
     Badge badge at 1,1
         indexed: ([false, if enabled: true][1:])[index]
         reversed: ([false, if enabled: true][::-1])[index]
         nested: ([false, if enabled: true, false][1:][::-1])[index]
+        dynamic: ([false, if enabled: true, false][start::step])[index]
         firstVisible: ([false, if enabled: true][1:]).first
         lastVisible: ([false, if enabled: true][1:]).last
         singleVisible: ([false, if enabled: true][1:]).single
-        lengthMatches: ([false, if enabled: true][1:]).length == 1
+        lengthMatches: ([false, if enabled: true, false][start::step]).length >= 0
 }
 
 view App {
@@ -82068,6 +82069,8 @@ view App {
     grid rows: 1fr
     Wrapper wrapper at 1,1
         index: windowWidth - windowWidth
+        start: windowWidth - windowWidth
+        step: windowWidth - windowWidth + 1
         enabled: windowIsLandscape
 }
 
@@ -82084,8 +82087,10 @@ app App
     assert!(linux.contains("flux__ui_component_present_"));
     assert!(linux.contains("Flux runtime error: list index out of range\\n"));
     assert!(linux.contains("Flux runtime error: list.single requires exactly one element\\n"));
+    assert!(linux.contains("Flux runtime error: list slice step cannot be zero\\n"));
     assert!(linux.contains("INT64_C(-1)"));
     assert!(!linux.contains("flux__ui_derived___component_wrapper__badge__param_indexed"));
+    assert!(!linux.contains("flux__ui_derived___component_wrapper__badge__param_dynamic"));
 
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
         .expect("runtime conditional static slice fixture should analyze for native targets");
