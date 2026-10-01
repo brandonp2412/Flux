@@ -35851,6 +35851,40 @@ fn effectful_copy_ui_list_index_c(
     )))
 }
 
+fn dynamic_single_ui_list_control_value(
+    expr: &Expr,
+    signatures: &Signatures,
+) -> Result<Option<Expr>, Diagnostic> {
+    let ExprKind::List(items) = &expr.kind else {
+        return Ok(None);
+    };
+    let [item] = items.as_slice() else {
+        return Ok(None);
+    };
+    let ExprKind::ListIf {
+        condition,
+        binding: None,
+        value,
+        else_value: Some(else_value),
+        ..
+    } = &item.kind
+    else {
+        return Ok(None);
+    };
+    if fold_ui_primitive_expr(condition, signatures)?.is_some() {
+        return Ok(None);
+    }
+    Ok(Some(Expr {
+        line: item.line,
+        span: item.span,
+        kind: ExprKind::Conditional {
+            then_expr: value.clone(),
+            cond: condition.clone(),
+            else_expr: else_value.clone(),
+        },
+    }))
+}
+
 fn effectful_copy_ui_list_property_c(
     expr: &Expr,
     name: &str,
@@ -35861,6 +35895,29 @@ fn effectful_copy_ui_list_property_c(
     if !matches!(expr.kind, ExprKind::List(_)) {
         return Ok(None);
     }
+
+    let list_member = crate::builtin_names::list_member_impl(name);
+    if matches!(list_member, "first" | "last" | "single")
+        && let Some(selected) = dynamic_single_ui_list_control_value(expr, signatures)?
+        && let Some(element_ty) = ui_expr_known_type(&selected, view, signatures)
+    {
+        let element_ty = signatures.canonical_type(&element_ty);
+        let aggregate_element = matches!(&element_ty, Type::Record(_))
+            && signatures.is_copy_type(&element_ty)
+            || matches!(
+                &element_ty,
+                Type::Named(name)
+                    if signatures.struct_type(name).is_some()
+                        && signatures.is_copy_type(&element_ty)
+            );
+        if aggregate_element
+            && let Some(value) =
+                copy_ui_aggregate_expr_c(&selected, &element_ty, view, signatures, view_identity)?
+        {
+            return Ok(Some(value));
+        }
+    }
+
     let Some(layout) = statically_selected_ui_list_layout(expr, signatures)? else {
         return Ok(None);
     };
@@ -35897,7 +35954,6 @@ fn effectful_copy_ui_list_property_c(
         return Ok(None);
     }
 
-    let list_member = crate::builtin_names::list_member_impl(name);
     if !matches!(
         list_member,
         "length" | "isEmpty" | "isNotEmpty" | "first" | "last" | "single"
@@ -36471,6 +36527,60 @@ fn copy_ui_aggregate_literal_c(
         }
         _ => Ok(None),
     }
+}
+
+fn copy_ui_aggregate_expr_c(
+    value: &Expr,
+    ty: &Type,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+    view_identity: Option<usize>,
+) -> Result<Option<String>, Diagnostic> {
+    let ty = signatures.canonical_type(ty);
+    let is_copy_aggregate = match &ty {
+        Type::Record(_) => true,
+        Type::Named(name) => signatures.struct_type(name).is_some(),
+        _ => false,
+    };
+    if !signatures.is_copy_type(&ty) || !is_copy_aggregate {
+        return Ok(None);
+    }
+
+    if let Some(rendered) =
+        copy_ui_aggregate_literal_c(value, &ty, view, signatures, view_identity)?
+    {
+        return Ok(Some(rendered));
+    }
+
+    if let ExprKind::Conditional {
+        then_expr,
+        cond,
+        else_expr,
+    } = &value.kind
+    {
+        let Some(then_code) =
+            copy_ui_aggregate_expr_c(then_expr, &ty, view, signatures, view_identity)?
+        else {
+            return Ok(None);
+        };
+        let Some(else_code) =
+            copy_ui_aggregate_expr_c(else_expr, &ty, view, signatures, view_identity)?
+        else {
+            return Ok(None);
+        };
+        let cond_code = ui_expr_c_for_view_identity(cond, view, signatures, view_identity)?;
+        return Ok(Some(format!(
+            "(({}) ? ({}) : ({}))",
+            cond_code, then_code, else_code
+        )));
+    }
+
+    Ok(Some(ui_expr_c_for_view_identity(
+        value,
+        view,
+        signatures,
+        view_identity,
+    )?))
 }
 
 fn effectful_copy_ui_field_projection_c(
@@ -37644,19 +37754,27 @@ fn ui_expr_known_type(
             name, base: None, ..
         } => Type::Named(name.clone()),
         ExprKind::List(_) => {
-            let layout = statically_selected_ui_list_layout(expr, signatures)
+            if let Some(selected) = dynamic_single_ui_list_control_value(expr, signatures)
                 .ok()
-                .flatten()?;
-            let first = layout.evaluation_items.first()?;
-            let first_ty = ui_expr_known_type(first, view, signatures)?;
-            let first_ty = signatures.canonical_type(&first_ty);
-            if layout.evaluation_items.iter().skip(1).any(|item| {
-                ui_expr_known_type(item, view, signatures)
-                    .is_none_or(|ty| signatures.canonical_type(&ty) != first_ty)
-            }) {
-                return None;
+                .flatten()
+            {
+                let element_ty = ui_expr_known_type(&selected, view, signatures)?;
+                Type::List(Box::new(signatures.canonical_type(&element_ty)))
+            } else {
+                let layout = statically_selected_ui_list_layout(expr, signatures)
+                    .ok()
+                    .flatten()?;
+                let first = layout.evaluation_items.first()?;
+                let first_ty = ui_expr_known_type(first, view, signatures)?;
+                let first_ty = signatures.canonical_type(&first_ty);
+                if layout.evaluation_items.iter().skip(1).any(|item| {
+                    ui_expr_known_type(item, view, signatures)
+                        .is_none_or(|ty| signatures.canonical_type(&ty) != first_ty)
+                }) {
+                    return None;
+                }
+                Type::List(Box::new(first_ty))
             }
-            Type::List(Box::new(first_ty))
         }
         ExprKind::Index {
             base,
@@ -38601,12 +38719,20 @@ fn ui_expr_c_for_view_identity(
             then_expr,
             cond,
             else_expr,
-        } => Ok(format!(
-            "(({}) ? ({}) : ({}))",
-            ui_expr_c_for_view_identity(cond, view, signatures, view_identity)?,
-            ui_expr_c_for_view_identity(then_expr, view, signatures, view_identity)?,
-            ui_expr_c_for_view_identity(else_expr, view, signatures, view_identity)?,
-        )),
+        } => {
+            if let Some(ty) = ui_expr_known_type(expr, view, signatures)
+                && let Some(rendered) =
+                    copy_ui_aggregate_expr_c(expr, &ty, view, signatures, view_identity)?
+            {
+                return Ok(rendered);
+            }
+            Ok(format!(
+                "(({}) ? ({}) : ({}))",
+                ui_expr_c_for_view_identity(cond, view, signatures, view_identity)?,
+                ui_expr_c_for_view_identity(then_expr, view, signatures, view_identity)?,
+                ui_expr_c_for_view_identity(else_expr, view, signatures, view_identity)?,
+            ))
+        }
         _ => Err(diag(
             expr.span,
             "bootstrap dynamic UI expression currently supports primitive literals, view environment/state/constants, primitive operators, and conditional expressions",
