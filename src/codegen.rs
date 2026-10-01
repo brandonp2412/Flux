@@ -12864,6 +12864,28 @@ fn substitute_transparent_native_component_parameters(
                 backend,
             )?;
         }
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+            ..
+        } => {
+            substitute_transparent_native_component_parameters(
+                base,
+                bindings,
+                parameter_names,
+                backend,
+            )?;
+            for bound in [start, end, step].into_iter().flatten() {
+                substitute_transparent_native_component_parameters(
+                    bound,
+                    bindings,
+                    parameter_names,
+                    backend,
+                )?;
+            }
+        }
         ExprKind::RecordLiteral { fields } => {
             for field in fields {
                 substitute_transparent_native_component_parameters(
@@ -34215,6 +34237,143 @@ fn view_layout_transition_duration(
     Ok(duration)
 }
 
+fn static_ui_slice_bound(len: i64, value: Option<i64>, end: bool, step: i64) -> i64 {
+    if step > 0 {
+        let Some(mut resolved) = value else {
+            return if end { len } else { 0 };
+        };
+        if resolved < 0 {
+            resolved += len;
+        }
+        if resolved < 0 {
+            return 0;
+        }
+        if resolved > len {
+            return len;
+        }
+        return resolved;
+    }
+
+    let Some(mut resolved) = value else {
+        return if end {
+            -1
+        } else if len == 0 {
+            -1
+        } else {
+            len - 1
+        };
+    };
+    if resolved < 0 {
+        resolved += len;
+    }
+    if resolved < 0 {
+        return -1;
+    }
+    if resolved >= len {
+        return if len == 0 { -1 } else { len - 1 };
+    }
+    resolved
+}
+
+fn fold_ui_primitive_list_expr(
+    expr: &Expr,
+    signatures: &Signatures,
+) -> Result<Option<Vec<ConstantValue>>, Diagnostic> {
+    match &expr.kind {
+        ExprKind::List(items) => {
+            let mut folded = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(value) = fold_ui_primitive_expr(item, signatures)? else {
+                    return Ok(None);
+                };
+                folded.push(value);
+            }
+            Ok(Some(folded))
+        }
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+            optional: false,
+        } => {
+            let Some(items) = fold_ui_primitive_list_expr(base, signatures)? else {
+                return Ok(None);
+            };
+            let Ok(len) = i64::try_from(items.len()) else {
+                return Ok(None);
+            };
+
+            let start = if let Some(start) = start {
+                let Some(ConstantValue::I64(value)) = fold_ui_primitive_expr(start, signatures)?
+                else {
+                    return Ok(None);
+                };
+                Some(value)
+            } else {
+                None
+            };
+            let end = if let Some(end) = end {
+                let Some(ConstantValue::I64(value)) = fold_ui_primitive_expr(end, signatures)?
+                else {
+                    return Ok(None);
+                };
+                Some(value)
+            } else {
+                None
+            };
+            let step = if let Some(step) = step {
+                let Some(ConstantValue::I64(value)) = fold_ui_primitive_expr(step, signatures)?
+                else {
+                    return Ok(None);
+                };
+                value
+            } else {
+                1
+            };
+            if step == 0 {
+                return Ok(None);
+            }
+
+            let first = static_ui_slice_bound(len, start, false, step);
+            let last = static_ui_slice_bound(len, end, true, step);
+            let mut selected = Vec::new();
+            let mut index = first;
+            if step > 0 {
+                while index < last {
+                    let Ok(index_usize) = usize::try_from(index) else {
+                        return Ok(None);
+                    };
+                    let Some(value) = items.get(index_usize) else {
+                        return Ok(None);
+                    };
+                    selected.push(value.clone());
+                    let Some(next) = index.checked_add(step) else {
+                        break;
+                    };
+                    index = next;
+                }
+            } else {
+                while index > last {
+                    let Ok(index_usize) = usize::try_from(index) else {
+                        return Ok(None);
+                    };
+                    let Some(value) = items.get(index_usize) else {
+                        return Ok(None);
+                    };
+                    selected.push(value.clone());
+                    let Some(next) = index.checked_add(step) else {
+                        break;
+                    };
+                    index = next;
+                }
+            }
+            Ok(Some(selected))
+        }
+        _ => Ok(None),
+    }
+}
+
 fn fold_ui_primitive_expr(
     expr: &Expr,
     signatures: &Signatures,
@@ -34278,38 +34437,42 @@ fn fold_ui_primitive_expr(
             let Some(ConstantValue::I64(index)) = fold_ui_primitive_expr(index, signatures)? else {
                 return Ok(None);
             };
-            let ExprKind::List(items) = &base.kind else {
+            let Some(items) = fold_ui_primitive_list_expr(base, signatures)? else {
                 return Ok(None);
             };
-            for item in items {
-                if fold_ui_primitive_expr(item, signatures)?.is_none() {
+            let Ok(len) = i64::try_from(items.len()) else {
+                return Ok(None);
+            };
+            let index = if index < 0 {
+                let Some(index) = index.checked_add(len) else {
                     return Ok(None);
-                }
-            }
+                };
+                index
+            } else {
+                index
+            };
             let Ok(index) = usize::try_from(index) else {
                 return Ok(None);
             };
-            let Some(item) = items.get(index) else {
-                return Ok(None);
-            };
-            fold_ui_primitive_expr(item, signatures)
+            Ok(items.get(index).cloned())
         }
         ExprKind::Field {
             base,
             name,
             optional: false,
             ..
-        } if matches!(base.kind, ExprKind::List(_)) => {
-            let ExprKind::List(items) = &base.kind else {
-                unreachable!();
+        } if matches!(
+            &base.kind,
+            ExprKind::List(_)
+                | ExprKind::Slice {
+                    optional: false,
+                    ..
+                }
+        ) =>
+        {
+            let Some(folded) = fold_ui_primitive_list_expr(base, signatures)? else {
+                return Ok(None);
             };
-            let mut folded = Vec::with_capacity(items.len());
-            for item in items {
-                let Some(value) = fold_ui_primitive_expr(item, signatures)? else {
-                    return Ok(None);
-                };
-                folded.push(value);
-            }
             match crate::builtin_names::list_member_impl(name) {
                 "length" => Ok(Some(ConstantValue::I64(folded.len() as i64))),
                 "isEmpty" => Ok(Some(ConstantValue::Bool(folded.is_empty()))),
