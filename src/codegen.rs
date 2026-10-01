@@ -35874,10 +35874,14 @@ fn native_ui_stored_scalar_type_supported(ty: &Type, signatures: &Signatures) ->
 }
 
 fn native_ui_dynamic_call_result_supported(ty: &Type, signatures: &Signatures) -> bool {
-    if native_ui_stored_scalar_type_supported(ty, signatures) {
+    let ty = signatures.canonical_type(ty);
+    if native_ui_stored_scalar_type_supported(&ty, signatures) {
         return true;
     }
-    let Type::Optional(inner) = signatures.canonical_type(ty) else {
+    if matches!(&ty, Type::Named(_) | Type::Record(_)) && signatures.is_copy_type(&ty) {
+        return true;
+    }
+    let Type::Optional(inner) = ty else {
         return false;
     };
     let inner = signatures.canonical_type(&inner);
@@ -36598,6 +36602,65 @@ fn ui_expr_c_for_view_identity(
                     "isEmpty" => return Ok(format!("(({length}) == INT64_C(0))")),
                     "isNotEmpty" => return Ok(format!("(({length}) != INT64_C(0))")),
                     _ => unreachable!(),
+                }
+            }
+            if let Some(base_ty) = ui_expr_known_type(base, view, signatures) {
+                let base_ty = signatures.canonical_type(&base_ty);
+                let field = match &base_ty {
+                    Type::Record(fields) => {
+                        let index = if let Ok(index) = name.parse::<usize>() {
+                            index
+                        } else {
+                            fields
+                                .iter()
+                                .position(|field| field.name.as_deref() == Some(name.as_str()))
+                                .ok_or_else(|| {
+                                    diag(expr.span, "bootstrap dynamic UI record field is unknown")
+                                })?
+                        };
+                        fields.get(index).map(|field| {
+                            (
+                                field.ty.clone(),
+                                record_field_c_name(field.name.as_deref(), index),
+                            )
+                        })
+                    }
+                    Type::Named(struct_name) => {
+                        let definition = signatures.struct_type(struct_name).ok_or_else(|| {
+                            diag(expr.span, "bootstrap dynamic UI struct type is unknown")
+                        })?;
+                        definition
+                            .field(name)
+                            .map(|field| (field.ty.clone(), field_c_name(name)))
+                    }
+                    _ => None,
+                };
+                if let Some((field_ty, field_name)) = field {
+                    let field_ty = signatures.canonical_type(&field_ty);
+                    let supported = matches!(&field_ty, Type::Bool | Type::I64 | Type::Str)
+                        || matches!(
+                            &field_ty,
+                            Type::Optional(inner)
+                                if matches!(
+                                    signatures.canonical_type(inner),
+                                    Type::Bool | Type::I64 | Type::Str
+                                )
+                        );
+                    if supported
+                        && matches!(&base_ty, Type::Named(_) | Type::Record(_))
+                        && signatures.is_copy_type(&base_ty)
+                    {
+                        let base_code =
+                            ui_expr_c_for_view_identity(base, view, signatures, view_identity)?;
+                        let base_c = c_type(&base_ty, signatures);
+                        let base_name = format!(
+                            "flux__ui_field_base_{}_{}",
+                            expr.span.line, expr.span.column
+                        );
+                        return Ok(format!(
+                            "__extension__ ({{ {base_c} {base_name} = ({base_code}); {base_name}.{field_name}; }})"
+                        ));
+                    }
                 }
             }
             match &base.kind {

@@ -83276,6 +83276,121 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_effectful_copy_struct_field_on_all_native_backends() {
+    let source = r#"
+struct Flags {
+    enabled: bool
+    count: i64
+}
+
+fn makeFlags(value: bool) -> Flags {
+    print("makeFlags")
+    return Flags { enabled: value, count: 7 }
+}
+
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        visible: makeFlags(windowIsLandscape).enabled
+}
+
+app App
+"#;
+
+    check_source(source).expect("effectful Copy struct field component argument should typecheck");
+    let linux = compile_to_c(source)
+        .expect("effectful Copy struct field component argument should lower through Linux");
+    assert!(linux.contains("flux__ui_derived___component_badge__param_visible"));
+    assert!(linux.contains("flux__ui_field_base_"));
+    assert!(linux.contains("= (flux__fn_makeFlags("));
+    assert!(linux.contains(".flux__field_enabled"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful Copy struct field fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful Copy struct field component argument should lower natively");
+        assert!(generated.contains("flux__ui_derived___component_badge__param_visible"));
+        assert!(generated.contains("flux__ui_field_base_"));
+        assert!(generated.contains("= (flux__fn_makeFlags("));
+        assert!(generated.contains(".flux__field_enabled"));
+    }
+}
+
+#[test]
+fn lowers_composed_view_effectful_copy_record_field_on_all_native_backends() {
+    let source = r#"
+type Flags = (enabled: bool, count: i64)
+
+fn makeFlags(value: bool) -> Flags {
+    print("makeFlags")
+    return (enabled: value, count: 7)
+}
+
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        visible: makeFlags(windowIsLandscape).enabled
+}
+
+app App
+"#;
+
+    check_source(source).expect("effectful Copy record field component argument should typecheck");
+    let linux = compile_to_c(source)
+        .expect("effectful Copy record field component argument should lower through Linux");
+    assert!(linux.contains("flux__ui_derived___component_badge__param_visible"));
+    assert!(linux.contains("flux__ui_field_base_"));
+    assert!(linux.contains("= (flux__fn_makeFlags("));
+    assert!(linux.contains(".flux__field_enabled"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful Copy record field fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful Copy record field component argument should lower natively");
+        assert!(generated.contains("flux__ui_derived___component_badge__param_visible"));
+        assert!(generated.contains("flux__ui_field_base_"));
+        assert!(generated.contains("= (flux__fn_makeFlags("));
+        assert!(generated.contains(".flux__field_enabled"));
+    }
+}
+
+#[test]
 fn lowers_composed_view_runtime_optional_struct_field_on_all_native_backends() {
     let source = r#"
 struct Flags {
