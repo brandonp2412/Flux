@@ -34369,6 +34369,18 @@ fn static_ui_slice_bound(len: i64, value: Option<i64>, end: bool, step: i64) -> 
     resolved
 }
 
+fn ui_constant_expr(value: ConstantValue, template: &Expr) -> Expr {
+    Expr {
+        line: template.line,
+        span: template.span,
+        kind: match value {
+            ConstantValue::I64(value) => ExprKind::Int(value),
+            ConstantValue::Bool(value) => ExprKind::Bool(value),
+            ConstantValue::Str(value) => ExprKind::Str(value),
+        },
+    }
+}
+
 fn reusable_ui_list_projection_items(
     expr: &Expr,
     signatures: &Signatures,
@@ -34403,15 +34415,7 @@ fn reusable_ui_list_projection_items(
                             return Ok(None);
                         };
                         let selected = if let Some(bound) = condition {
-                            let replacement = Expr {
-                                line: value.line,
-                                span: binding.span,
-                                kind: match bound {
-                                    ConstantValue::I64(value) => ExprKind::Int(value),
-                                    ConstantValue::Bool(value) => ExprKind::Bool(value),
-                                    ConstantValue::Str(value) => ExprKind::Str(value),
-                                },
-                            };
+                            let replacement = ui_constant_expr(bound, value);
                             let mut selected = value.as_ref().clone();
                             let bindings = HashMap::from([(binding.name.clone(), replacement)]);
                             let parameter_names = HashSet::from([binding.name.as_str()]);
@@ -34456,8 +34460,16 @@ fn reusable_ui_list_projection_items(
                             projected.push(selected.clone());
                         }
                     }
-                    ExprKind::ListOptional { .. } => {
-                        return Ok(None);
+                    ExprKind::ListOptional {
+                        value: optional, ..
+                    } => {
+                        let Some(value) = fold_ui_optional_primitive_expr(optional, signatures)?
+                        else {
+                            return Ok(None);
+                        };
+                        if let Some(value) = value {
+                            projected.push(ui_constant_expr(value, optional));
+                        }
                     }
                     _ if transparent_native_component_argument_is_reusable(item) => {
                         projected.push(item.clone());

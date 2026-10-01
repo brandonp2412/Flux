@@ -82174,6 +82174,70 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_dynamic_index_over_static_optional_items_on_all_native_backends() {
+    let source = r#"
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view Wrapper(index: i64, maybe: bool?, fallback: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        visible: [?maybe, fallback][index]
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr
+    Wrapper present at 1,1
+        index: windowWidth - windowWidth + 1
+        maybe: true
+        fallback: windowIsLandscape
+    Wrapper absent at 2,1
+        index: windowWidth - windowWidth
+        maybe: none
+        fallback: windowIsLandscape
+}
+
+app App
+"#;
+
+    check_source(source).expect("null-aware dynamic component index should typecheck");
+    let linux = compile_to_c(source)
+        .expect("null-aware dynamic component index should lower through Linux");
+    assert!(linux.contains("present__badge__title"));
+    assert!(linux.contains("absent__badge__title"));
+    assert!(linux.contains("flux__ui_component_index_"));
+    assert!(!linux.contains("flux__ui_derived___component_present__badge__param_visible"));
+    assert!(!linux.contains("flux__ui_derived___component_absent__badge__param_visible"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("null-aware dynamic component index fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("null-aware dynamic component index should lower through Android");
+    assert!(android.contains("flux__ui_component_index_"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("null-aware dynamic component index should lower through Windows");
+    assert!(windows.contains("flux__ui_component_index_"));
+}
+
+#[test]
 fn lowers_composed_view_dynamic_index_over_static_optional_binding_items_on_all_native_backends() {
     let source = r#"
 view Badge(visible: bool) {
