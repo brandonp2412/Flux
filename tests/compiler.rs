@@ -81863,21 +81863,23 @@ app App
 }
 
 #[test]
-fn composed_view_dynamic_index_does_not_treat_spreads_as_physical_items() {
+fn lowers_composed_view_dynamic_index_over_static_structured_list_items_on_all_native_backends() {
     let source = r#"
-view Badge(visible: bool) {
+view Badge(spreadVisible: bool, optionalSpreadVisible: bool, conditionalVisible: bool) {
     grid columns: 1fr
     grid rows: 1fr
     Text title at 1,1
         text: "Flux"
-        visible: visible
+        visible: spreadVisible && optionalSpreadVisible && conditionalVisible
 }
 
-view Wrapper(index: i64, enabled: bool) {
+view Wrapper(index: i64, enabled: bool, maybeFlags: bool[]?) {
     grid columns: 1fr
     grid rows: 1fr
     Badge badge at 1,1
-        visible: [...[false], enabled][index]
+        spreadVisible: [...[enabled]][index]
+        optionalSpreadVisible: [...?maybeFlags][index]
+        conditionalVisible: [if true: enabled else: false][index]
 }
 
 view App {
@@ -81886,19 +81888,38 @@ view App {
     Wrapper wrapper at 1,1
         index: windowWidth - windowWidth
         enabled: windowIsLandscape
+        maybeFlags: [windowIsLandscape]
 }
 
 app App
 "#;
 
-    check_source(source).expect("spread-backed dynamic index should typecheck");
-    let error = compile_to_c(source)
-        .expect_err("spread syntax must not be treated as a runtime list element");
-    assert!(
-        error
-            .message
-            .contains("bootstrap dynamic UI expression currently supports")
-    );
+    check_source(source).expect("structured-list dynamic index should typecheck");
+    let linux =
+        compile_to_c(source).expect("structured-list dynamic index should lower through Linux");
+    assert!(linux.contains("wrapper__badge__title"));
+    assert!(linux.contains("flux__ui_component_index_"));
+    assert!(!linux.contains("flux__ui_derived___component_wrapper__badge__param_"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("structured-list dynamic index fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("structured-list dynamic index should lower through Android");
+    assert!(android.contains("flux__ui_component_index_"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("structured-list dynamic index should lower through Windows");
+    assert!(windows.contains("flux__ui_component_index_"));
 }
 
 #[test]

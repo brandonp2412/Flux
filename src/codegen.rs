@@ -34374,17 +34374,56 @@ fn reusable_ui_list_projection_items<'a>(
     signatures: &Signatures,
 ) -> Result<Option<Vec<&'a Expr>>, Diagnostic> {
     match &expr.kind {
-        ExprKind::List(items)
-            if items.iter().all(|item| {
-                !matches!(
-                    item.kind,
-                    ExprKind::ListSpread { .. }
-                        | ExprKind::ListOptional { .. }
-                        | ExprKind::ListIf { .. }
-                ) && transparent_native_component_argument_is_reusable(item)
-            }) =>
-        {
-            Ok(Some(items.iter().collect()))
+        ExprKind::List(items) => {
+            let mut projected = Vec::new();
+            for item in items {
+                match &item.kind {
+                    ExprKind::ListSpread {
+                        value, optional, ..
+                    } => {
+                        if *optional && matches!(value.kind, ExprKind::None) {
+                            continue;
+                        }
+                        let Some(spread) = reusable_ui_list_projection_items(value, signatures)?
+                        else {
+                            return Ok(None);
+                        };
+                        projected.extend(spread);
+                    }
+                    ExprKind::ListIf {
+                        condition,
+                        binding: None,
+                        value,
+                        else_value,
+                        ..
+                    } => {
+                        let Some(ConstantValue::Bool(condition)) =
+                            fold_ui_primitive_expr(condition, signatures)?
+                        else {
+                            return Ok(None);
+                        };
+                        let selected = if condition {
+                            Some(value.as_ref())
+                        } else {
+                            else_value.as_deref()
+                        };
+                        if let Some(selected) = selected {
+                            if !transparent_native_component_argument_is_reusable(selected) {
+                                return Ok(None);
+                            }
+                            projected.push(selected);
+                        }
+                    }
+                    ExprKind::ListOptional { .. } | ExprKind::ListIf { .. } => {
+                        return Ok(None);
+                    }
+                    _ if transparent_native_component_argument_is_reusable(item) => {
+                        projected.push(item);
+                    }
+                    _ => return Ok(None),
+                }
+            }
+            Ok(Some(projected))
         }
         ExprKind::Slice {
             base,
