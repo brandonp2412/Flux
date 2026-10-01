@@ -12864,6 +12864,24 @@ fn substitute_transparent_native_component_parameters(
                 )?;
             }
         }
+        ExprKind::StructLiteral { base, fields, .. } => {
+            if let Some(base) = base {
+                substitute_transparent_native_component_parameters(
+                    base,
+                    bindings,
+                    parameter_names,
+                    backend,
+                )?;
+            }
+            for field in fields {
+                substitute_transparent_native_component_parameters(
+                    &mut field.value,
+                    bindings,
+                    parameter_names,
+                    backend,
+                )?;
+            }
+        }
         ExprKind::Field { base, .. } => {
             substitute_transparent_native_component_parameters(
                 base,
@@ -34270,10 +34288,34 @@ fn fold_ui_primitive_expr(
             let ExprKind::RecordLiteral { fields } = &base.kind else {
                 unreachable!();
             };
+            for field in fields {
+                if fold_ui_primitive_expr(&field.value, signatures)?.is_none() {
+                    return Ok(None);
+                }
+            }
             let Some(field) = fields
                 .iter()
                 .find(|field| field.name.as_deref() == Some(name.as_str()))
             else {
+                return Ok(None);
+            };
+            fold_ui_primitive_expr(&field.value, signatures)
+        }
+        ExprKind::Field {
+            base,
+            name,
+            optional: false,
+            ..
+        } if matches!(&base.kind, ExprKind::StructLiteral { base: None, .. }) => {
+            let ExprKind::StructLiteral { fields, .. } = &base.kind else {
+                unreachable!();
+            };
+            for field in fields {
+                if fold_ui_primitive_expr(&field.value, signatures)?.is_none() {
+                    return Ok(None);
+                }
+            }
+            let Some(field) = fields.iter().find(|field| field.name == *name) else {
                 return Ok(None);
             };
             fold_ui_primitive_expr(&field.value, signatures)
