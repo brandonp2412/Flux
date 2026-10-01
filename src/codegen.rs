@@ -35564,6 +35564,157 @@ fn reusable_ui_runtime_list_edge_expr(
     Ok(Some(result))
 }
 
+#[derive(Clone)]
+struct StaticUiListLayout<'a> {
+    evaluation_items: Vec<&'a Expr>,
+    physical_indices: Vec<usize>,
+}
+
+fn statically_selected_ui_list_layout<'a>(
+    expr: &'a Expr,
+    signatures: &Signatures,
+) -> Result<Option<StaticUiListLayout<'a>>, Diagnostic> {
+    match &expr.kind {
+        ExprKind::List(items) => {
+            let mut evaluation_items = Vec::new();
+            let mut physical_indices = Vec::new();
+            for item in items {
+                match &item.kind {
+                    ExprKind::ListSpread {
+                        value,
+                        optional: false,
+                        ..
+                    } => {
+                        let Some(spread) = statically_selected_ui_list_layout(value, signatures)?
+                        else {
+                            return Ok(None);
+                        };
+                        let offset = evaluation_items.len();
+                        evaluation_items.extend(spread.evaluation_items);
+                        physical_indices.extend(
+                            spread
+                                .physical_indices
+                                .into_iter()
+                                .map(|index| offset + index),
+                        );
+                    }
+                    ExprKind::ListIf {
+                        condition,
+                        binding: None,
+                        value,
+                        else_value,
+                        ..
+                    } => match fold_ui_primitive_expr(condition, signatures)? {
+                        Some(ConstantValue::Bool(true)) => {
+                            physical_indices.push(evaluation_items.len());
+                            evaluation_items.push(value.as_ref());
+                        }
+                        Some(ConstantValue::Bool(false)) => {
+                            if let Some(else_value) = else_value {
+                                physical_indices.push(evaluation_items.len());
+                                evaluation_items.push(else_value.as_ref());
+                            }
+                        }
+                        _ => return Ok(None),
+                    },
+                    ExprKind::ListSpread { optional: true, .. }
+                    | ExprKind::ListOptional { .. }
+                    | ExprKind::ListIf {
+                        binding: Some(_), ..
+                    } => return Ok(None),
+                    _ => {
+                        physical_indices.push(evaluation_items.len());
+                        evaluation_items.push(item);
+                    }
+                }
+            }
+            Ok(Some(StaticUiListLayout {
+                evaluation_items,
+                physical_indices,
+            }))
+        }
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+            optional: false,
+        } => {
+            let Some(mut layout) = statically_selected_ui_list_layout(base, signatures)? else {
+                return Ok(None);
+            };
+            let static_bound =
+                |bound: &Option<Box<Expr>>| -> Result<Option<Option<i64>>, Diagnostic> {
+                    let Some(bound) = bound else {
+                        return Ok(Some(None));
+                    };
+                    Ok(match fold_ui_primitive_expr(bound, signatures)? {
+                        Some(ConstantValue::I64(value)) => Some(Some(value)),
+                        _ => None,
+                    })
+                };
+            let Some(start) = static_bound(start)? else {
+                return Ok(None);
+            };
+            let Some(end) = static_bound(end)? else {
+                return Ok(None);
+            };
+            let step = if let Some(step) = step {
+                let Some(ConstantValue::I64(step)) = fold_ui_primitive_expr(step, signatures)?
+                else {
+                    return Ok(None);
+                };
+                step
+            } else {
+                1
+            };
+            if step == 0 {
+                return Ok(None);
+            }
+
+            let Ok(len) = i64::try_from(layout.physical_indices.len()) else {
+                return Ok(None);
+            };
+            let first = static_ui_slice_bound(len, start, false, step);
+            let last = static_ui_slice_bound(len, end, true, step);
+            let mut selected = Vec::new();
+            let mut index = first;
+            if step > 0 {
+                while index < last {
+                    let Ok(position) = usize::try_from(index) else {
+                        return Ok(None);
+                    };
+                    let Some(evaluation_index) = layout.physical_indices.get(position) else {
+                        return Ok(None);
+                    };
+                    selected.push(*evaluation_index);
+                    let Some(next) = index.checked_add(step) else {
+                        break;
+                    };
+                    index = next;
+                }
+            } else {
+                while index > last {
+                    let Ok(position) = usize::try_from(index) else {
+                        return Ok(None);
+                    };
+                    let Some(evaluation_index) = layout.physical_indices.get(position) else {
+                        return Ok(None);
+                    };
+                    selected.push(*evaluation_index);
+                    let Some(next) = index.checked_add(step) else {
+                        break;
+                    };
+                    index = next;
+                }
+            }
+            layout.physical_indices = selected;
+            Ok(Some(layout))
+        }
+        _ => Ok(None),
+    }
+}
+
 fn statically_selected_ui_list_items<'a>(
     expr: &'a Expr,
     signatures: &Signatures,
@@ -35614,10 +35765,13 @@ fn effectful_copy_ui_list_index_c(
     signatures: &Signatures,
     view_identity: Option<usize>,
 ) -> Result<Option<String>, Diagnostic> {
-    let Some(items) = statically_selected_ui_list_items(expr, signatures)? else {
+    if !matches!(expr.kind, ExprKind::List(_)) {
+        return Ok(None);
+    }
+    let Some(layout) = statically_selected_ui_list_layout(expr, signatures)? else {
         return Ok(None);
     };
-    let Some(first) = items.first() else {
+    let Some(first) = layout.evaluation_items.first() else {
         return Ok(None);
     };
     let Some(element_ty) = ui_expr_known_type(first, view, signatures) else {
@@ -35634,21 +35788,21 @@ fn effectful_copy_ui_list_index_c(
                     && signatures.is_copy_type(&element_ty)
         );
     if (!scalar_element && !aggregate_element)
-        || !items.iter().all(|item| {
+        || !layout.evaluation_items.iter().all(|item| {
             ui_expr_known_type(item, view, signatures)
                 .is_some_and(|ty| signatures.canonical_type(&ty) == element_ty)
         })
     {
         return Ok(None);
     }
-    let Ok(len) = i64::try_from(items.len()) else {
+    let Ok(len) = i64::try_from(layout.physical_indices.len()) else {
         return Ok(None);
     };
 
     let element_c = c_type(&element_ty, signatures);
     let mut declarations = String::new();
-    let mut value_names = Vec::with_capacity(items.len());
-    for (position, item) in items.iter().enumerate() {
+    let mut value_names = Vec::with_capacity(layout.evaluation_items.len());
+    for (position, item) in layout.evaluation_items.iter().enumerate() {
         let value = if aggregate_element {
             if let Some(value) =
                 copy_ui_aggregate_literal_c(item, &element_ty, view, signatures, view_identity)?
@@ -35673,13 +35827,22 @@ fn effectful_copy_ui_list_index_c(
         "flux__ui_list_index_{}_{}",
         expr.span.line, expr.span.column
     );
-    let mut selection = value_names.last().expect("non-empty list").clone();
-    for (position, value_name) in value_names[..value_names.len() - 1]
-        .iter()
-        .enumerate()
-        .rev()
-    {
-        selection = format!("({index_name} == INT64_C({position}) ? {value_name} : {selection})");
+    let fallback = value_names[0].clone();
+    let mut selection = layout
+        .physical_indices
+        .last()
+        .map(|position| value_names[*position].clone())
+        .unwrap_or_else(|| fallback.clone());
+    if layout.physical_indices.len() > 1 {
+        for (relative, position) in layout.physical_indices[..layout.physical_indices.len() - 1]
+            .iter()
+            .enumerate()
+            .rev()
+        {
+            let value_name = &value_names[*position];
+            selection =
+                format!("({index_name} == INT64_C({relative}) ? {value_name} : {selection})");
+        }
     }
 
     Ok(Some(format!(
@@ -35695,13 +35858,17 @@ fn effectful_copy_ui_list_property_c(
     signatures: &Signatures,
     view_identity: Option<usize>,
 ) -> Result<Option<String>, Diagnostic> {
-    let Some(items) = statically_selected_ui_list_items(expr, signatures)? else {
+    if !matches!(expr.kind, ExprKind::List(_)) {
+        return Ok(None);
+    }
+    let Some(layout) = statically_selected_ui_list_layout(expr, signatures)? else {
         return Ok(None);
     };
-    let Some(first) = items.first() else {
+    let Some(first) = layout.evaluation_items.first() else {
         return Ok(None);
     };
-    if items
+    if layout
+        .evaluation_items
         .iter()
         .all(|item| transparent_native_component_argument_is_reusable(item))
     {
@@ -35722,7 +35889,7 @@ fn effectful_copy_ui_list_property_c(
                     && signatures.is_copy_type(&element_ty)
         );
     if (!scalar_element && !aggregate_element)
-        || !items.iter().all(|item| {
+        || !layout.evaluation_items.iter().all(|item| {
             ui_expr_known_type(item, view, signatures)
                 .is_some_and(|ty| signatures.canonical_type(&ty) == element_ty)
         })
@@ -35740,8 +35907,8 @@ fn effectful_copy_ui_list_property_c(
 
     let element_c = c_type(&element_ty, signatures);
     let mut declarations = String::new();
-    let mut value_names = Vec::with_capacity(items.len());
-    for (position, item) in items.iter().enumerate() {
+    let mut value_names = Vec::with_capacity(layout.evaluation_items.len());
+    for (position, item) in layout.evaluation_items.iter().enumerate() {
         let value = if aggregate_element {
             if let Some(value) =
                 copy_ui_aggregate_literal_c(item, &element_ty, view, signatures, view_identity)?
@@ -35761,17 +35928,49 @@ fn effectful_copy_ui_list_property_c(
         value_names.push(value_name);
     }
 
+    let fallback = value_names[0].clone();
     let value = match list_member {
-        "length" => format!("INT64_C({})", items.len()),
-        "isEmpty" => "false".to_string(),
-        "isNotEmpty" => "true".to_string(),
-        "first" => value_names[0].clone(),
-        "last" => value_names.last().expect("non-empty list").clone(),
-        "single" if items.len() == 1 => value_names[0].clone(),
+        "length" => format!("INT64_C({})", layout.physical_indices.len()),
+        "isEmpty" => {
+            if layout.physical_indices.is_empty() {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
+        "isNotEmpty" => {
+            if layout.physical_indices.is_empty() {
+                "false".to_string()
+            } else {
+                "true".to_string()
+            }
+        }
+        "first" => layout
+            .physical_indices
+            .first()
+            .map(|position| value_names[*position].clone())
+            .unwrap_or_else(|| {
+                format!(
+                    r#"fputs("Flux runtime error: list index out of range
+", stderr); abort(); {fallback}"#
+                )
+            }),
+        "last" => layout
+            .physical_indices
+            .last()
+            .map(|position| value_names[*position].clone())
+            .unwrap_or_else(|| {
+                format!(
+                    r#"fputs("Flux runtime error: list index out of range
+", stderr); abort(); {fallback}"#
+                )
+            }),
+        "single" if layout.physical_indices.len() == 1 => {
+            value_names[layout.physical_indices[0]].clone()
+        }
         "single" => format!(
             r#"fputs("Flux runtime error: list.single requires exactly one element
-", stderr); abort(); {}"#,
-            value_names[0]
+", stderr); abort(); {fallback}"#
         ),
         _ => unreachable!(),
     };
@@ -37445,13 +37644,13 @@ fn ui_expr_known_type(
             name, base: None, ..
         } => Type::Named(name.clone()),
         ExprKind::List(_) => {
-            let items = statically_selected_ui_list_items(expr, signatures)
+            let layout = statically_selected_ui_list_layout(expr, signatures)
                 .ok()
                 .flatten()?;
-            let first = items.first()?;
+            let first = layout.evaluation_items.first()?;
             let first_ty = ui_expr_known_type(first, view, signatures)?;
             let first_ty = signatures.canonical_type(&first_ty);
-            if items.iter().skip(1).any(|item| {
+            if layout.evaluation_items.iter().skip(1).any(|item| {
                 ui_expr_known_type(item, view, signatures)
                     .is_none_or(|ty| signatures.canonical_type(&ty) != first_ty)
             }) {

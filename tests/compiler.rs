@@ -83865,6 +83865,92 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_effectful_copy_aggregate_slice_spreads_on_all_native_backends() {
+    let source = r#"
+struct Flags {
+    enabled: bool
+}
+
+fn makeFlags(value: bool) -> Flags {
+    print("makeFlags")
+    return Flags { enabled: value }
+}
+
+fn choose() -> i64 {
+    print("choose")
+    return 0
+}
+
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr
+    Badge edge at 1,1
+        visible: ([...[makeFlags(false), makeFlags(windowIsLandscape), makeFlags(true)][1:3]].first).enabled
+    Badge indexed at 2,1
+        visible: ([...[makeFlags(false), makeFlags(windowIsLandscape), makeFlags(true)][1:3]][choose()]).enabled
+}
+
+app App
+"#;
+
+    check_source(source).expect("effectful Copy aggregate slice-spread fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__fn_makeFlags(").count() >= 6,
+            "slice-spread lowering must preserve every eager base-list producer"
+        );
+        assert!(
+            generated.matches("flux__ui_list_property_item_").count() >= 3,
+            "slice-spread edge projection should materialize the whole eager base"
+        );
+        assert!(
+            generated.matches("flux__ui_list_item_").count() >= 3,
+            "slice-spread runtime index should materialize the whole eager base"
+        );
+        let first_index_item = generated
+            .find("flux__ui_list_item_")
+            .expect("slice-spread runtime index should emit ordered temporaries");
+        let choose = generated
+            .find(" = (flux__fn_choose());")
+            .expect("slice-spread runtime index should evaluate once");
+        assert!(
+            first_index_item < choose,
+            "all eager slice-base items must evaluate before the runtime index"
+        );
+        assert!(generated.contains(".flux__field_enabled"));
+    };
+
+    let linux = compile_to_c(source)
+        .expect("effectful Copy aggregate slice spreads should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful Copy aggregate slice-spread fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful Copy aggregate slice spreads should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn lowers_composed_view_runtime_optional_struct_field_on_all_native_backends() {
     let source = r#"
 struct Flags {
