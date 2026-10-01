@@ -12709,6 +12709,24 @@ fn transparent_native_component_argument_is_reusable(expr: &Expr) -> bool {
                     .as_deref()
                     .is_none_or(transparent_native_component_argument_is_reusable)
         }
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+            optional: false,
+        } => {
+            transparent_native_component_argument_is_reusable(base)
+                && start
+                    .as_deref()
+                    .is_none_or(transparent_native_component_argument_is_reusable)
+                && end
+                    .as_deref()
+                    .is_none_or(transparent_native_component_argument_is_reusable)
+                && step
+                    .as_deref()
+                    .is_none_or(transparent_native_component_argument_is_reusable)
+        }
         ExprKind::RecordLiteral { fields } => fields
             .iter()
             .all(|field| transparent_native_component_argument_is_reusable(&field.value)),
