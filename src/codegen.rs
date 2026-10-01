@@ -41891,8 +41891,11 @@ fn async_continuation_plan(
                 mutable: is_mutable,
                 ..
             } => {
-                let (actuals, _) =
-                    typecheck::positional_destructure_types_of_expr(expr, &env, signatures).ok()?;
+                let actuals = cfg_rewrite_positional_destructure_types(
+                    expr.span,
+                    &cfg_rewrite_facts,
+                    signatures,
+                )?;
                 if actuals.len() != bindings.len() {
                     return None;
                 }
@@ -49521,6 +49524,7 @@ struct CfgRewriteFacts {
     scalar_exprs: HashMap<(u32, usize, usize, usize), CfgScalarExpr>,
     sequence_exprs: HashMap<(u32, usize, usize, usize), CfgScalarExpr>,
     multi_exprs: HashMap<(u32, usize, usize, usize), CfgScalarExpr>,
+    multi_value_types: HashMap<(u32, usize, usize, usize), Vec<Type>>,
     match_exprs: HashMap<(u32, usize, usize, usize), CfgMatchExpr>,
     list_match_exprs: HashMap<(u32, usize, usize, usize), CfgListMatchExpr>,
 }
@@ -49571,6 +49575,56 @@ fn cfg_rewrite_required_root_type(
             "normalized typed IR is missing an expression root type during native code generation",
         )
     })
+}
+
+fn cfg_rewrite_positional_destructure_types(
+    span: SourceSpan,
+    rewrite_facts: &CfgRewriteFacts,
+    signatures: &Signatures,
+) -> Option<Vec<Type>> {
+    fn multi_types(expr: &CfgScalarExpr, signatures: &Signatures) -> Option<Vec<Type>> {
+        match &expr.kind {
+            CfgScalarExprKind::Await { value } => multi_types(value, signatures),
+            CfgScalarExprKind::Call { callee, .. }
+            | CfgScalarExprKind::NamedCall { callee, .. } => {
+                let signature = signatures.get(callee)?;
+                (signature.returns.len() > 1).then(|| {
+                    signature
+                        .returns
+                        .iter()
+                        .map(|ty| signatures.canonical_type(ty))
+                        .collect()
+                })
+            }
+            _ => None,
+        }
+    }
+
+    let key = source_span_key(span);
+    if let Some(values) = rewrite_facts.multi_value_types.get(&key) {
+        return Some(
+            values
+                .iter()
+                .map(|ty| signatures.canonical_type(ty))
+                .collect(),
+        );
+    }
+    if let Some(expr) = rewrite_facts.multi_exprs.get(&key)
+        && let Some(values) = multi_types(expr, signatures)
+    {
+        return Some(values);
+    }
+
+    let root = signatures.canonical_type(&cfg_rewrite_root_type(span, rewrite_facts)?);
+    if let Type::Record(fields) = root {
+        return Some(
+            fields
+                .into_iter()
+                .map(|field| signatures.canonical_type(&field.ty))
+                .collect(),
+        );
+    }
+    Some(vec![root])
 }
 
 fn cfg_literal_aggregate_value(
@@ -50992,6 +51046,47 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
         }
     }
 
+    let mut multi_value_type_maps =
+        HashMap::<(u32, usize, usize, usize), BTreeMap<usize, Type>>::new();
+    let mut ambiguous_multi_value_types = HashSet::new();
+    for value in cfg
+        .values()
+        .iter()
+        .filter(|value| cfg.is_value_reachable(value.id))
+    {
+        let Some(result_index) = value.result_index else {
+            continue;
+        };
+        let span = source_span_key(value.span);
+        if ambiguous_multi_value_types.contains(&span) {
+            continue;
+        }
+        let values = multi_value_type_maps.entry(span).or_default();
+        if let Some(existing) = values.get(&result_index) {
+            if existing != &value.ty {
+                multi_value_type_maps.remove(&span);
+                ambiguous_multi_value_types.insert(span);
+            }
+        } else {
+            values.insert(result_index, value.ty.clone());
+        }
+    }
+    let multi_value_types = multi_value_type_maps
+        .into_iter()
+        .filter_map(|(span, values)| {
+            if values.len() <= 1
+                || values
+                    .keys()
+                    .copied()
+                    .enumerate()
+                    .any(|(expected, actual)| expected != actual)
+            {
+                return None;
+            }
+            Some((span, values.into_values().collect::<Vec<_>>()))
+        })
+        .collect::<HashMap<_, _>>();
+
     let multi_result_spans = cfg
         .values()
         .iter()
@@ -51070,6 +51165,7 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
         scalar_exprs,
         sequence_exprs,
         multi_exprs,
+        multi_value_types,
         match_exprs,
         list_match_exprs,
     }
@@ -100120,6 +100216,77 @@ async fn main() -> i64 {
         let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
             .expect("multi-value await should emit from typed IR");
         assert_eq!(emitted, direct);
+    }
+
+    #[test]
+    fn async_continuation_multi_destructure_types_use_typed_ir_after_ast_poisoning() {
+        let source = r#"
+async fn pair(value: i64, offset: i64) -> (i64, bool) {
+    return value + offset, true
+}
+
+async fn delay(value: i64) -> i64 {
+    return value
+}
+
+async fn exercise(value: i64) -> i64 {
+    let (first, _) = await pair(value, 2)
+    let delayed: i64 = await delay(first)
+    return delayed
+}
+
+async fn main() -> i64 {
+    return await exercise(40)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("async multi-destructure continuation fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("async exercise CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let multi_span = graph
+            .values()
+            .iter()
+            .find(|value| {
+                value.result_index == Some(0)
+                    && matches!(value.kind, crate::ir::ControlFlowValueKind::Await { .. })
+                    && facts.multi_exprs.contains_key(&source_span_key(value.span))
+            })
+            .expect("multi-value await root should exist")
+            .span;
+        assert_eq!(
+            cfg_rewrite_positional_destructure_types(multi_span, &facts, database.signatures(),),
+            Some(vec![Type::I64, Type::Bool]),
+            "typed IR should retain every destructured await result type"
+        );
+
+        let mut program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("async multi-destructure continuation fixture should parse");
+        let function = program
+            .functions
+            .iter_mut()
+            .find(|function| function.name == "exercise")
+            .expect("exercise function should exist");
+        let expr = function
+            .body
+            .iter_mut()
+            .find_map(|stmt| match &mut stmt.kind {
+                StmtKind::LetMultiDestructure { expr, .. } => Some(expr),
+                _ => None,
+            })
+            .expect("exercise should contain a multi-destructure");
+        assert_eq!(source_span_key(expr.span), source_span_key(multi_span));
+        expr.kind = ExprKind::Bool(false);
+
+        let plan = async_continuation_plan(function, database.signatures(), graph)
+            .expect("typed IR result types should keep continuation lowering available");
+        assert!(
+            plan.locals
+                .iter()
+                .any(|(name, ty)| name == "first" && *ty == Type::I64),
+            "first destructured result should retain its normalized i64 continuation type"
+        );
     }
 
     #[test]
