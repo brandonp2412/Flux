@@ -16822,11 +16822,12 @@ fn emit_windows_native_application(
                     }
                     None => false,
                 };
-                if selectable {
+                let rich_text = static_rich_text_markup(element, signatures)?;
+                if rich_text.is_some() {
                     if let Some(property) = view_property(element, "letter_spacing") {
                         return Err(diag(
                             property.value.span,
-                            "bootstrap Windows selectable Text does not yet support letterSpacing",
+                            "bootstrap Windows rich Text does not yet support letterSpacing",
                         ));
                     }
                     if let Some(property) = view_property(element, "wrap_mode") {
@@ -16835,7 +16836,7 @@ fn emit_windows_native_application(
                             Some("char" | "wordChar" | "word_char") => {
                                 return Err(diag(
                                     property.value.span,
-                                    "bootstrap Windows selectable Text currently supports only wrapMode: 'word'",
+                                    "bootstrap Windows rich Text currently supports only wrapMode: 'word'",
                                 ));
                             }
                             Some(_) => {
@@ -16847,7 +16848,7 @@ fn emit_windows_native_application(
                             None => {
                                 return Err(diag(
                                     property.value.span,
-                                    "bootstrap Windows selectable Text does not yet support state-driven wrapMode",
+                                    "bootstrap Windows rich Text does not yet support state-driven wrapMode",
                                 ));
                             }
                         }
@@ -16858,7 +16859,7 @@ fn emit_windows_native_application(
                             Some("start" | "middle" | "end") => {
                                 return Err(diag(
                                     property.value.span,
-                                    "bootstrap Windows selectable Text does not yet support ellipsizing",
+                                    "bootstrap Windows rich Text does not yet support ellipsizing",
                                 ));
                             }
                             Some(_) => {
@@ -16870,10 +16871,89 @@ fn emit_windows_native_application(
                             None => {
                                 return Err(diag(
                                     property.value.span,
-                                    "bootstrap Windows selectable Text does not yet support state-driven ellipsize",
+                                    "bootstrap Windows rich Text does not yet support state-driven ellipsize",
                                 ));
                             }
                         }
+                    }
+                }
+                if selectable
+                    && rich_text.is_none()
+                    && let Some(property) = view_property(element, "letter_spacing")
+                {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Windows selectable Text does not yet support letterSpacing",
+                    ));
+                }
+                if let Some(property) = view_property(element, "letter_spacing")
+                    && let Some(value) = static_expr_i64(&property.value, signatures)
+                    && !(i64::from(i32::MIN) / 1024..=i64::from(i32::MAX) / 1024).contains(&value)
+                {
+                    return Err(diag(
+                        property.value.span,
+                        "Text.letterSpacing is outside the supported native range",
+                    ));
+                }
+                if let Some(property) = view_property(element, "line_height_percent")
+                    && let Some(value) = static_expr_i64(&property.value, signatures)
+                    && (value <= 0 || value > i64::from(i32::MAX))
+                {
+                    return Err(diag(
+                        property.value.span,
+                        "Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer",
+                    ));
+                }
+                if let Some(property) = view_property(element, "wrap_mode") {
+                    if let Some(wrap_mode) = static_expr_str(&property.value, signatures) {
+                        match wrap_mode.as_str() {
+                            "word" | "char" | "wordChar" | "word_char" if !selectable => {}
+                            "word" => {}
+                            "char" | "wordChar" | "word_char" => {
+                                return Err(diag(
+                                    property.value.span,
+                                    "bootstrap Windows selectable Text currently supports only wrapMode: 'word'",
+                                ));
+                            }
+                            _ => {
+                                return Err(diag(
+                                    property.value.span,
+                                    "Text.wrapMode must be one of 'word', 'char', or 'wordChar'",
+                                ));
+                            }
+                        }
+                    } else if selectable {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Windows selectable Text does not yet support state-driven wrapMode",
+                        ));
+                    }
+                }
+                if let Some(property) = view_property(element, "ellipsize") {
+                    if let Some(ellipsize) = static_expr_str(&property.value, signatures) {
+                        match ellipsize.as_str() {
+                            "none" => {}
+                            "start" | "middle" | "end" if !selectable => {}
+                            "start" | "middle" | "end" => {
+                                return Err(diag(
+                                    property.value.span,
+                                    &format!(
+                                        "bootstrap Windows selectable Text does not yet support ellipsize: '{ellipsize}'"
+                                    ),
+                                ));
+                            }
+                            _ => {
+                                return Err(diag(
+                                    property.value.span,
+                                    "Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'",
+                                ));
+                            }
+                        }
+                    } else if selectable {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Windows selectable Text does not yet support state-driven ellipsize",
+                        ));
                     }
                 }
             }
@@ -16896,7 +16976,12 @@ fn emit_windows_native_application(
                     "Text" | "Button" | "Header" => {
                         matches!(
                             property.name.as_str(),
-                            "text" | "selectable" | "visible" | "enabled"
+                            "text"
+                                | "rich_text"
+                                | "richText"
+                                | "selectable"
+                                | "visible"
+                                | "enabled"
                         )
                     }
                     "Nav" | "Chart" | "Content" => {
@@ -17170,7 +17255,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/shortcut/shortcutScope/dragText/dragTranslate/pinchScale/backgroundColor/Text.selectable/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.padding/Toggle.padding/Radio.padding/TextInput.padding/Nav.padding/Chart.padding/Card.padding/Header.padding/Content.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/clip/borderColor/borderTopColor/borderEndColor/borderBottomColor/borderStartColor/borderWidth/borderTopWidth/borderEndWidth/borderBottomWidth/borderStartWidth/borderStyle/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/focus/blur/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/shortcut/shortcutScope/dragText/dragTranslate/pinchScale/backgroundColor/Text.richText/Text.selectable/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.padding/Toggle.padding/Radio.padding/TextInput.padding/Nav.padding/Chart.padding/Card.padding/Header.padding/Content.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/clip/borderColor/borderTopColor/borderEndColor/borderBottomColor/borderStartColor/borderWidth/borderTopWidth/borderEndWidth/borderBottomWidth/borderStartWidth/borderStyle/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/focus/blur/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -19310,6 +19395,50 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
                 ));
             }
             out.push_str("};\n");
+        }
+        for (view_identity, secondary_view) in &secondary_window_views {
+            for (index, element) in
+                secondary_view
+                    .elements
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, element)| {
+                        element.kind == "Text" && view_property(element, "rich_text").is_some()
+                    })
+            {
+                let markup = static_rich_text_markup(element, signatures)?
+                    .expect("secondary rich Text element has validated markup");
+                let (_, runs) = portable_rich_text_plain_and_runs(&markup)
+                    .expect("validated portable rich text parses into native runs");
+                if runs.is_empty() {
+                    continue;
+                }
+                out.push_str(&format!(
+                    "static const FluxWinRichTextRun flux__win_rich_text_runs_view_{view_identity}_{index}[] = {{\n"
+                ));
+                for run in runs {
+                    let mut effects = Vec::new();
+                    if run.bold {
+                        effects.push("FLUX__WIN_RICH_CFE_BOLD");
+                    }
+                    if run.italic {
+                        effects.push("FLUX__WIN_RICH_CFE_ITALIC");
+                    }
+                    if run.underline {
+                        effects.push("FLUX__WIN_RICH_CFE_UNDERLINE");
+                    }
+                    let effects = if effects.is_empty() {
+                        "0".to_string()
+                    } else {
+                        effects.join(" | ")
+                    };
+                    out.push_str(&format!(
+                        "    {{ {}, {}, {} }},\n",
+                        run.start_utf16, run.end_utf16, effects
+                    ));
+                }
+                out.push_str("};\n");
+            }
         }
     }
     out.push_str("static void flux__win_set_application_id(const char *application_id) { wchar_t *wide = flux__windows_utf8_to_wide(application_id); if (wide == NULL) return; HMODULE shell32 = LoadLibraryA(\"shell32.dll\"); if (shell32 != NULL) { typedef HRESULT (WINAPI *flux__set_app_id_fn)(LPCWSTR); flux__set_app_id_fn set_app_id = (flux__set_app_id_fn)(void *)GetProcAddress(shell32, \"SetCurrentProcessExplicitAppUserModelID\"); if (set_app_id != NULL) (void)set_app_id(wide); FreeLibrary(shell32); } free(wide); }\n");
@@ -23166,9 +23295,10 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             };
             let secondary_selectable_text_format_rect = if element.kind == "Text"
                 && windows_text_has_padding(element)
-                && view_property(element, "selectable")
-                    .and_then(|property| static_expr_bool(&property.value, signatures))
-                    == Some(true)
+                && (view_property(element, "rich_text").is_some()
+                    || view_property(element, "selectable")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        == Some(true))
             {
                 let padding_top = secondary_text_padding_value("padding_top")?;
                 let padding_bottom = secondary_text_padding_value("padding_bottom")?;
@@ -24192,7 +24322,11 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     signatures,
                     Some(*view_identity),
                 )?;
-                if view_property(element, "selectable")
+                if view_property(element, "rich_text").is_some() {
+                    out.push_str(&format!(
+                        "flux__win_apply_rich_text_alignment(context->control_windows[{index}], {value});\n"
+                    ));
+                } else if view_property(element, "selectable")
                     .and_then(|property| static_expr_bool(&property.value, signatures))
                     == Some(true)
                 {
@@ -24278,9 +24412,23 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 out.push_str(&format!(
                     "if (context->text_fonts != NULL && context->text_font_families != NULL && context->text_font_sizes != NULL && context->text_font_bold != NULL && context->text_font_italic != NULL && context->text_font_underline != NULL && context->text_font_strikethrough != NULL && context->text_font_dpis != NULL && context->text_font_initialized != NULL && context->text_font_count > {text_font_slot}) flux__win_apply_font(context->control_windows[{index}], &context->text_fonts[{text_font_slot}], &context->text_font_families[{text_font_slot}], &context->text_font_sizes[{text_font_slot}], &context->text_font_bold[{text_font_slot}], &context->text_font_italic[{text_font_slot}], &context->text_font_underline[{text_font_slot}], &context->text_font_strikethrough[{text_font_slot}], &context->text_font_dpis[{text_font_slot}], &context->text_font_initialized[{text_font_slot}], {font_family}, {size}, {bold}, {italic}, {underline}, {strikethrough});\n"
                 ));
-                if view_property(element, "selectable")
-                    .and_then(|property| static_expr_bool(&property.value, signatures))
-                    == Some(true)
+                if let Some(markup) = static_rich_text_markup(element, signatures)? {
+                    let (_, runs) = portable_rich_text_plain_and_runs(&markup)
+                        .expect("validated secondary portable rich text parses into native runs");
+                    if runs.is_empty() {
+                        out.push_str(&format!(
+                            "flux__win_apply_rich_text(context->control_windows[{index}], NULL, 0);\n"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "flux__win_apply_rich_text(context->control_windows[{index}], flux__win_rich_text_runs_view_{view_identity}_{index}, sizeof(flux__win_rich_text_runs_view_{view_identity}_{index}) / sizeof(flux__win_rich_text_runs_view_{view_identity}_{index}[0]));\n"
+                        ));
+                    }
+                }
+                if (view_property(element, "rich_text").is_some()
+                    || view_property(element, "selectable")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        == Some(true))
                     && let Some(property) = view_property(element, "line_height_percent")
                 {
                     let line_height = ui_expr_c_for_view_identity(
@@ -24358,9 +24506,10 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                             Some(*view_identity),
                         )?;
                         let apply_line_height = if element.kind == "Text"
-                            && view_property(element, "selectable")
-                                .and_then(|property| static_expr_bool(&property.value, signatures))
-                                == Some(true)
+                            && (view_property(element, "rich_text").is_some()
+                                || view_property(element, "selectable").and_then(|property| {
+                                    static_expr_bool(&property.value, signatures)
+                                }) == Some(true))
                         {
                             format!(
                                 " flux__win_apply_rich_text_line_height(context->control_windows[{index}], flux__win_view_{view_identity}_next_line_height_{index});"
@@ -24417,6 +24566,12 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                             Some(*view_identity),
                         )?;
                         let apply_wrap = if element.kind == "Text"
+                            && view_property(element, "rich_text").is_some()
+                        {
+                            format!(
+                                " flux__win_apply_rich_text_wrap(context->control_windows[{index}], flux__win_view_{view_identity}_next_wrap_{index});"
+                            )
+                        } else if element.kind == "Text"
                             && view_property(element, "selectable")
                                 .and_then(|property| static_expr_bool(&property.value, signatures))
                                 == Some(true)
@@ -26459,8 +26614,17 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             }
         }
         for (index, element) in secondary_view.elements.iter().enumerate() {
+            let rich_text_markup = if element.kind == "Text" {
+                static_rich_text_markup(element, signatures)?
+            } else {
+                None
+            };
             let text = if element.kind == "Image" {
                 String::new()
+            } else if let Some(markup) = &rich_text_markup {
+                let (plain, _) = portable_rich_text_plain_and_runs(markup)
+                    .expect("validated secondary portable rich text parses into native text");
+                plain
             } else {
                 let text_property_name = match element.kind.as_str() {
                     "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => "label",
@@ -26542,25 +26706,43 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                         == Some(false);
                     let selectable_line_height =
                         selectable && view_property(element, "line_height_percent").is_some();
-                    let (class, style) = if selectable_line_height {
+                    let (class, style) = if rich_text_markup.is_some() || selectable_line_height {
                         let style = match alignment.as_str() {
-                            "left" | "fill" if nowrap => {
+                            "left" | "fill" if nowrap && selectable => {
                                 "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
                             }
-                            "left" | "fill" => {
+                            "left" | "fill" if nowrap => {
+                                "WS_CHILD | WS_VISIBLE | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                            }
+                            "left" | "fill" if selectable => {
                                 "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY"
                             }
-                            "center" if nowrap => {
+                            "left" | "fill" => {
+                                "WS_CHILD | WS_VISIBLE | ES_LEFT | ES_MULTILINE | ES_READONLY"
+                            }
+                            "center" if nowrap && selectable => {
                                 "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_CENTER | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
                             }
-                            "center" => {
+                            "center" if nowrap => {
+                                "WS_CHILD | WS_VISIBLE | ES_CENTER | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                            }
+                            "center" if selectable => {
                                 "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_CENTER | ES_MULTILINE | ES_READONLY"
                             }
-                            "right" if nowrap => {
+                            "center" => {
+                                "WS_CHILD | WS_VISIBLE | ES_CENTER | ES_MULTILINE | ES_READONLY"
+                            }
+                            "right" if nowrap && selectable => {
                                 "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
                             }
-                            "right" => {
+                            "right" if nowrap => {
+                                "WS_CHILD | WS_VISIBLE | ES_RIGHT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                            }
+                            "right" if selectable => {
                                 "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_MULTILINE | ES_READONLY"
+                            }
+                            "right" => {
+                                "WS_CHILD | WS_VISIBLE | ES_RIGHT | ES_MULTILINE | ES_READONLY"
                             }
                             _ => unreachable!(
                                 "secondary Text.textAlign was validated before emission"
@@ -26805,12 +26987,24 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     border_slot + 1
                 ));
             }
+            let secondary_nonselectable_rich_text = element.kind == "Text"
+                && view_property(element, "rich_text").is_some()
+                && !view_property(element, "selectable")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    .unwrap_or(false);
+            if secondary_nonselectable_rich_text {
+                out.push_str(&format!(
+                    "if (!SetWindowSubclass(context->control_windows[{index}], flux__win_rich_text_nonselectable_proc, (UINT_PTR){}, 0)) return flux__win_create_view_window_failure(window, primary);\n",
+                    index + 10001
+                ));
+            }
             let uses_secondary_static_text_layout_subclass =
                 windows_element_uses_custom_text_layout(element, signatures)
                     && (element.kind != "Text"
-                        || view_property(element, "selectable")
-                            .and_then(|property| static_expr_bool(&property.value, signatures))
-                            != Some(true));
+                        || (view_property(element, "rich_text").is_none()
+                            && view_property(element, "selectable").and_then(|property| {
+                                static_expr_bool(&property.value, signatures)
+                            }) != Some(true)));
             if uses_secondary_static_text_layout_subclass {
                 let text_layout_slot = secondary_text_layout_elements
                     .iter()
