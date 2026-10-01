@@ -84292,6 +84292,71 @@ app Badge
 }
 
 #[test]
+fn composed_view_effectful_static_slice_index_preserves_base_then_index_evaluation() {
+    let source = r#"
+fn probe() -> bool {
+    print("probe")
+    return false
+}
+
+fn choose() -> i64 {
+    print("choose")
+    return 1
+}
+
+view Badge {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: ([false, true, probe()][0:2])[choose()]
+}
+
+app Badge
+"#;
+
+    check_source(source).expect("effectful static-slice index fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(generated.contains("flux__ui_slice_index_item_"));
+        let probe = generated
+            .find(" = (flux__fn_probe());")
+            .expect("unselected effectful base item should still be evaluated");
+        let index = generated
+            .find("int64_t flux__ui_slice_index_")
+            .expect("slice index should be evaluated into one temporary");
+        assert!(
+            generated.contains(" = (flux__fn_choose());"),
+            "effectful slice index should be evaluated exactly once"
+        );
+        assert!(
+            probe < index,
+            "slice base items must be evaluated before the index expression"
+        );
+    };
+
+    let linux =
+        compile_to_c(source).expect("effectful static-slice indexing should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful static-slice index fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful static-slice indexing should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn composed_view_constant_list_property_does_not_drop_effectful_items() {
     let source = r#"
 fn probe() -> bool {

@@ -35276,6 +35276,151 @@ fn effectful_copy_ui_static_slice_property_c(
     )))
 }
 
+fn effectful_copy_ui_static_slice_index_c(
+    expr: &Expr,
+    index_expr: &Expr,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+    view_identity: Option<usize>,
+) -> Result<Option<String>, Diagnostic> {
+    let ExprKind::Slice {
+        base,
+        start,
+        end,
+        step,
+        optional: false,
+    } = &expr.kind
+    else {
+        return Ok(None);
+    };
+    let ExprKind::List(items) = &base.kind else {
+        return Ok(None);
+    };
+    let Some(first_item) = items.first() else {
+        return Ok(None);
+    };
+    if items
+        .iter()
+        .all(transparent_native_component_argument_is_reusable)
+    {
+        return Ok(None);
+    }
+
+    let Some(element_ty) = ui_scalar_expr_type(first_item, view, signatures) else {
+        return Ok(None);
+    };
+    let element_ty = signatures.canonical_type(&element_ty);
+    if !matches!(&element_ty, Type::Bool | Type::I64 | Type::Str)
+        || !items.iter().all(|item| {
+            ui_scalar_expr_type(item, view, signatures)
+                .is_some_and(|ty| signatures.canonical_type(&ty) == element_ty)
+        })
+    {
+        return Ok(None);
+    }
+
+    let static_bound = |bound: &Option<Box<Expr>>| -> Result<Option<Option<i64>>, Diagnostic> {
+        let Some(bound) = bound else {
+            return Ok(Some(None));
+        };
+        Ok(match fold_ui_primitive_expr(bound, signatures)? {
+            Some(ConstantValue::I64(value)) => Some(Some(value)),
+            _ => None,
+        })
+    };
+    let Some(start) = static_bound(start)? else {
+        return Ok(None);
+    };
+    let Some(end) = static_bound(end)? else {
+        return Ok(None);
+    };
+    let step = if let Some(step) = step {
+        let Some(ConstantValue::I64(step)) = fold_ui_primitive_expr(step, signatures)? else {
+            return Ok(None);
+        };
+        step
+    } else {
+        1
+    };
+    if step == 0 {
+        return Ok(None);
+    }
+
+    let Ok(base_len) = i64::try_from(items.len()) else {
+        return Ok(None);
+    };
+    let first = static_ui_slice_bound(base_len, start, false, step);
+    let last = static_ui_slice_bound(base_len, end, true, step);
+    let mut selected_indices = Vec::new();
+    let mut slice_index = first;
+    if step > 0 {
+        while slice_index < last {
+            let Ok(position) = usize::try_from(slice_index) else {
+                return Ok(None);
+            };
+            selected_indices.push(position);
+            let Some(next) = slice_index.checked_add(step) else {
+                break;
+            };
+            slice_index = next;
+        }
+    } else {
+        while slice_index > last {
+            let Ok(position) = usize::try_from(slice_index) else {
+                return Ok(None);
+            };
+            selected_indices.push(position);
+            let Some(next) = slice_index.checked_add(step) else {
+                break;
+            };
+            slice_index = next;
+        }
+    }
+
+    let element_c = c_type(&element_ty, signatures);
+    let mut declarations = String::new();
+    let mut value_names = Vec::with_capacity(items.len());
+    for (position, item) in items.iter().enumerate() {
+        let value = ui_expr_c_for_view_identity(item, view, signatures, view_identity)?;
+        let value_name = format!(
+            "flux__ui_slice_index_item_{}_{}_{}",
+            expr.span.line, expr.span.column, position
+        );
+        declarations.push_str(&format!("{element_c} {value_name} = ({value}); "));
+        value_names.push(value_name);
+    }
+
+    let index_code = ui_expr_c_for_view_identity(index_expr, view, signatures, view_identity)?;
+    let index_name = format!(
+        "flux__ui_slice_index_{}_{}",
+        expr.span.line, expr.span.column
+    );
+    let Ok(slice_len) = i64::try_from(selected_indices.len()) else {
+        return Ok(None);
+    };
+    let fallback = value_names[0].clone();
+    let mut selection = selected_indices
+        .last()
+        .map(|position| value_names[*position].clone())
+        .unwrap_or_else(|| fallback.clone());
+    if selected_indices.len() > 1 {
+        for (relative, position) in selected_indices[..selected_indices.len() - 1]
+            .iter()
+            .enumerate()
+            .rev()
+        {
+            let value_name = &value_names[*position];
+            selection =
+                format!("({index_name} == INT64_C({relative}) ? {value_name} : {selection})");
+        }
+    }
+
+    Ok(Some(format!(
+        r#"__extension__ ({{ {declarations}int64_t {index_name} = ({index_code}); if ({index_name} < INT64_C(0)) {index_name} += INT64_C({slice_len}); if ({index_name} < INT64_C(0) || {index_name} >= INT64_C({slice_len})) {{ fputs("Flux runtime error: list index out of range
+", stderr); abort(); }} {selection}; }})"#
+    )))
+}
+
 fn effectful_copy_ui_field_projection_c(
     base: &Expr,
     name: &str,
@@ -36765,6 +36910,15 @@ fn ui_expr_c_for_view_identity(
             if let Some(indexed) =
                 effectful_copy_ui_list_index_c(base, index, view, signatures, view_identity)?
             {
+                return Ok(indexed);
+            }
+            if let Some(indexed) = effectful_copy_ui_static_slice_index_c(
+                base,
+                index,
+                view,
+                signatures,
+                view_identity,
+            )? {
                 return Ok(indexed);
             }
             if let Some(indexed) =
