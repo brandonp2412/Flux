@@ -13152,10 +13152,7 @@ fn flatten_transparent_native_view_element(
             )
         })?;
         if supplied.is_some() && !transparent_native_component_argument_is_reusable(value) {
-            if !matches!(
-                signatures.canonical_type(&param.ty),
-                Type::Bool | Type::I64 | Type::Str
-            ) {
+            if !native_ui_component_argument_storage_supported(value, &param.ty, signatures) {
                 return Err(diag(
                     value.span,
                     &format!(
@@ -13164,7 +13161,7 @@ fn flatten_transparent_native_view_element(
                     ),
                 )
                 .with_note(
-                    "single-evaluation component argument storage currently supports bool, i64, and str parameters",
+                    "single-evaluation component argument storage currently supports bool/i64/str values plus synchronous bool?/i64?/str? call arguments",
                 ));
             }
             let base_name = format!("__component_{instance_name}__param_{}", param.name);
@@ -13481,16 +13478,11 @@ fn emit_android_native_application(
     }
     for derived in &view.derived {
         let derived_name = ui_derived_c_name(&derived.name);
-        let initial = match signatures.canonical_type(&derived.ty) {
-            Type::I64 => "INT64_C(0)",
-            Type::Bool => "false",
-            Type::Str => "NULL",
-            _ => {
-                return Err(diag(
-                    derived.type_span,
-                    "bootstrap Android derived view values currently support i64, bool, and str",
-                ));
-            }
+        let Some(initial) = native_ui_derived_initial_c(&derived.ty, signatures) else {
+            return Err(diag(
+                derived.type_span,
+                "bootstrap Android derived view values currently support i64, bool, str, and optional scalars",
+            ));
         };
         out.push_str(&format!(
             "static {} {derived_name} = {initial};\n",
@@ -17477,13 +17469,10 @@ fn emit_windows_native_application(
             }
         }
         for derived in &secondary_view.derived {
-            if !matches!(
-                signatures.canonical_type(&derived.ty),
-                Type::Bool | Type::I64 | Type::Str
-            ) {
+            if !native_ui_stored_scalar_type_supported(&derived.ty, signatures) {
                 return Err(diag(
                     derived.type_span,
-                    "Windows distinct secondary window derived values currently support bool, i64, and str",
+                    "Windows distinct secondary window derived values currently support bool, i64, str, and optional scalars",
                 ));
             }
             ui_expr_c_for_view_identity(
@@ -20304,12 +20293,8 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
         for derived in &secondary_view.derived {
             let derived_name =
                 ui_derived_c_name_for_view_identity(&derived.name, Some(*view_identity));
-            let initial = match signatures.canonical_type(&derived.ty) {
-                Type::I64 => "INT64_C(0)",
-                Type::Bool => "false",
-                Type::Str => "NULL",
-                _ => unreachable!("secondary Windows derived type was validated above"),
-            };
+            let initial = native_ui_derived_initial_c(&derived.ty, signatures)
+                .expect("secondary Windows derived type was validated above");
             out.push_str(&format!(
                 "static {} {derived_name} = {initial};\n",
                 c_type(&derived.ty, signatures)
@@ -20479,16 +20464,11 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
     }
     for derived in &view.derived {
         let derived_name = ui_derived_c_name(&derived.name);
-        let initial = match signatures.canonical_type(&derived.ty) {
-            Type::I64 => "INT64_C(0)",
-            Type::Bool => "false",
-            Type::Str => "NULL",
-            _ => {
-                return Err(diag(
-                    derived.type_span,
-                    "bootstrap Windows derived view values currently support i64, bool, and str",
-                ));
-            }
+        let Some(initial) = native_ui_derived_initial_c(&derived.ty, signatures) else {
+            return Err(diag(
+                derived.type_span,
+                "bootstrap Windows derived view values currently support i64, bool, str, and optional scalars",
+            ));
         };
         out.push_str(&format!(
             "static {} {derived_name} = {initial};\n",
@@ -28401,16 +28381,11 @@ fn emit_linux_gtk_application(
     out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic volatile sig_atomic_t flux__ui_reload_requested = 0; static volatile sig_atomic_t flux__ui_patch_requested = 0; static void flux__ui_apply_reload_patch(void); static void flux__ui_reload_signal(int signal_number) { (void)signal_number; flux__ui_reload_requested = 1; } static void flux__ui_patch_signal(int signal_number) { (void)signal_number; flux__ui_patch_requested = 1; } static gboolean flux__ui_reload_poll(gpointer data) { (void)data; if (flux__ui_patch_requested) { flux__ui_patch_requested = 0; flux__ui_apply_reload_patch(); } if (!flux__ui_reload_requested) return G_SOURCE_CONTINUE; flux__ui_save_reload_state(); GApplication *application = g_application_get_default(); if (application != NULL) g_application_quit(application); return G_SOURCE_REMOVE; }\n#endif\n");
     for derived in &view.derived {
         let derived_name = ui_derived_c_name(&derived.name);
-        let initial = match signatures.canonical_type(&derived.ty) {
-            Type::I64 => "INT64_C(0)",
-            Type::Bool => "false",
-            Type::Str => "NULL",
-            _ => {
-                return Err(diag(
-                    derived.type_span,
-                    "bootstrap Linux derived view values currently support i64, bool, and str",
-                ));
-            }
+        let Some(initial) = native_ui_derived_initial_c(&derived.ty, signatures) else {
+            return Err(diag(
+                derived.type_span,
+                "bootstrap Linux derived view values currently support i64, bool, str, and optional scalars",
+            ));
         };
         out.push_str(&format!(
             "static {} {derived_name} = {initial};\n",
@@ -35709,6 +35684,110 @@ fn static_expr_bool(expr: &Expr, signatures: &Signatures) -> Option<bool> {
     }
 }
 
+fn native_ui_component_argument_storage_supported(
+    value: &Expr,
+    ty: &Type,
+    signatures: &Signatures,
+) -> bool {
+    match signatures.canonical_type(ty) {
+        Type::I64 | Type::Bool | Type::Str => true,
+        Type::Optional(inner)
+            if matches!(
+                signatures.canonical_type(&inner),
+                Type::I64 | Type::Bool | Type::Str
+            ) =>
+        {
+            let ExprKind::Call { name, .. } = &value.kind else {
+                return false;
+            };
+            let Some(signature) = signatures.get(name) else {
+                return false;
+            };
+            !signature.asynchronous
+                && matches!(
+                    signature.returns.as_slice(),
+                    [return_ty] if signatures.canonical_type(return_ty)
+                        == Type::Optional(inner.clone())
+                )
+        }
+        _ => false,
+    }
+}
+
+fn native_ui_stored_scalar_type_supported(ty: &Type, signatures: &Signatures) -> bool {
+    match signatures.canonical_type(ty) {
+        Type::I64 | Type::Bool | Type::Str => true,
+        Type::Optional(inner) => matches!(
+            signatures.canonical_type(&inner),
+            Type::I64 | Type::Bool | Type::Str
+        ),
+        _ => false,
+    }
+}
+
+fn native_ui_derived_initial_c(ty: &Type, signatures: &Signatures) -> Option<String> {
+    match signatures.canonical_type(ty) {
+        Type::I64 => Some("INT64_C(0)".to_string()),
+        Type::Bool => Some("false".to_string()),
+        Type::Str => Some("NULL".to_string()),
+        Type::Optional(inner)
+            if matches!(
+                signatures.canonical_type(&inner),
+                Type::I64 | Type::Bool | Type::Str
+            ) =>
+        {
+            Some(format!(
+                "({}){{ .has_value = false }}",
+                c_type(ty, signatures)
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn ui_optional_scalar_type(
+    expr: &Expr,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+) -> Option<Type> {
+    let ty = match &expr.kind {
+        ExprKind::Var(name) => view
+            .states
+            .iter()
+            .find(|state| state.name == *name)
+            .map(|state| state.ty.clone())
+            .or_else(|| {
+                view.derived
+                    .iter()
+                    .find(|derived| derived.name == *name)
+                    .map(|derived| derived.ty.clone())
+            })
+            .or_else(|| {
+                view.params
+                    .iter()
+                    .find(|param| param.name == *name)
+                    .map(|param| param.ty.clone())
+            })?,
+        ExprKind::Call { name, .. } => {
+            let signature = signatures.get(name)?;
+            let [ty] = signature.returns.as_slice() else {
+                return None;
+            };
+            ty.clone()
+        }
+        _ => return None,
+    };
+    let canonical = signatures.canonical_type(&ty);
+    let Type::Optional(inner) = canonical else {
+        return None;
+    };
+    matches!(
+        signatures.canonical_type(&inner),
+        Type::I64 | Type::Bool | Type::Str
+    )
+    .then_some(Type::Optional(inner))
+}
+
 fn ui_expr_is_str(expr: &Expr, view: &crate::ast::ViewDef, signatures: &Signatures) -> bool {
     match &expr.kind {
         ExprKind::Str(_) => true,
@@ -36066,13 +36145,30 @@ fn ui_expr_c_for_view_identity(
                     Some(None) => {
                         ui_expr_c_for_view_identity(right, view, signatures, view_identity)
                     }
-                    None => Err(diag(
-                        expr.span,
-                        "bootstrap dynamic UI coalescing currently requires a statically resolvable optional operand",
-                    )
-                    .with_note(
-                        "runtime optional view storage remains pending; composed optional literals and projections can still coalesce before native UI lowering",
-                    )),
+                    None => {
+                        let Some(optional_ty) = ui_optional_scalar_type(left, view, signatures)
+                        else {
+                            return Err(diag(
+                                expr.span,
+                                "bootstrap dynamic UI coalescing requires a scalar optional operand",
+                            )
+                            .with_note(
+                                "runtime coalescing currently supports stored or directly-called bool?, i64?, and str? values",
+                            ));
+                        };
+                        let optional_c = c_type(&optional_ty, signatures);
+                        let left_code =
+                            ui_expr_c_for_view_identity(left, view, signatures, view_identity)?;
+                        let right_code =
+                            ui_expr_c_for_view_identity(right, view, signatures, view_identity)?;
+                        let value_name = format!(
+                            "flux__ui_coalesce_value_{}_{}",
+                            expr.span.line, expr.span.column
+                        );
+                        Ok(format!(
+                            "__extension__ ({{ {optional_c} {value_name} = ({left_code}); {value_name}.has_value ? {value_name}.value : ({right_code}); }})"
+                        ))
+                    }
                 };
             }
             let string_comparison =
@@ -36152,13 +36248,10 @@ fn ui_expr_c_for_view_identity(
                     "bootstrap dynamic UI expressions require a single-value function result",
                 ));
             };
-            if !matches!(
-                signatures.canonical_type(return_ty),
-                Type::Bool | Type::I64 | Type::Str
-            ) {
+            if !native_ui_stored_scalar_type_supported(return_ty, signatures) {
                 return Err(diag(
                     expr.span,
-                    "bootstrap dynamic UI function calls currently require bool, i64, or str results",
+                    "bootstrap dynamic UI function calls currently require bool, i64, str, or optional scalar results",
                 ));
             }
 

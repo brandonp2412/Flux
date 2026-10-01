@@ -81574,6 +81574,75 @@ app App
 }
 
 #[test]
+fn lowers_observable_optional_component_arguments_with_runtime_coalescing() {
+    let source = r#"
+fn maybeVisible(value: bool) -> bool? {
+    print("maybeVisible")
+    if value:
+        return true
+    return none
+}
+
+view Badge(visible: bool?) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible ?? false
+}
+
+view App {
+    grid columns: 1fr 1fr
+    grid rows: 1fr 1fr
+    Badge left at 1,1
+        visible: maybeVisible(windowIsLandscape)
+    Badge right at 1,2
+        visible: maybeVisible(windowIsPortrait)
+    Text direct at 2,1 span columns 2
+        text: "Direct"
+        visible: maybeVisible(windowIsCompact) ?? false
+}
+
+app App
+"#;
+
+    check_source(source).expect("observable optional component arguments should typecheck");
+    let linux = compile_to_c(source)
+        .expect("observable optional component arguments should lower through Linux");
+    assert!(linux.contains("struct flux__optional_bool"));
+    assert!(linux.contains("flux__ui_derived___component_left__param_visible"));
+    assert!(linux.contains("flux__ui_derived___component_right__param_visible"));
+    assert!(linux.contains(".has_value ?"));
+    assert!(linux.contains(".value :"));
+    assert!(linux.contains("left__title"));
+    assert!(linux.contains("right__title"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("observable optional component argument fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("observable optional component arguments should lower through Android");
+    assert!(android.contains("flux__ui_derived___component_left__param_visible"));
+    assert!(android.contains("flux__ui_derived___component_right__param_visible"));
+    assert!(android.contains(".has_value ?"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("observable optional component arguments should lower through Windows");
+    assert!(windows.contains("flux__ui_derived___component_left__param_visible"));
+    assert!(windows.contains("flux__ui_derived___component_right__param_visible"));
+    assert!(windows.contains(".has_value ?"));
+}
+
+#[test]
 fn lowers_composed_view_parameterized_constant_list_index_on_all_native_backends() {
     let source = r#"
 view Badge(index: i64) {
