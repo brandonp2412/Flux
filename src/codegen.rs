@@ -36001,11 +36001,28 @@ fn effectful_copy_ui_list_property_c(
     }
 
     let list_member = crate::builtin_names::list_member_impl(name);
-    if matches!(list_member, "first" | "last" | "single")
-        && let Some((_, value)) =
-            dynamic_single_copy_ui_list_control_c(expr, view, signatures, view_identity)?
+    if let Some((element_ty, value)) =
+        dynamic_single_copy_ui_list_control_c(expr, view, signatures, view_identity)?
     {
-        return Ok(Some(value));
+        if matches!(list_member, "first" | "last" | "single") {
+            return Ok(Some(value));
+        }
+        let cardinality = match list_member {
+            "length" => Some("INT64_C(1)"),
+            "isEmpty" => Some("false"),
+            "isNotEmpty" => Some("true"),
+            _ => None,
+        };
+        if let Some(cardinality) = cardinality {
+            let element_name = format!(
+                "flux__ui_list_property_item_{}_{}_0",
+                expr.span.line, expr.span.column
+            );
+            return Ok(Some(format!(
+                "__extension__ ({{ {} {element_name} = ({value}); (void){element_name}; {cardinality}; }})",
+                c_type(&element_ty, signatures)
+            )));
+        }
     }
 
     let Some(layout) = statically_selected_ui_list_layout(expr, signatures)? else {

@@ -83707,6 +83707,78 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_effectful_copy_dynamic_single_control_aggregate_cardinality_on_all_native_backends()
+ {
+    let source = r#"
+struct Flags {
+    enabled: bool
+    marker: i64
+}
+
+fn mark(value: i64) -> i64 {
+    print("mark")
+    return value
+}
+
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr
+    Badge structBadge at 1,1
+        visible: ([if windowIsLandscape: Flags { enabled: true, marker: mark(1) } else: Flags { enabled: false, marker: mark(2) }]).count == 1
+    Badge recordBadge at 2,1
+        visible: ([if windowIsLandscape: (enabled: true, marker: mark(3)) else: (enabled: false, marker: mark(4))]).nonempty
+}
+
+app App
+"#;
+
+    check_source(source)
+        .expect("effectful dynamic single-control aggregate cardinality fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__fn_mark(").count() >= 4,
+            "cardinality queries must retain the selected aggregate field producers"
+        );
+        assert!(
+            generated.matches("flux__ui_list_property_item_").count() >= 2,
+            "cardinality queries should materialize the selected aggregate before returning metadata"
+        );
+        assert!(generated.contains("INT64_C(1)"));
+        assert!(generated.contains("(void)flux__ui_list_property_item_"));
+    };
+
+    let linux = compile_to_c(source).expect(
+        "effectful dynamic single-control aggregate cardinality should lower through Linux",
+    );
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful dynamic single-control aggregate cardinality fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful dynamic single-control aggregate cardinality should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn lowers_composed_view_effectful_copy_dynamic_single_control_aggregate_index_on_all_native_backends()
  {
     let source = r#"
