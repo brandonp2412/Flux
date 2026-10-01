@@ -13085,9 +13085,8 @@ fn flatten_transparent_native_view_element(
             ),
         ));
     }
-    let transparent_grid = target.grid.flow.is_none()
-        && target.grid.padding.unwrap_or(0) == 0
-        && !target.grid.scroll.unwrap_or(false);
+    let transparent_grid =
+        target.grid.padding.unwrap_or(0) == 0 && !target.grid.scroll.unwrap_or(false);
     if !transparent_grid {
         return Err(diag(
             element.kind_span,
@@ -13096,7 +13095,7 @@ fn flatten_transparent_native_view_element(
             ),
         )
         .with_note(format!(
-            "view '{}' must use no flow, padding, or scroll until native nested-container lowering exists",
+            "view '{}' must use no padding or scroll until native nested-container lowering exists",
             target.name
         )));
     }

@@ -81345,6 +81345,74 @@ app App
 }
 
 #[test]
+fn lowers_matching_flow_composed_subgrids_on_all_native_backends() {
+    let source = r#"
+view Actions(left: str, right: str) {
+    flow: horizontal
+    flow gap: 10
+    Text first
+        text: left
+    Text second
+        text: right
+}
+
+view App {
+    grid columns: auto auto
+    grid rows: auto
+    grid gap: 10
+    Actions actions at 1,1 span columns 2
+        left: "One"
+        right: "Two"
+}
+
+app App
+"#;
+
+    check_source(source).expect("matching flow composed subgrid should typecheck");
+    let linux =
+        compile_to_c(source).expect("matching flow composed subgrid should lower through Linux");
+    assert!(linux.contains("actions__first"));
+    assert!(linux.contains("actions__second"));
+    assert!(linux.contains("gtk_grid_attach(GTK_GRID(grid), flux__ui_actions__first, 0, 0, 1, 1)"));
+    assert!(
+        linux.contains("gtk_grid_attach(GTK_GRID(grid), flux__ui_actions__second, 1, 0, 1, 1)")
+    );
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("matching flow composed subgrid should analyze for native targets");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("matching flow composed subgrid should lower through Android");
+    assert!(android.contains("One"));
+    assert!(android.contains("Two"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("matching flow composed subgrid should lower through Windows");
+    assert!(windows.contains("actions__first"));
+    assert!(windows.contains("actions__second"));
+    assert!(windows.contains("One"));
+    assert!(windows.contains("Two"));
+
+    let mismatched = source.replace("grid columns: auto auto", "grid columns: 1fr 1fr");
+    let error =
+        compile_to_c(&mismatched).expect_err("mismatched flow composition still needs a container");
+    assert!(
+        error
+            .message
+            .contains("needs a native nested layout container")
+    );
+}
+
+#[test]
 fn lowers_reusable_composed_view_derived_values_on_linux_and_android() {
     let source = r#"
 view Badge(enabled: bool) {
