@@ -81628,6 +81628,96 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_reusable_scalar_projection_arguments_on_all_native_backends() {
+    let source = r#"
+struct Flags {
+    enabled: bool
+}
+
+view Badge(listVisible: bool, recordVisible: bool, structVisible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: listVisible && recordVisible && structVisible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        listVisible: [false, true][1]
+        recordVisible: (enabled: true).enabled
+        structVisible: (Flags { enabled: true }).enabled
+}
+
+app App
+"#;
+
+    check_source(source).expect("pure projection component arguments should typecheck");
+    let linux = compile_to_c(source)
+        .expect("pure projection component arguments should lower through Linux");
+    assert!(linux.contains("badge__title"));
+    assert!(!linux.contains("flux__ui_derived___component_badge__param_"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("pure projection component argument fixture should analyze for native targets");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("pure projection component arguments should lower through Android");
+    assert!(!android.contains("flux__ui_derived___component_badge__param_"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("pure projection component arguments should lower through Windows");
+    assert!(!windows.contains("flux__ui_derived___component_badge__param_"));
+}
+
+#[test]
+fn composed_view_projection_argument_preserves_effectful_base_evaluation() {
+    let source = r#"
+fn probe() -> bool {
+    print("probe")
+    return true
+}
+
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        visible: [probe(), true][1]
+}
+
+app App
+"#;
+
+    check_source(source).expect("effectful projection component argument should typecheck");
+    let error = compile_to_c(source)
+        .expect_err("effectful projection component arguments must remain explicit");
+    assert!(
+        error
+            .message
+            .contains("bootstrap dynamic UI expression currently supports")
+    );
+}
+
+#[test]
 fn composed_view_reusable_list_slice_parameter_rejects_effectful_items() {
     let source = r#"
 fn probe() -> bool {
