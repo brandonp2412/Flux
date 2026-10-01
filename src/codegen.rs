@@ -12860,6 +12860,13 @@ fn substitute_transparent_native_component_parameters(
             }
         }
         ExprKind::InterpolatedString(parts) => {
+            if let [InterpolatedStringPart::Binding { name, .. }] = parts.as_slice()
+                && let Some(binding) = bindings.get(name)
+            {
+                *expr = binding.clone();
+                return Ok(());
+            }
+
             for part in parts {
                 let InterpolatedStringPart::Binding { name, .. } = part else {
                     continue;

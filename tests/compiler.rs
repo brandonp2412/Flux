@@ -81902,6 +81902,63 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_identity_interpolation_of_reusable_str_arguments_on_all_native_backends() {
+    let source = r#"
+view Badge(label: str) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "${label}"
+}
+
+view Wrapper(index: i64) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        label: ["wide", "tall"][index]
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        index: windowWidth - windowWidth
+}
+
+app App
+"#;
+
+    check_source(source).expect("identity interpolation component argument should typecheck");
+    let linux = compile_to_c(source)
+        .expect("identity interpolation component argument should lower through Linux");
+    assert!(linux.contains("wrapper__badge__title"));
+    assert!(linux.contains("flux__ui_window_width"));
+    assert!(!linux.contains("flux__ui_derived___component_wrapper__badge__param_label"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("identity interpolation component argument fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("identity interpolation component argument should lower through Android");
+    assert!(android.contains("flux__ui_window_width"));
+    assert!(!android.contains("flux__ui_derived___component_wrapper__badge__param_label"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("identity interpolation component argument should lower through Windows");
+    assert!(windows.contains("flux__ui_window_width"));
+    assert!(!windows.contains("flux__ui_derived___component_wrapper__badge__param_label"));
+}
+
+#[test]
 fn lowers_composed_view_reusable_optional_projection_arguments_on_all_native_backends() {
     let source = r#"
 struct Flags {
