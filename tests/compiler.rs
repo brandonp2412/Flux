@@ -82625,6 +82625,55 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_runtime_conditional_list_lengths_on_all_native_backends() {
+    let source = r#"
+view Badge(enabled: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: ([if enabled: true]).isNotEmpty && ([...[if enabled: false]]).length == 1
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        enabled: windowWidth > 0
+}
+
+app App
+"#;
+
+    check_source(source).expect("runtime conditional list length fixture should typecheck");
+    let linux =
+        compile_to_c(source).expect("runtime conditional list length should lower through Linux");
+    assert!(linux.contains("badge__title"));
+    assert!(linux.contains("? INT64_C(1) : INT64_C(0)"));
+    assert!(!linux.contains("flux__ui_derived___component_badge__param_enabled"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("runtime conditional list length fixture should analyze for native targets");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("runtime conditional list length should lower through Android");
+    assert!(android.contains("? INT64_C(1) : INT64_C(0)"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("runtime conditional list length should lower through Windows");
+    assert!(windows.contains("? INT64_C(1) : INT64_C(0)"));
+}
+
+#[test]
 fn lowers_composed_view_parameterized_null_aware_list_elements_on_all_native_backends() {
     let source = r#"
 view Badge(enabled: bool?) {

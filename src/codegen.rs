@@ -34580,6 +34580,71 @@ fn reusable_ui_list_projection_items(
     }
 }
 
+fn reusable_ui_runtime_list_length_c(
+    expr: &Expr,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+    view_identity: Option<usize>,
+) -> Result<Option<String>, Diagnostic> {
+    let ExprKind::List(items) = &expr.kind else {
+        return Ok(None);
+    };
+
+    let mut fixed_len = 0_i64;
+    let mut dynamic_terms = Vec::new();
+    for item in items {
+        let singleton = Expr {
+            line: item.line,
+            span: item.span,
+            kind: ExprKind::List(vec![item.clone()]),
+        };
+        if let Some(projected) = reusable_ui_list_projection_items(&singleton, signatures)? {
+            let Ok(len) = i64::try_from(projected.len()) else {
+                return Ok(None);
+            };
+            let Some(next) = fixed_len.checked_add(len) else {
+                return Ok(None);
+            };
+            fixed_len = next;
+            continue;
+        }
+
+        match &item.kind {
+            ExprKind::ListIf {
+                condition,
+                binding: None,
+                value,
+                else_value: None,
+                ..
+            } if transparent_native_component_argument_is_reusable(condition)
+                && transparent_native_component_argument_is_reusable(value) =>
+            {
+                let condition =
+                    ui_expr_c_for_view_identity(condition, view, signatures, view_identity)?;
+                dynamic_terms.push(format!("(({condition}) ? INT64_C(1) : INT64_C(0))"));
+            }
+            ExprKind::ListSpread {
+                value,
+                optional: false,
+                ..
+            } => {
+                let Some(length) =
+                    reusable_ui_runtime_list_length_c(value, view, signatures, view_identity)?
+                else {
+                    return Ok(None);
+                };
+                dynamic_terms.push(format!("({length})"));
+            }
+            _ => return Ok(None),
+        }
+    }
+
+    if fixed_len != 0 || dynamic_terms.is_empty() {
+        dynamic_terms.push(format!("INT64_C({fixed_len})"));
+    }
+    Ok(Some(dynamic_terms.join(" + ")))
+}
+
 fn fold_ui_primitive_expr_with_binding(
     expr: &Expr,
     binding_name: &str,
@@ -35492,6 +35557,18 @@ fn ui_expr_c_for_view_identity(
                         );
                     }
                     _ => {}
+                }
+            }
+            let list_member = crate::builtin_names::list_member_impl(name);
+            if matches!(list_member, "length" | "isEmpty" | "isNotEmpty")
+                && let Some(length) =
+                    reusable_ui_runtime_list_length_c(base, view, signatures, view_identity)?
+            {
+                match list_member {
+                    "length" => return Ok(length),
+                    "isEmpty" => return Ok(format!("(({length}) == INT64_C(0))")),
+                    "isNotEmpty" => return Ok(format!("(({length}) != INT64_C(0))")),
+                    _ => unreachable!(),
                 }
             }
             match &base.kind {
