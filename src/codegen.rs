@@ -35698,13 +35698,22 @@ fn effectful_copy_ui_list_property_c(
         return Ok(None);
     }
 
-    let Some(element_ty) = ui_scalar_expr_type(first, view, signatures) else {
+    let Some(element_ty) = ui_expr_known_type(first, view, signatures) else {
         return Ok(None);
     };
     let element_ty = signatures.canonical_type(&element_ty);
-    if !matches!(&element_ty, Type::Bool | Type::I64 | Type::Str)
+    let scalar_element = matches!(&element_ty, Type::Bool | Type::I64 | Type::Str);
+    let aggregate_element = matches!(&element_ty, Type::Record(_))
+        && signatures.is_copy_type(&element_ty)
+        || matches!(
+            &element_ty,
+            Type::Named(name)
+                if signatures.struct_type(name).is_some()
+                    && signatures.is_copy_type(&element_ty)
+        );
+    if (!scalar_element && !aggregate_element)
         || !items.iter().all(|item| {
-            ui_scalar_expr_type(item, view, signatures)
+            ui_expr_known_type(item, view, signatures)
                 .is_some_and(|ty| signatures.canonical_type(&ty) == element_ty)
         })
     {
@@ -35723,7 +35732,17 @@ fn effectful_copy_ui_list_property_c(
     let mut declarations = String::new();
     let mut value_names = Vec::with_capacity(items.len());
     for (position, item) in items.iter().enumerate() {
-        let value = ui_expr_c_for_view_identity(item, view, signatures, view_identity)?;
+        let value = if aggregate_element {
+            if let Some(value) =
+                copy_ui_aggregate_literal_c(item, &element_ty, view, signatures, view_identity)?
+            {
+                value
+            } else {
+                ui_expr_c_for_view_identity(item, view, signatures, view_identity)?
+            }
+        } else {
+            ui_expr_c_for_view_identity(item, view, signatures, view_identity)?
+        };
         let value_name = format!(
             "flux__ui_list_property_item_{}_{}_{}",
             expr.span.line, expr.span.column, position
@@ -35740,7 +35759,8 @@ fn effectful_copy_ui_list_property_c(
         "last" => value_names.last().expect("non-empty list").clone(),
         "single" if items.len() == 1 => value_names[0].clone(),
         "single" => format!(
-            r#"fputs("Flux runtime error: list.single requires exactly one element\n", stderr); abort(); {}"#,
+            r#"fputs("Flux runtime error: list.single requires exactly one element
+", stderr); abort(); {}"#,
             value_names[0]
         ),
         _ => unreachable!(),
@@ -37332,6 +37352,12 @@ fn ui_field_type(base_ty: &Type, name: &str, signatures: &Signatures) -> Option<
             .struct_type(&struct_name)?
             .field(name)
             .map(|field| field.ty.clone()),
+        Type::List(element) => match crate::builtin_names::list_member_impl(name) {
+            "length" => Some(Type::I64),
+            "isEmpty" | "isNotEmpty" => Some(Type::Bool),
+            "first" | "last" | "single" => Some(*element),
+            _ => None,
+        },
         _ => None,
     }
 }

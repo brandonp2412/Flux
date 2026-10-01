@@ -83710,6 +83710,75 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_effectful_copy_aggregate_properties_on_all_native_backends() {
+    let source = r#"
+struct Flags {
+    enabled: bool
+}
+
+fn makeFlags(value: bool) -> Flags {
+    print("makeFlags")
+    return Flags { enabled: value }
+}
+
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr 1fr
+    Badge firstBadge at 1,1
+        visible: ([makeFlags(windowIsLandscape), makeFlags(false)].first).enabled
+    Badge lastBadge at 2,1
+        visible: ([makeFlags(false), makeFlags(windowIsLandscape)].last).enabled
+    Badge singleBadge at 3,1
+        visible: ([makeFlags(windowIsLandscape)].single).enabled
+}
+
+app App
+"#;
+
+    check_source(source).expect("effectful Copy aggregate list-property fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__ui_list_property_item_").count() >= 5,
+            "Copy aggregate list properties should eagerly materialize every item into typed temporaries"
+        );
+        assert!(generated.contains(".flux__field_enabled"));
+        assert!(
+            generated.matches("flux__fn_makeFlags(").count() >= 5,
+            "all aggregate property items should preserve their producer evaluations"
+        );
+    };
+
+    let linux = compile_to_c(source)
+        .expect("effectful Copy aggregate list properties should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful Copy aggregate list-property fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful Copy aggregate list properties should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn lowers_composed_view_runtime_optional_struct_field_on_all_native_backends() {
     let source = r#"
 struct Flags {
