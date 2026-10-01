@@ -35768,6 +35768,33 @@ fn effectful_copy_ui_list_index_c(
     if !matches!(expr.kind, ExprKind::List(_)) {
         return Ok(None);
     }
+
+    if let Some(selected) = dynamic_single_ui_list_control_value(expr, signatures)?
+        && let Some(element_ty) = ui_expr_known_type(&selected, view, signatures)
+    {
+        let element_ty = signatures.canonical_type(&element_ty);
+        let aggregate_element = is_copy_ui_aggregate_type(&element_ty, signatures);
+        if aggregate_element
+            && let Some(value) =
+                copy_ui_aggregate_expr_c(&selected, &element_ty, view, signatures, view_identity)?
+        {
+            let element_name = format!(
+                "flux__ui_list_item_{}_{}_0",
+                expr.span.line, expr.span.column
+            );
+            let index_name = format!(
+                "flux__ui_list_index_{}_{}",
+                expr.span.line, expr.span.column
+            );
+            let index_code = ui_expr_c_for_view_identity(index, view, signatures, view_identity)?;
+            return Ok(Some(format!(
+                r#"__extension__ ({{ {} {element_name} = ({value}); int64_t {index_name} = ({index_code}); if ({index_name} < INT64_C(0)) {index_name} += INT64_C(1); if ({index_name} != INT64_C(0)) {{ fputs("Flux runtime error: list index out of range
+", stderr); abort(); }} {element_name}; }})"#,
+                c_type(&element_ty, signatures)
+            )));
+        }
+    }
+
     let Some(layout) = statically_selected_ui_list_layout(expr, signatures)? else {
         return Ok(None);
     };
@@ -35902,14 +35929,7 @@ fn effectful_copy_ui_list_property_c(
         && let Some(element_ty) = ui_expr_known_type(&selected, view, signatures)
     {
         let element_ty = signatures.canonical_type(&element_ty);
-        let aggregate_element = matches!(&element_ty, Type::Record(_))
-            && signatures.is_copy_type(&element_ty)
-            || matches!(
-                &element_ty,
-                Type::Named(name)
-                    if signatures.struct_type(name).is_some()
-                        && signatures.is_copy_type(&element_ty)
-            );
+        let aggregate_element = is_copy_ui_aggregate_type(&element_ty, signatures);
         if aggregate_element
             && let Some(value) =
                 copy_ui_aggregate_expr_c(&selected, &element_ty, view, signatures, view_identity)?
@@ -36529,6 +36549,13 @@ fn copy_ui_aggregate_literal_c(
     }
 }
 
+fn is_copy_ui_aggregate_type(ty: &Type, signatures: &Signatures) -> bool {
+    let ty = signatures.canonical_type(ty);
+    signatures.is_copy_type(&ty)
+        && (matches!(ty, Type::Record(_))
+            || matches!(ty, Type::Named(ref name) if signatures.struct_type(name).is_some()))
+}
+
 fn copy_ui_aggregate_expr_c(
     value: &Expr,
     ty: &Type,
@@ -36537,12 +36564,7 @@ fn copy_ui_aggregate_expr_c(
     view_identity: Option<usize>,
 ) -> Result<Option<String>, Diagnostic> {
     let ty = signatures.canonical_type(ty);
-    let is_copy_aggregate = match &ty {
-        Type::Record(_) => true,
-        Type::Named(name) => signatures.struct_type(name).is_some(),
-        _ => false,
-    };
-    if !signatures.is_copy_type(&ty) || !is_copy_aggregate {
+    if !is_copy_ui_aggregate_type(&ty, signatures) {
         return Ok(None);
     }
 
