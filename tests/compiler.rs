@@ -81757,6 +81757,67 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_scalar_coalescing_on_all_native_backends() {
+    let source = r#"
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view Wrapper(flags: bool[]?) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        visible: flags?[0] ?? windowIsCompact
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr
+    Wrapper present at 1,1
+        flags: [true]
+    Wrapper absent at 2,1
+        flags: none
+}
+
+app App
+"#;
+
+    check_source(source).expect("composed-view scalar coalescing should typecheck");
+    let linux =
+        compile_to_c(source).expect("composed-view scalar coalescing should lower through Linux");
+    assert!(linux.contains("present__badge__title"));
+    assert!(linux.contains("absent__badge__title"));
+    assert!(linux.contains("flux__ui_window_width < INT64_C(600)"));
+    assert!(!linux.contains("flux__ui_coalesce_"));
+    assert!(!linux.contains("flux__ui_derived___component_present__badge__param_visible"));
+    assert!(!linux.contains("flux__ui_derived___component_absent__badge__param_visible"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("composed-view scalar coalescing fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("composed-view scalar coalescing should lower through Android");
+    assert!(android.contains("flux__ui_window_width < INT64_C(600)"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("composed-view scalar coalescing should lower through Windows");
+    assert!(windows.contains("flux__ui_window_width < INT64_C(600)"));
+}
+
+#[test]
 fn lowers_composed_view_reusable_optional_binding_list_control_on_all_native_backends() {
     let source = r#"
 view Badge(flags: bool[]) {

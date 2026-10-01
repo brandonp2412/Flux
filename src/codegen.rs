@@ -12678,6 +12678,7 @@ fn transparent_native_component_argument_is_reusable(expr: &Expr) -> bool {
                     | BinOp::Ge
                     | BinOp::And
                     | BinOp::Or
+                    | BinOp::Coalesce
             ) && transparent_native_component_argument_is_reusable(left)
                 && transparent_native_component_argument_is_reusable(right)
         }
@@ -12780,6 +12781,7 @@ fn substitute_transparent_native_component_parameters(
                     | BinOp::Ge
                     | BinOp::And
                     | BinOp::Or
+                    | BinOp::Coalesce
             ) =>
         {
             substitute_transparent_native_component_parameters(
@@ -34729,6 +34731,13 @@ fn fold_ui_primitive_expr(
             }))
         }
         ExprKind::Binary { left, op, right } => {
+            if matches!(op, BinOp::Coalesce) {
+                return match fold_ui_optional_primitive_expr(left, signatures)? {
+                    Some(Some(value)) => Ok(Some(value)),
+                    Some(None) => fold_ui_primitive_expr(right, signatures),
+                    None => Ok(None),
+                };
+            }
             let Some(left) = fold_ui_primitive_expr(left, signatures)? else {
                 return Ok(None);
             };
@@ -35215,6 +35224,21 @@ fn ui_expr_c_for_view_identity(
             })
         }
         ExprKind::Binary { left, op, right } => {
+            if matches!(op, BinOp::Coalesce) {
+                return match fold_ui_optional_primitive_expr(left, signatures)? {
+                    Some(Some(value)) => Ok(constant_c_value(&value)),
+                    Some(None) => {
+                        ui_expr_c_for_view_identity(right, view, signatures, view_identity)
+                    }
+                    None => Err(diag(
+                        expr.span,
+                        "bootstrap dynamic UI coalescing currently requires a statically resolvable optional operand",
+                    )
+                    .with_note(
+                        "runtime optional view storage remains pending; composed optional literals and projections can still coalesce before native UI lowering",
+                    )),
+                };
+            }
             let string_comparison =
                 matches!(op, BinOp::Eq | BinOp::Ne) && ui_expr_is_str(left, view, signatures);
             let left_code = ui_expr_c_for_view_identity(left, view, signatures, view_identity)?;
