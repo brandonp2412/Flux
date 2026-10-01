@@ -84291,13 +84291,66 @@ app Badge
 "#;
 
     check_source(source).expect("effectful list property fixture should typecheck");
-    let error = compile_to_c(source)
-        .expect_err("constant list property folding must not discard unselected effects");
+    let generated = compile_to_c(source)
+        .expect("effectful list property lowering must preserve unselected effects");
+    assert!(generated.contains("flux__ui_list_property_item_"));
     assert!(
-        error
-            .message
-            .contains("bootstrap dynamic UI expression currently supports")
+        generated.contains(" = (flux__fn_probe());"),
+        "unselected effectful list items must still be evaluated"
     );
+}
+
+#[test]
+fn composed_view_effectful_scalar_list_properties_lower_on_all_native_backends() {
+    let source = r#"
+fn probe() -> bool {
+    print("probe")
+    return true
+}
+
+view Badge {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: [probe(), true].length == 2 && ![probe()].isEmpty && [probe()].isNotEmpty && [false, probe()].last && [probe()].single && [probe(), false].first
+}
+
+app Badge
+"#;
+
+    check_source(source).expect("effectful scalar-list property fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__ui_list_property_item_").count() >= 8,
+            "effectful scalar list properties should use eager item temporaries"
+        );
+        assert!(
+            generated.matches("flux__fn_probe()").count() >= 6,
+            "every effectful scalar list property must preserve its item evaluation"
+        );
+    };
+
+    let linux =
+        compile_to_c(source).expect("effectful scalar list properties should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful scalar-list property fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful scalar list properties should lower natively");
+        assert_target(&generated);
+    }
 }
 
 #[test]

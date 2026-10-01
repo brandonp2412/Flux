@@ -35033,6 +35033,79 @@ fn effectful_copy_ui_list_index_c(
     )))
 }
 
+fn effectful_copy_ui_list_property_c(
+    expr: &Expr,
+    name: &str,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+    view_identity: Option<usize>,
+) -> Result<Option<String>, Diagnostic> {
+    let ExprKind::List(items) = &expr.kind else {
+        return Ok(None);
+    };
+    let Some(first) = items.first() else {
+        return Ok(None);
+    };
+    if items
+        .iter()
+        .all(transparent_native_component_argument_is_reusable)
+    {
+        return Ok(None);
+    }
+
+    let Some(element_ty) = ui_scalar_expr_type(first, view, signatures) else {
+        return Ok(None);
+    };
+    let element_ty = signatures.canonical_type(&element_ty);
+    if !matches!(&element_ty, Type::Bool | Type::I64 | Type::Str)
+        || !items.iter().all(|item| {
+            ui_scalar_expr_type(item, view, signatures)
+                .is_some_and(|ty| signatures.canonical_type(&ty) == element_ty)
+        })
+    {
+        return Ok(None);
+    }
+
+    let list_member = crate::builtin_names::list_member_impl(name);
+    if !matches!(
+        list_member,
+        "length" | "isEmpty" | "isNotEmpty" | "first" | "last" | "single"
+    ) {
+        return Ok(None);
+    }
+
+    let element_c = c_type(&element_ty, signatures);
+    let mut declarations = String::new();
+    let mut value_names = Vec::with_capacity(items.len());
+    for (position, item) in items.iter().enumerate() {
+        let value = ui_expr_c_for_view_identity(item, view, signatures, view_identity)?;
+        let value_name = format!(
+            "flux__ui_list_property_item_{}_{}_{}",
+            expr.span.line, expr.span.column, position
+        );
+        declarations.push_str(&format!("{element_c} {value_name} = ({value}); "));
+        value_names.push(value_name);
+    }
+
+    let value = match list_member {
+        "length" => format!("INT64_C({})", items.len()),
+        "isEmpty" => "false".to_string(),
+        "isNotEmpty" => "true".to_string(),
+        "first" => value_names[0].clone(),
+        "last" => value_names.last().expect("non-empty list").clone(),
+        "single" if items.len() == 1 => value_names[0].clone(),
+        "single" => format!(
+            r#"fputs("Flux runtime error: list.single requires exactly one element\n", stderr); abort(); {}"#,
+            value_names[0]
+        ),
+        _ => unreachable!(),
+    };
+
+    Ok(Some(format!(
+        "__extension__ ({{ {declarations}{value}; }})"
+    )))
+}
+
 fn effectful_copy_ui_field_projection_c(
     base: &Expr,
     name: &str,
@@ -36650,6 +36723,11 @@ fn ui_expr_c_for_view_identity(
             optional: false,
             ..
         } => {
+            if let Some(property) =
+                effectful_copy_ui_list_property_c(base, name, view, signatures, view_identity)?
+            {
+                return Ok(property);
+            }
             if let Some(items) = reusable_ui_list_projection_items(base, signatures)? {
                 match crate::builtin_names::list_member_impl(name) {
                     "length" => return Ok(format!("INT64_C({})", items.len())),
