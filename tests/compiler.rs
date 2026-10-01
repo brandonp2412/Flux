@@ -83869,6 +83869,209 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_effectful_copy_multi_optional_aggregate_lists_on_all_native_backends() {
+    let source = r#"
+struct Flags {
+    enabled: bool
+    marker: i64
+}
+
+fn mark(value: i64) -> i64 {
+    print("mark")
+    return value
+}
+
+fn choose(value: bool) -> bool {
+    print("choose")
+    return value
+}
+
+fn pickIndex() -> i64 {
+    print("pickIndex")
+    return 0
+}
+
+view Badge(cardinality: bool, firstVisible: bool, lastVisible: bool, singleVisible: bool, indexedVisible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: cardinality && firstVisible && lastVisible && singleVisible && indexedVisible
+}
+
+view Wrapper(enabled: bool, index: i64) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        cardinality: ([...[if choose(enabled): Flags { enabled: true, marker: mark(1) }, Flags { enabled: true, marker: mark(2) }], if choose(!enabled): Flags { enabled: false, marker: mark(3) }]).length >= 1
+        firstVisible: ([if choose(enabled): Flags { enabled: true, marker: mark(4) }, if choose(!enabled): Flags { enabled: false, marker: mark(5) }]).first.enabled
+        lastVisible: ([if choose(enabled): Flags { enabled: true, marker: mark(6) }, if choose(!enabled): Flags { enabled: false, marker: mark(7) }]).last.enabled
+        singleVisible: ([if choose(enabled): Flags { enabled: true, marker: mark(8) }, if choose(!enabled): Flags { enabled: false, marker: mark(9) }]).single.enabled
+        indexedVisible: ([if choose(enabled): (enabled: true, marker: mark(10)), (enabled: false, marker: mark(11)), if choose(!enabled): (enabled: true, marker: mark(12))][index]).enabled
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        enabled: windowIsLandscape
+        index: pickIndex()
+}
+
+app App
+"#;
+
+    check_source(source)
+        .expect("multi-item runtime-cardinality Copy aggregate fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__fn_choose(").count() >= 9,
+            "each runtime-cardinality condition must remain observable"
+        );
+        assert!(
+            generated.matches("flux__fn_mark(").count() >= 12,
+            "all conditional and unconditional aggregate producers must remain in generated code"
+        );
+        assert!(generated.contains("flux__ui_dynamic_list_property_present_"));
+        assert!(generated.contains("flux__ui_dynamic_list_property_item_"));
+        assert!(generated.contains("flux__ui_dynamic_list_property_length_"));
+        assert!(generated.contains("flux__ui_dynamic_list_index_present_"));
+        assert!(generated.contains("flux__ui_dynamic_list_index_item_"));
+        assert!(generated.contains("flux__ui_dynamic_list_length_"));
+        assert!(generated.contains("flux__fn_pickIndex()"));
+        assert!(generated.contains("Flux runtime error: list index out of range\\n"));
+        assert!(
+            generated.contains("Flux runtime error: list.single requires exactly one element\\n")
+        );
+        assert!(generated.contains(".flux__field_enabled"));
+    };
+
+    let linux = compile_to_c(source)
+        .expect("multi-item runtime-cardinality Copy aggregates should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("multi-item runtime-cardinality Copy aggregate fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("multi-item runtime-cardinality Copy aggregates should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
+fn lowers_composed_view_effectful_copy_multi_optional_aggregate_runtime_slices_on_all_native_backends()
+ {
+    let source = r#"
+struct Flags {
+    enabled: bool
+    marker: i64
+}
+
+fn mark(value: i64) -> i64 {
+    print("mark")
+    return value
+}
+
+fn choose(value: bool) -> bool {
+    print("choose")
+    return value
+}
+
+view Badge(cardinality: bool, firstVisible: bool, lastVisible: bool, singleVisible: bool, indexedVisible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: cardinality && firstVisible && lastVisible && singleVisible && indexedVisible
+}
+
+view Wrapper(start: i64, end: i64, step: i64, index: i64, enabled: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        cardinality: ([...[if choose(enabled): Flags { enabled: true, marker: mark(1) }, Flags { enabled: true, marker: mark(2) }], if choose(!enabled): Flags { enabled: false, marker: mark(3) }][start:end:step]).length >= 0
+        firstVisible: ([if choose(enabled): Flags { enabled: true, marker: mark(4) }, if choose(!enabled): Flags { enabled: false, marker: mark(5) }][start:end:step]).first.enabled
+        lastVisible: ([if choose(enabled): Flags { enabled: true, marker: mark(6) }, if choose(!enabled): Flags { enabled: false, marker: mark(7) }][start:end:step]).last.enabled
+        singleVisible: ([if choose(enabled): Flags { enabled: true, marker: mark(8) }, if choose(!enabled): Flags { enabled: false, marker: mark(9) }][start:end:step]).single.enabled
+        indexedVisible: ([if choose(enabled): (enabled: true, marker: mark(10)), (enabled: false, marker: mark(11)), if choose(!enabled): (enabled: true, marker: mark(12))][start:end:step][index]).enabled
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        start: 0
+        end: windowWidth
+        step: windowHeight
+        index: 0
+        enabled: windowIsLandscape
+}
+
+app App
+"#;
+
+    check_source(source).expect(
+        "multi-item runtime-cardinality Copy aggregate runtime slice fixture should typecheck",
+    );
+
+    let assert_target = |generated: &str| {
+        assert!(generated.matches("flux__fn_choose(").count() >= 9);
+        assert!(generated.matches("flux__fn_mark(").count() >= 12);
+        assert!(generated.contains("flux__ui_dynamic_slice_property_present_"));
+        assert!(generated.contains("flux__ui_dynamic_slice_property_item_"));
+        assert!(generated.contains("flux__ui_dynamic_slice_property_base_index_"));
+        assert!(generated.contains("flux__ui_dynamic_slice_index_present_"));
+        assert!(generated.contains("flux__ui_dynamic_slice_index_item_"));
+        assert!(generated.contains("flux__ui_dynamic_slice_index_base_"));
+        assert!(
+            generated
+                .contains("flux__ui_component_slice_base_length_dynamic_cardinality_property_")
+        );
+        assert!(
+            generated
+                .contains("flux__ui_component_slice_index_base_length_dynamic_cardinality_index_")
+        );
+        assert!(generated.contains("Flux runtime error: list slice step cannot be zero\\n"));
+        assert!(generated.contains("Flux runtime error: list index out of range\\n"));
+        assert!(
+            generated.contains("Flux runtime error: list.single requires exactly one element\\n")
+        );
+        assert!(generated.contains(".flux__field_enabled"));
+    };
+
+    let linux = compile_to_c(source)
+        .expect("multi-item runtime-cardinality Copy aggregate slices should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN).expect(
+        "multi-item runtime-cardinality Copy aggregate runtime slice fixture should analyze",
+    );
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("multi-item runtime-cardinality Copy aggregate slices should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn lowers_composed_view_effectful_copy_dynamic_optional_aggregate_static_slices_on_all_native_backends()
  {
     let source = r#"

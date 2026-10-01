@@ -35936,6 +35936,29 @@ fn effectful_copy_ui_list_index_c(
         )));
     }
 
+    if let Some(storage) = dynamic_copy_ui_runtime_list_storage_c(
+        expr,
+        view,
+        signatures,
+        view_identity,
+        "dynamic_list_index",
+    )? {
+        let length_name = format!(
+            "flux__ui_dynamic_list_length_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let index_name = format!(
+            "flux__ui_dynamic_list_index_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let index_code = ui_expr_c_for_view_identity(index, view, signatures, view_identity)?;
+        let selection = dynamic_runtime_ui_list_value_selection_c(&storage, &index_name);
+        return Ok(Some(format!(
+            r#"__extension__ ({{ {} int64_t {length_name} = ({}); int64_t {index_name} = ({index_code}); if ({index_name} < INT64_C(0)) {index_name} += {length_name}; if ({index_name} < INT64_C(0) || {index_name} >= {length_name}) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {selection}; }})"#,
+            storage.declarations, storage.length
+        )));
+    }
+
     if let Some((element_ty, condition, value)) =
         dynamic_single_optional_copy_ui_list_value_c(expr, view, signatures, view_identity)?
     {
@@ -36158,6 +36181,220 @@ fn dynamic_fixed_copy_ui_list_values_c(
     Ok(rendered.map(|values| (element_ty, values)))
 }
 
+#[derive(Clone)]
+struct DynamicCopyUiRuntimeListCandidate {
+    condition: Option<Expr>,
+    value: Expr,
+}
+
+fn dynamic_copy_ui_runtime_list_candidates(
+    expr: &Expr,
+    signatures: &Signatures,
+) -> Result<Option<(Vec<DynamicCopyUiRuntimeListCandidate>, bool)>, Diagnostic> {
+    let ExprKind::List(items) = &expr.kind else {
+        return Ok(None);
+    };
+
+    let mut candidates = Vec::new();
+    let mut has_dynamic_cardinality = false;
+    for item in items {
+        match &item.kind {
+            ExprKind::ListSpread {
+                value,
+                optional: false,
+                ..
+            } => {
+                let Some((nested, nested_dynamic)) =
+                    dynamic_copy_ui_runtime_list_candidates(value, signatures)?
+                else {
+                    return Ok(None);
+                };
+                candidates.extend(nested);
+                has_dynamic_cardinality |= nested_dynamic;
+            }
+            ExprKind::ListIf {
+                condition,
+                binding: None,
+                value,
+                else_value,
+                ..
+            } => match fold_ui_primitive_expr(condition, signatures)? {
+                Some(ConstantValue::Bool(true)) => {
+                    candidates.push(DynamicCopyUiRuntimeListCandidate {
+                        condition: None,
+                        value: value.as_ref().clone(),
+                    });
+                }
+                Some(ConstantValue::Bool(false)) => {
+                    if let Some(else_value) = else_value {
+                        candidates.push(DynamicCopyUiRuntimeListCandidate {
+                            condition: None,
+                            value: else_value.as_ref().clone(),
+                        });
+                    }
+                }
+                Some(_) => return Ok(None),
+                None => {
+                    if let Some(else_value) = else_value {
+                        candidates.push(DynamicCopyUiRuntimeListCandidate {
+                            condition: None,
+                            value: Expr {
+                                line: item.line,
+                                span: item.span,
+                                kind: ExprKind::Conditional {
+                                    then_expr: value.clone(),
+                                    cond: condition.clone(),
+                                    else_expr: else_value.clone(),
+                                },
+                            },
+                        });
+                    } else {
+                        candidates.push(DynamicCopyUiRuntimeListCandidate {
+                            condition: Some(condition.as_ref().clone()),
+                            value: value.as_ref().clone(),
+                        });
+                        has_dynamic_cardinality = true;
+                    }
+                }
+            },
+            ExprKind::ListSpread { optional: true, .. }
+            | ExprKind::ListOptional { .. }
+            | ExprKind::ListIf {
+                binding: Some(_), ..
+            } => return Ok(None),
+            _ => candidates.push(DynamicCopyUiRuntimeListCandidate {
+                condition: None,
+                value: item.clone(),
+            }),
+        }
+    }
+
+    Ok(Some((candidates, has_dynamic_cardinality)))
+}
+
+struct DynamicCopyUiRuntimeListStorage {
+    declarations: String,
+    presence_names: Vec<Option<String>>,
+    value_names: Vec<String>,
+    length: String,
+}
+
+fn dynamic_copy_ui_runtime_list_storage_c(
+    expr: &Expr,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+    view_identity: Option<usize>,
+    tag: &str,
+) -> Result<Option<DynamicCopyUiRuntimeListStorage>, Diagnostic> {
+    let Some((candidates, true)) = dynamic_copy_ui_runtime_list_candidates(expr, signatures)?
+    else {
+        return Ok(None);
+    };
+    if candidates.len() < 2 {
+        return Ok(None);
+    }
+    let Some(first) = candidates.first() else {
+        return Ok(None);
+    };
+    let Some(element_ty) = ui_expr_known_type(&first.value, view, signatures) else {
+        return Ok(None);
+    };
+    let element_ty = signatures.canonical_type(&element_ty);
+    if !is_copy_ui_aggregate_type(&element_ty, signatures)
+        || candidates.iter().skip(1).any(|candidate| {
+            ui_expr_known_type(&candidate.value, view, signatures)
+                .is_none_or(|ty| signatures.canonical_type(&ty) != element_ty)
+        })
+    {
+        return Ok(None);
+    }
+
+    let element_c = c_type(&element_ty, signatures);
+    let mut declarations = String::new();
+    let mut presence_names = Vec::with_capacity(candidates.len());
+    let mut value_names = Vec::with_capacity(candidates.len());
+    let mut length_terms = Vec::with_capacity(candidates.len());
+
+    for (position, candidate) in candidates.iter().enumerate() {
+        let value_name = format!(
+            "flux__ui_{tag}_item_{}_{}_{}",
+            expr.span.line, expr.span.column, position
+        );
+        let Some(value) = copy_ui_aggregate_expr_c(
+            &candidate.value,
+            &element_ty,
+            view,
+            signatures,
+            view_identity,
+        )?
+        else {
+            return Ok(None);
+        };
+
+        if let Some(condition) = &candidate.condition {
+            let condition =
+                ui_expr_c_for_view_identity(condition, view, signatures, view_identity)?;
+            let presence_name = format!(
+                "flux__ui_{tag}_present_{}_{}_{}",
+                expr.span.line, expr.span.column, position
+            );
+            declarations.push_str(&format!(
+                "bool {presence_name} = ({condition}); {element_c} {value_name}; if ({presence_name}) {value_name} = ({value}); "
+            ));
+            length_terms.push(format!("({presence_name} ? INT64_C(1) : INT64_C(0))"));
+            presence_names.push(Some(presence_name));
+        } else {
+            declarations.push_str(&format!("{element_c} {value_name} = ({value}); "));
+            length_terms.push("INT64_C(1)".to_string());
+            presence_names.push(None);
+        }
+        value_names.push(value_name);
+    }
+
+    Ok(Some(DynamicCopyUiRuntimeListStorage {
+        declarations,
+        presence_names,
+        value_names,
+        length: length_terms.join(" + "),
+    }))
+}
+
+fn dynamic_runtime_ui_list_value_selection_c(
+    storage: &DynamicCopyUiRuntimeListStorage,
+    index_name: &str,
+) -> String {
+    let mut prefix_terms = Vec::new();
+    let mut prefixes = Vec::with_capacity(storage.value_names.len());
+    for presence in &storage.presence_names {
+        prefixes.push(if prefix_terms.is_empty() {
+            "INT64_C(0)".to_string()
+        } else {
+            prefix_terms.join(" + ")
+        });
+        prefix_terms.push(match presence {
+            Some(presence) => format!("({presence} ? INT64_C(1) : INT64_C(0))"),
+            None => "INT64_C(1)".to_string(),
+        });
+    }
+
+    let mut selection = storage
+        .value_names
+        .last()
+        .expect("dynamic runtime list storage requires a value")
+        .clone();
+    for position in (0..storage.value_names.len() - 1).rev() {
+        let value = &storage.value_names[position];
+        let guard = match &storage.presence_names[position] {
+            Some(presence) => {
+                format!("({presence} && {index_name} == ({}))", prefixes[position])
+            }
+            None => format!("({index_name} == ({}))", prefixes[position]),
+        };
+        selection = format!("({guard} ? ({value}) : ({selection}))");
+    }
+    selection
+}
+
 fn dynamic_single_optional_copy_ui_list_value_c(
     expr: &Expr,
     view: &crate::ast::ViewDef,
@@ -36235,6 +36472,56 @@ fn effectful_copy_ui_list_property_c(
         };
         return Ok(Some(format!(
             "__extension__ ({{ {declarations}{selected}; }})"
+        )));
+    }
+
+    if let Some(storage) = dynamic_copy_ui_runtime_list_storage_c(
+        expr,
+        view,
+        signatures,
+        view_identity,
+        "dynamic_list_property",
+    )? {
+        if !matches!(
+            list_member,
+            "length" | "isEmpty" | "isNotEmpty" | "first" | "last" | "single"
+        ) {
+            return Ok(None);
+        }
+        let length_name = format!(
+            "flux__ui_dynamic_list_property_length_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let index_name = format!(
+            "flux__ui_dynamic_list_property_index_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let selected = match list_member {
+            "length" => length_name.clone(),
+            "isEmpty" => format!("({length_name} == INT64_C(0))"),
+            "isNotEmpty" => format!("({length_name} != INT64_C(0))"),
+            "first" | "last" => {
+                let index = if list_member == "first" {
+                    "INT64_C(0)".to_string()
+                } else {
+                    format!("{length_name} - INT64_C(1)")
+                };
+                let selection = dynamic_runtime_ui_list_value_selection_c(&storage, &index_name);
+                format!(
+                    r#"if ({length_name} == INT64_C(0)) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} int64_t {index_name} = {index}; {selection}"#
+                )
+            }
+            "single" => {
+                let selection = dynamic_runtime_ui_list_value_selection_c(&storage, &index_name);
+                format!(
+                    r#"if ({length_name} != INT64_C(1)) {{ fputs("Flux runtime error: list.single requires exactly one element\n", stderr); abort(); }} int64_t {index_name} = INT64_C(0); {selection}"#
+                )
+            }
+            _ => unreachable!(),
+        };
+        return Ok(Some(format!(
+            "__extension__ ({{ {} int64_t {length_name} = ({}); {selected}; }})",
+            storage.declarations, storage.length
         )));
     }
 
@@ -36466,7 +36753,8 @@ fn effectful_copy_ui_static_slice_property_c(
                     value_names[selected_indices[0]].clone()
                 }
                 "single" => format!(
-                    r#"fputs("Flux runtime error: list.single requires exactly one element\n", stderr); abort(); {fallback}"#
+                    r#"fputs("Flux runtime error: list.single requires exactly one element
+", stderr); abort(); {fallback}"#
                 ),
                 _ => unreachable!(),
             }
@@ -36547,6 +36835,101 @@ fn effectful_copy_ui_static_slice_property_c(
         };
         return Ok(Some(format!(
             "__extension__ ({{ {declarations}{selected}; }})"
+        )));
+    }
+
+    if let Some(storage) = dynamic_copy_ui_runtime_list_storage_c(
+        base,
+        view,
+        signatures,
+        view_identity,
+        "dynamic_slice_property",
+    )? {
+        let Some((start_present, start, end_present, end, step)) =
+            reusable_ui_runtime_slice_args_c(
+                start.as_deref(),
+                end.as_deref(),
+                step.as_deref(),
+                view,
+                signatures,
+                view_identity,
+            )?
+        else {
+            return Ok(None);
+        };
+        let suffix = format!(
+            "dynamic_cardinality_property_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let slice_length = reusable_ui_runtime_slice_length_from_base_c(
+            &storage.length,
+            start_present,
+            &start,
+            end_present,
+            &end,
+            &step,
+            &suffix,
+        );
+        let selected = match list_member {
+            "length" => slice_length,
+            "isEmpty" => format!("(({slice_length}) == INT64_C(0))"),
+            "isNotEmpty" => format!("(({slice_length}) != INT64_C(0))"),
+            "first" | "last" => {
+                let relative_index = if list_member == "first" {
+                    "INT64_C(0)"
+                } else {
+                    "INT64_C(-1)"
+                };
+                let base_index = reusable_ui_runtime_slice_index_from_base_c(
+                    &storage.length,
+                    start_present,
+                    &start,
+                    end_present,
+                    &end,
+                    &step,
+                    relative_index,
+                    &suffix,
+                );
+                let base_index_name = format!(
+                    "flux__ui_dynamic_slice_property_base_index_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let selection =
+                    dynamic_runtime_ui_list_value_selection_c(&storage, &base_index_name);
+                format!(
+                    "__extension__ ({{ int64_t {base_index_name} = ({base_index}); {selection}; }})"
+                )
+            }
+            "single" => {
+                let length_name = format!(
+                    "flux__ui_dynamic_slice_property_length_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let base_index = reusable_ui_runtime_slice_index_from_base_c(
+                    &storage.length,
+                    start_present,
+                    &start,
+                    end_present,
+                    &end,
+                    &step,
+                    "INT64_C(0)",
+                    &suffix,
+                );
+                let base_index_name = format!(
+                    "flux__ui_dynamic_slice_property_base_index_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let selection =
+                    dynamic_runtime_ui_list_value_selection_c(&storage, &base_index_name);
+                format!(
+                    r#"__extension__ ({{ int64_t {length_name} = ({slice_length}); if ({length_name} != INT64_C(1)) {{ fputs("Flux runtime error: list.single requires exactly one element\n", stderr); abort(); }} int64_t {base_index_name} = ({base_index}); {selection}; }})"#
+                )
+            }
+            _ => unreachable!(),
+        };
+        return Ok(Some(format!(
+            "__extension__ ({{ {} {selected}; }})",
+            storage.declarations
         )));
     }
 
@@ -36741,7 +37124,8 @@ fn effectful_copy_ui_static_slice_property_c(
                 value_names[selected_indices[0]].clone()
             }
             "single" => format!(
-                r#"fputs("Flux runtime error: list.single requires exactly one element\n", stderr); abort(); {fallback}"#
+                r#"fputs("Flux runtime error: list.single requires exactly one element
+", stderr); abort(); {fallback}"#
             ),
             _ => unreachable!(),
         }
@@ -36930,6 +37314,51 @@ fn effectful_copy_ui_static_slice_index_c(
         let selection = runtime_ui_list_value_selection_c(&value_names, &base_index_name);
         return Ok(Some(format!(
             "__extension__ ({{ {declarations}int64_t {base_index_name} = ({base_index}); {selection}; }})"
+        )));
+    }
+
+    if let Some(storage) = dynamic_copy_ui_runtime_list_storage_c(
+        base,
+        view,
+        signatures,
+        view_identity,
+        "dynamic_slice_index",
+    )? {
+        let Some((start_present, start, end_present, end, step)) =
+            reusable_ui_runtime_slice_args_c(
+                start.as_deref(),
+                end.as_deref(),
+                step.as_deref(),
+                view,
+                signatures,
+                view_identity,
+            )?
+        else {
+            return Ok(None);
+        };
+        let index_code = ui_expr_c_for_view_identity(index_expr, view, signatures, view_identity)?;
+        let suffix = format!(
+            "dynamic_cardinality_index_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let base_index = reusable_ui_runtime_slice_index_from_base_c(
+            &storage.length,
+            start_present,
+            &start,
+            end_present,
+            &end,
+            &step,
+            &index_code,
+            &suffix,
+        );
+        let base_index_name = format!(
+            "flux__ui_dynamic_slice_index_base_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let selection = dynamic_runtime_ui_list_value_selection_c(&storage, &base_index_name);
+        return Ok(Some(format!(
+            "__extension__ ({{ {} int64_t {base_index_name} = ({base_index}); {selection}; }})",
+            storage.declarations
         )));
     }
 
@@ -38506,6 +38935,21 @@ fn ui_expr_known_type(
             {
                 let element_ty = ui_expr_known_type(&value, view, signatures)?;
                 Type::List(Box::new(signatures.canonical_type(&element_ty)))
+            } else if let Some((candidates, true)) =
+                dynamic_copy_ui_runtime_list_candidates(expr, signatures)
+                    .ok()
+                    .flatten()
+            {
+                let first = candidates.first()?;
+                let first_ty = ui_expr_known_type(&first.value, view, signatures)?;
+                let first_ty = signatures.canonical_type(&first_ty);
+                if candidates.iter().skip(1).any(|candidate| {
+                    ui_expr_known_type(&candidate.value, view, signatures)
+                        .is_none_or(|ty| signatures.canonical_type(&ty) != first_ty)
+                }) {
+                    return None;
+                }
+                Type::List(Box::new(first_ty))
             } else if let Some((values, true)) = fixed_cardinality_ui_list_values(expr, signatures)
                 .ok()
                 .flatten()
