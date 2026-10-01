@@ -35879,6 +35879,28 @@ fn effectful_copy_ui_list_index_c(
         )));
     }
 
+    if let Some((element_ty, condition, value)) =
+        dynamic_single_optional_copy_ui_list_value_c(expr, view, signatures, view_identity)?
+    {
+        let present_name = format!(
+            "flux__ui_list_optional_present_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let item_name = format!(
+            "flux__ui_list_optional_item_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let index_name = format!(
+            "flux__ui_list_index_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let index_code = ui_expr_c_for_view_identity(index, view, signatures, view_identity)?;
+        return Ok(Some(format!(
+            r#"__extension__ ({{ bool {present_name} = ({condition}); {} {item_name}; if ({present_name}) {item_name} = ({value}); int64_t {index_name} = ({index_code}); int64_t flux__ui_list_optional_length = {present_name} ? INT64_C(1) : INT64_C(0); if ({index_name} < INT64_C(0)) {index_name} += flux__ui_list_optional_length; if ({index_name} < INT64_C(0) || {index_name} >= flux__ui_list_optional_length) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {item_name}; }})"#,
+            c_type(&element_ty, signatures)
+        )));
+    }
+
     let Some(layout) = statically_selected_ui_list_layout(expr, signatures)? else {
         return Ok(None);
     };
@@ -35953,6 +35975,32 @@ fn effectful_copy_ui_list_index_c(
         r#"__extension__ ({{ {declarations}int64_t {index_name} = ({index_code}); if ({index_name} < INT64_C(0)) {index_name} += INT64_C({len}); if ({index_name} < INT64_C(0) || {index_name} >= INT64_C({len})) {{ fputs("Flux runtime error: list index out of range
 ", stderr); abort(); }} {selection}; }})"#
     )))
+}
+
+fn dynamic_single_optional_ui_list_value(
+    expr: &Expr,
+    signatures: &Signatures,
+) -> Result<Option<(Expr, Expr)>, Diagnostic> {
+    let ExprKind::List(items) = &expr.kind else {
+        return Ok(None);
+    };
+    let [item] = items.as_slice() else {
+        return Ok(None);
+    };
+    let ExprKind::ListIf {
+        condition,
+        binding: None,
+        value,
+        else_value: None,
+        ..
+    } = &item.kind
+    else {
+        return Ok(None);
+    };
+    if fold_ui_primitive_expr(condition, signatures)?.is_some() {
+        return Ok(None);
+    }
+    Ok(Some((condition.as_ref().clone(), value.as_ref().clone())))
 }
 
 fn fixed_cardinality_ui_list_values(
@@ -36054,6 +36102,31 @@ fn dynamic_fixed_copy_ui_list_values_c(
     Ok(rendered.map(|values| (element_ty, values)))
 }
 
+fn dynamic_single_optional_copy_ui_list_value_c(
+    expr: &Expr,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+    view_identity: Option<usize>,
+) -> Result<Option<(Type, String, String)>, Diagnostic> {
+    let Some((condition, value)) = dynamic_single_optional_ui_list_value(expr, signatures)? else {
+        return Ok(None);
+    };
+    let Some(element_ty) = ui_expr_known_type(&value, view, signatures) else {
+        return Ok(None);
+    };
+    let element_ty = signatures.canonical_type(&element_ty);
+    if !is_copy_ui_aggregate_type(&element_ty, signatures) {
+        return Ok(None);
+    }
+    let condition = ui_expr_c_for_view_identity(&condition, view, signatures, view_identity)?;
+    let Some(value) =
+        copy_ui_aggregate_expr_c(&value, &element_ty, view, signatures, view_identity)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some((element_ty, condition, value)))
+}
+
 fn effectful_copy_ui_list_property_c(
     expr: &Expr,
     name: &str,
@@ -36106,6 +36179,41 @@ fn effectful_copy_ui_list_property_c(
         };
         return Ok(Some(format!(
             "__extension__ ({{ {declarations}{selected}; }})"
+        )));
+    }
+
+    if let Some((element_ty, condition, value)) =
+        dynamic_single_optional_copy_ui_list_value_c(expr, view, signatures, view_identity)?
+    {
+        if !matches!(
+            list_member,
+            "length" | "isEmpty" | "isNotEmpty" | "first" | "last" | "single"
+        ) {
+            return Ok(None);
+        }
+        let present_name = format!(
+            "flux__ui_list_optional_present_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let item_name = format!(
+            "flux__ui_list_optional_item_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let selected = match list_member {
+            "length" => format!("({present_name} ? INT64_C(1) : INT64_C(0))"),
+            "isEmpty" => format!("(!{present_name})"),
+            "isNotEmpty" => present_name.clone(),
+            "first" | "last" => format!(
+                r#"if (!{present_name}) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {item_name}"#
+            ),
+            "single" => format!(
+                r#"if (!{present_name}) {{ fputs("Flux runtime error: list.single requires exactly one element\n", stderr); abort(); }} {item_name}"#
+            ),
+            _ => unreachable!(),
+        };
+        return Ok(Some(format!(
+            "__extension__ ({{ bool {present_name} = ({condition}); {} {item_name}; if ({present_name}) {item_name} = ({value}); {selected}; }})",
+            c_type(&element_ty, signatures)
         )));
     }
 
@@ -37925,7 +38033,13 @@ fn ui_expr_known_type(
             name, base: None, ..
         } => Type::Named(name.clone()),
         ExprKind::List(_) => {
-            if let Some((values, true)) = fixed_cardinality_ui_list_values(expr, signatures)
+            if let Some((_, value)) = dynamic_single_optional_ui_list_value(expr, signatures)
+                .ok()
+                .flatten()
+            {
+                let element_ty = ui_expr_known_type(&value, view, signatures)?;
+                Type::List(Box::new(signatures.canonical_type(&element_ty)))
+            } else if let Some((values, true)) = fixed_cardinality_ui_list_values(expr, signatures)
                 .ok()
                 .flatten()
             {
