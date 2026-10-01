@@ -41236,6 +41236,7 @@ fn collect_async_saved_locals(
     through_index: usize,
     outer_env: &HashMap<String, Type>,
     signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
     locals: &mut BTreeMap<String, Type>,
     mutable: &mut HashSet<String>,
 ) -> Option<()> {
@@ -41295,8 +41296,8 @@ fn collect_async_saved_locals(
                 mutable: is_mutable,
                 ..
             } => {
-                let (actuals, _) =
-                    typecheck::positional_destructure_types_of_expr(expr, &env, signatures).ok()?;
+                let actuals =
+                    cfg_rewrite_positional_destructure_types(expr.span, rewrite_facts, signatures)?;
                 if actuals.len() != bindings.len() {
                     return None;
                 }
@@ -41654,6 +41655,7 @@ fn async_continuation_plan(
                     last_await,
                     &nested_then_env,
                     signatures,
+                    &cfg_rewrite_facts,
                     &mut locals,
                     &mut mutable,
                 )?;
@@ -41664,6 +41666,7 @@ fn async_continuation_plan(
                     last_await,
                     &nested_outer_env,
                     signatures,
+                    &cfg_rewrite_facts,
                     &mut locals,
                     &mut mutable,
                 )?;
@@ -41708,6 +41711,7 @@ fn async_continuation_plan(
                     last_await,
                     &then_env,
                     signatures,
+                    &cfg_rewrite_facts,
                     &mut locals,
                     &mut mutable,
                 )?;
@@ -41718,6 +41722,7 @@ fn async_continuation_plan(
                     last_await,
                     &env,
                     signatures,
+                    &cfg_rewrite_facts,
                     &mut locals,
                     &mut mutable,
                 )?;
@@ -41736,6 +41741,7 @@ fn async_continuation_plan(
                     last_await,
                     &env,
                     signatures,
+                    &cfg_rewrite_facts,
                     &mut locals,
                     &mut mutable,
                 )?;
@@ -41757,6 +41763,7 @@ fn async_continuation_plan(
                     last_await,
                     &body_env,
                     signatures,
+                    &cfg_rewrite_facts,
                     &mut locals,
                     &mut mutable,
                 )?;
@@ -41780,6 +41787,7 @@ fn async_continuation_plan(
                     last_await,
                     &arm_env,
                     signatures,
+                    &cfg_rewrite_facts,
                     &mut locals,
                     &mut mutable,
                 )?;
@@ -41813,6 +41821,7 @@ fn async_continuation_plan(
                     last_await,
                     &arm_env,
                     signatures,
+                    &cfg_rewrite_facts,
                     &mut locals,
                     &mut mutable,
                 )?;
@@ -48838,6 +48847,7 @@ fn emit_async_coalescing_continuation_function(
                 statement_index - 1,
                 &state_env,
                 signatures,
+                &plan.cfg_rewrite_facts,
                 &mut prior_locals,
                 &mut state_mutable,
             )
@@ -100286,6 +100296,64 @@ async fn main() -> i64 {
                 .iter()
                 .any(|(name, ty)| name == "first" && *ty == Type::I64),
             "first destructured result should retain its normalized i64 continuation type"
+        );
+    }
+
+    #[test]
+    fn nested_async_continuation_multi_destructure_types_use_typed_ir_after_ast_poisoning() {
+        let source = r#"
+async fn pair(value: i64, offset: i64) -> (i64, bool) {
+    return value + offset, true
+}
+
+async fn delay(value: i64) -> i64 {
+    return value
+}
+
+async fn exercise(value: i64) -> i64 {
+    if value > 0:
+        let (first, _) = await pair(value, 2)
+        let delayed: i64 = await delay(first)
+        return delayed
+    return value
+}
+
+async fn main() -> i64 {
+    return await exercise(40)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("nested async multi-destructure continuation fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("nested async exercise CFG should exist");
+
+        let mut program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("nested async multi-destructure continuation fixture should parse");
+        let function = program
+            .functions
+            .iter_mut()
+            .find(|function| function.name == "exercise")
+            .expect("exercise function should exist");
+        let StmtKind::If { body, .. } = &mut function.body[0].kind else {
+            panic!("exercise should begin with a branch");
+        };
+        let expr = body
+            .iter_mut()
+            .find_map(|stmt| match &mut stmt.kind {
+                StmtKind::LetMultiDestructure { expr, .. } => Some(expr),
+                _ => None,
+            })
+            .expect("branch should contain a multi-destructure");
+        expr.kind = ExprKind::Bool(false);
+
+        let plan = async_continuation_plan(function, database.signatures(), graph)
+            .expect("nested typed-IR result types should keep continuation lowering available");
+        assert!(
+            plan.locals
+                .iter()
+                .any(|(name, ty)| name == "first" && *ty == Type::I64),
+            "nested destructured result should retain its normalized i64 continuation type"
         );
     }
 
