@@ -34369,10 +34369,10 @@ fn static_ui_slice_bound(len: i64, value: Option<i64>, end: bool, step: i64) -> 
     resolved
 }
 
-fn reusable_ui_list_projection_items<'a>(
-    expr: &'a Expr,
+fn reusable_ui_list_projection_items(
+    expr: &Expr,
     signatures: &Signatures,
-) -> Result<Option<Vec<&'a Expr>>, Diagnostic> {
+) -> Result<Option<Vec<Expr>>, Diagnostic> {
     match &expr.kind {
         ExprKind::List(items) => {
             let mut projected = Vec::new();
@@ -34389,6 +34389,48 @@ fn reusable_ui_list_projection_items<'a>(
                             return Ok(None);
                         };
                         projected.extend(spread);
+                    }
+                    ExprKind::ListIf {
+                        condition,
+                        binding: Some(binding),
+                        value,
+                        else_value,
+                        ..
+                    } => {
+                        let Some(condition) =
+                            fold_ui_optional_primitive_expr(condition, signatures)?
+                        else {
+                            return Ok(None);
+                        };
+                        let selected = if let Some(bound) = condition {
+                            let replacement = Expr {
+                                line: value.line,
+                                span: binding.span,
+                                kind: match bound {
+                                    ConstantValue::I64(value) => ExprKind::Int(value),
+                                    ConstantValue::Bool(value) => ExprKind::Bool(value),
+                                    ConstantValue::Str(value) => ExprKind::Str(value),
+                                },
+                            };
+                            let mut selected = value.as_ref().clone();
+                            let bindings = HashMap::from([(binding.name.clone(), replacement)]);
+                            let parameter_names = HashSet::from([binding.name.as_str()]);
+                            substitute_transparent_native_component_parameters(
+                                &mut selected,
+                                &bindings,
+                                &parameter_names,
+                                "native",
+                            )?;
+                            Some(selected)
+                        } else {
+                            else_value.as_deref().cloned()
+                        };
+                        if let Some(selected) = selected {
+                            if !transparent_native_component_argument_is_reusable(&selected) {
+                                return Ok(None);
+                            }
+                            projected.push(selected);
+                        }
                     }
                     ExprKind::ListIf {
                         condition,
@@ -34411,14 +34453,14 @@ fn reusable_ui_list_projection_items<'a>(
                             if !transparent_native_component_argument_is_reusable(selected) {
                                 return Ok(None);
                             }
-                            projected.push(selected);
+                            projected.push(selected.clone());
                         }
                     }
-                    ExprKind::ListOptional { .. } | ExprKind::ListIf { .. } => {
+                    ExprKind::ListOptional { .. } => {
                         return Ok(None);
                     }
                     _ if transparent_native_component_argument_is_reusable(item) => {
-                        projected.push(item);
+                        projected.push(item.clone());
                     }
                     _ => return Ok(None),
                 }
@@ -34481,7 +34523,7 @@ fn reusable_ui_list_projection_items<'a>(
                     let Some(item) = items.get(index_usize) else {
                         return Ok(None);
                     };
-                    selected.push(*item);
+                    selected.push(item.clone());
                     let Some(next) = index.checked_add(step) else {
                         break;
                     };
@@ -34495,7 +34537,7 @@ fn reusable_ui_list_projection_items<'a>(
                     let Some(item) = items.get(index_usize) else {
                         return Ok(None);
                     };
-                    selected.push(*item);
+                    selected.push(item.clone());
                     let Some(next) = index.checked_add(step) else {
                         break;
                     };
@@ -35344,12 +35386,12 @@ fn ui_expr_c_for_view_identity(
                     };
                     if let Some(item) = resolved
                         .and_then(|index| usize::try_from(index).ok())
-                        .and_then(|index| items.get(index).copied())
+                        .and_then(|index| items.get(index))
                     {
                         return ui_expr_c_for_view_identity(item, view, signatures, view_identity);
                     }
                 } else if let Ok(len) = i64::try_from(items.len())
-                    && let Some(last) = items.last().copied()
+                    && let Some(last) = items.last()
                 {
                     let index_code =
                         ui_expr_c_for_view_identity(index, view, signatures, view_identity)?;
@@ -35392,7 +35434,7 @@ fn ui_expr_c_for_view_identity(
                         return Ok(if items.is_empty() { "false" } else { "true" }.to_string());
                     }
                     "first" => {
-                        if let Some(item) = items.first().copied() {
+                        if let Some(item) = items.first() {
                             return ui_expr_c_for_view_identity(
                                 item,
                                 view,
@@ -35402,7 +35444,7 @@ fn ui_expr_c_for_view_identity(
                         }
                     }
                     "last" => {
-                        if let Some(item) = items.last().copied() {
+                        if let Some(item) = items.last() {
                             return ui_expr_c_for_view_identity(
                                 item,
                                 view,
@@ -35413,7 +35455,7 @@ fn ui_expr_c_for_view_identity(
                     }
                     "single" if items.len() == 1 => {
                         return ui_expr_c_for_view_identity(
-                            items[0],
+                            &items[0],
                             view,
                             signatures,
                             view_identity,
