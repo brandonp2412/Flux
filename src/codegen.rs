@@ -35190,20 +35190,43 @@ fn ui_expr_c_for_view_identity(
                 && items
                     .iter()
                     .all(transparent_native_component_argument_is_reusable)
-                && let Some(ConstantValue::I64(index)) = fold_ui_primitive_expr(index, signatures)?
             {
-                let resolved = if index < 0 {
-                    i64::try_from(items.len())
-                        .ok()
-                        .and_then(|len| index.checked_add(len))
-                } else {
-                    Some(index)
-                };
-                if let Some(item) = resolved
-                    .and_then(|index| usize::try_from(index).ok())
-                    .and_then(|index| items.get(index))
+                if let Some(ConstantValue::I64(index)) = fold_ui_primitive_expr(index, signatures)?
                 {
-                    return ui_expr_c_for_view_identity(item, view, signatures, view_identity);
+                    let resolved = if index < 0 {
+                        i64::try_from(items.len())
+                            .ok()
+                            .and_then(|len| index.checked_add(len))
+                    } else {
+                        Some(index)
+                    };
+                    if let Some(item) = resolved
+                        .and_then(|index| usize::try_from(index).ok())
+                        .and_then(|index| items.get(index))
+                    {
+                        return ui_expr_c_for_view_identity(item, view, signatures, view_identity);
+                    }
+                } else if let Ok(len) = i64::try_from(items.len())
+                    && let Some(last) = items.last()
+                {
+                    let index_code =
+                        ui_expr_c_for_view_identity(index, view, signatures, view_identity)?;
+                    let index_name = format!(
+                        "flux__ui_component_index_{}_{}",
+                        expr.span.line, expr.span.column
+                    );
+                    let mut selection =
+                        ui_expr_c_for_view_identity(last, view, signatures, view_identity)?;
+                    for (position, item) in items[..items.len() - 1].iter().enumerate().rev() {
+                        let item =
+                            ui_expr_c_for_view_identity(item, view, signatures, view_identity)?;
+                        selection = format!(
+                            "({index_name} == INT64_C({position}) ? ({item}) : ({selection}))"
+                        );
+                    }
+                    return Ok(format!(
+                        r#"__extension__ ({{ int64_t {index_name} = {index_code}; if ({index_name} < INT64_C(0)) {index_name} += INT64_C({len}); if ({index_name} < INT64_C(0) || {index_name} >= INT64_C({len})) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {selection}; }})"#
+                    ));
                 }
             }
             Err(diag(

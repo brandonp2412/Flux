@@ -81745,6 +81745,64 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_reusable_dynamic_list_index_on_all_native_backends() {
+    let source = r#"
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view Wrapper(index: i64, enabled: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        visible: [false, enabled][index]
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        index: windowWidth - windowWidth
+        enabled: windowIsLandscape
+}
+
+app App
+"#;
+
+    check_source(source).expect("dynamic list-index component argument should typecheck");
+    let linux = compile_to_c(source)
+        .expect("dynamic list-index component argument should lower through Linux");
+    assert!(linux.contains("wrapper__badge__title"));
+    assert!(linux.contains("flux__ui_component_index_"));
+    assert!(linux.contains("Flux runtime error: list index out of range\\n"));
+    assert!(!linux.contains("flux__ui_derived___component_wrapper__badge__param_visible"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic list-index component argument fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic list-index component argument should lower through Android");
+    assert!(android.contains("flux__ui_component_index_"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("dynamic list-index component argument should lower through Windows");
+    assert!(windows.contains("flux__ui_component_index_"));
+}
+
+#[test]
 fn lowers_composed_view_reusable_optional_projection_arguments_on_all_native_backends() {
     let source = r#"
 struct Flags {
