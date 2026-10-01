@@ -81643,6 +81643,75 @@ app App
 }
 
 #[test]
+fn lowers_runtime_optional_component_list_cardinality_on_all_native_backends() {
+    let source = r#"
+fn maybeVisible(value: bool) -> bool? {
+    print("maybeVisible")
+    if value:
+        return true
+    return none
+}
+
+view Badge(flag: bool?) {
+    grid columns: 1fr
+    grid rows: 1fr 1fr
+    Text present at 1,1
+        text: "Present"
+        visible: ([?flag]).isNotEmpty
+    Text exact at 2,1
+        text: "Exact"
+        visible: ([?flag]).length == 1
+}
+
+view App {
+    grid columns: 1fr 1fr
+    grid rows: 1fr 1fr 1fr
+    Badge left at 1,1 span rows 2
+        flag: maybeVisible(windowIsLandscape)
+    Badge right at 1,2 span rows 2
+        flag: maybeVisible(windowIsPortrait)
+    Text direct at 3,1 span columns 2
+        text: "Direct"
+        visible: ([?maybeVisible(windowIsCompact)]).isEmpty
+}
+
+app App
+"#;
+
+    check_source(source).expect("runtime optional list cardinality fixture should typecheck");
+    let linux =
+        compile_to_c(source).expect("runtime optional list cardinality should lower through Linux");
+    assert!(linux.contains("flux__ui_derived___component_left__param_flag"));
+    assert!(linux.contains("flux__ui_derived___component_right__param_flag"));
+    assert!(linux.contains("flux__ui_component_optional_length_"));
+    assert!(linux.contains(".has_value ? INT64_C(1) : INT64_C(0)"));
+    assert!(linux.contains("left__present"));
+    assert!(linux.contains("right__exact"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("runtime optional list cardinality fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("runtime optional list cardinality should lower through Android");
+    assert!(android.contains("flux__ui_component_optional_length_"));
+    assert!(android.contains(".has_value ? INT64_C(1) : INT64_C(0)"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("runtime optional list cardinality should lower through Windows");
+    assert!(windows.contains("flux__ui_component_optional_length_"));
+    assert!(windows.contains(".has_value ? INT64_C(1) : INT64_C(0)"));
+}
+
+#[test]
 fn lowers_composed_view_parameterized_constant_list_index_on_all_native_backends() {
     let source = r#"
 view Badge(index: i64) {

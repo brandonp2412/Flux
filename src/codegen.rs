@@ -34778,6 +34778,21 @@ fn reusable_ui_runtime_list_length_c(
                     ui_expr_c_for_view_identity(condition, view, signatures, view_identity)?;
                 dynamic_terms.push(format!("(({condition}) ? INT64_C(1) : INT64_C(0))"));
             }
+            ExprKind::ListOptional { value, .. } => {
+                let Some(optional_ty) = ui_optional_scalar_type(value, view, signatures) else {
+                    return Ok(None);
+                };
+                let optional_code =
+                    ui_expr_c_for_view_identity(value, view, signatures, view_identity)?;
+                let optional_c = c_type(&optional_ty, signatures);
+                let value_name = format!(
+                    "flux__ui_component_optional_length_{}_{}",
+                    item.span.line, item.span.column
+                );
+                dynamic_terms.push(format!(
+                    "__extension__ ({{ {optional_c} {value_name} = ({optional_code}); {value_name}.has_value ? INT64_C(1) : INT64_C(0); }})"
+                ));
+            }
             ExprKind::ListSpread {
                 value,
                 optional: false,
