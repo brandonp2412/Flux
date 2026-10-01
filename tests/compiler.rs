@@ -83233,6 +83233,76 @@ app App
 }
 
 #[test]
+fn composed_view_effectful_optional_binding_dynamic_cardinality_uses_scalar_storage() {
+    let source = r#"
+fn maybe() -> bool? {
+    print("maybe")
+    return true
+}
+
+view Badge(flags: bool[], index: i64) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: flags.isNotEmpty && flags.length == 1 && flags[index] && flags.first && flags.last && flags.single
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        flags: [if let value = maybe(): value]
+        index: windowWidth - windowWidth
+}
+
+app App
+"#;
+
+    check_source(source)
+        .expect("effectful optional-binding dynamic-cardinality component list should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.contains("__component_badge__param_flags__item_0__condition"),
+            "effectful optional-binding condition should use deterministic per-instance storage"
+        );
+        assert!(
+            generated.contains("flux__fn_maybe()"),
+            "effectful optional-binding condition must be evaluated through stored scalar state"
+        );
+        assert!(
+            generated.contains("flux__ui_component_index_"),
+            "optional-binding dynamic-cardinality indexing should use direct candidate selection"
+        );
+        assert!(
+            !generated.contains("flux__ui_derived___component_badge__param_flags ="),
+            "dynamic-cardinality list projections should not require aggregate derived storage"
+        );
+    };
+
+    let linux = compile_to_c(source)
+        .expect("effectful optional-binding dynamic-cardinality list should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful optional-binding dynamic-cardinality fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful optional-binding dynamic-cardinality list should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn composed_view_effectful_nonbinding_list_condition_uses_scalar_storage() {
     let source = r#"
 fn choose() -> bool {

@@ -13202,62 +13202,74 @@ fn scalarize_observable_component_argument(
                             used_derived_names,
                         )?;
                         if let Some(binding) = binding {
-                            let else_value = else_value.as_deref()?;
-                            let default_value =
-                                optional_scalar_default_expr(&condition_ty, condition, signatures)?;
-                            let unwrapped = Expr {
-                                line: condition.line,
-                                span: condition.span,
-                                kind: ExprKind::Binary {
-                                    left: Box::new(lowered_condition.clone()),
-                                    op: BinOp::Coalesce,
-                                    right: Box::new(default_value),
-                                },
-                            };
-                            let mut selected = branch_value.as_ref().clone();
-                            let bindings = HashMap::from([(binding.name.clone(), unwrapped)]);
-                            let parameter_names = HashSet::from([binding.name.as_str()]);
-                            substitute_transparent_native_component_parameters(
-                                &mut selected,
-                                &bindings,
-                                &parameter_names,
-                                "native",
-                            )
-                            .ok()?;
-                            if !transparent_native_component_argument_is_reusable(&selected) {
-                                return None;
+                            if let Some(else_value) = else_value.as_deref() {
+                                let default_value = optional_scalar_default_expr(
+                                    &condition_ty,
+                                    condition,
+                                    signatures,
+                                )?;
+                                let unwrapped = Expr {
+                                    line: condition.line,
+                                    span: condition.span,
+                                    kind: ExprKind::Binary {
+                                        left: Box::new(lowered_condition.clone()),
+                                        op: BinOp::Coalesce,
+                                        right: Box::new(default_value),
+                                    },
+                                };
+                                let mut selected = branch_value.as_ref().clone();
+                                let bindings = HashMap::from([(binding.name.clone(), unwrapped)]);
+                                let parameter_names = HashSet::from([binding.name.as_str()]);
+                                substitute_transparent_native_component_parameters(
+                                    &mut selected,
+                                    &bindings,
+                                    &parameter_names,
+                                    "native",
+                                )
+                                .ok()?;
+                                if !transparent_native_component_argument_is_reusable(&selected) {
+                                    return None;
+                                }
+                                let optional_item = Expr {
+                                    line: condition.line,
+                                    span: condition.span,
+                                    kind: ExprKind::ListOptional {
+                                        value: Box::new(lowered_condition),
+                                        question_span: condition.span,
+                                    },
+                                };
+                                let presence = Expr {
+                                    line: condition.line,
+                                    span: condition.span,
+                                    kind: ExprKind::Field {
+                                        base: Box::new(Expr {
+                                            line: condition.line,
+                                            span: condition.span,
+                                            kind: ExprKind::List(vec![optional_item]),
+                                        }),
+                                        name: "isNotEmpty".to_string(),
+                                        name_span: condition.span,
+                                        optional: false,
+                                    },
+                                };
+                                lowered_items.push(Expr {
+                                    line: item.line,
+                                    span: item.span,
+                                    kind: ExprKind::Conditional {
+                                        then_expr: Box::new(selected),
+                                        cond: Box::new(presence),
+                                        else_expr: Box::new(else_value.clone()),
+                                    },
+                                });
+                            } else {
+                                let mut lowered_item = item.clone();
+                                let ExprKind::ListIf { condition, .. } = &mut lowered_item.kind
+                                else {
+                                    unreachable!("cloned list-if item keeps its expression kind");
+                                };
+                                *condition = Box::new(lowered_condition);
+                                lowered_items.push(lowered_item);
                             }
-                            let optional_item = Expr {
-                                line: condition.line,
-                                span: condition.span,
-                                kind: ExprKind::ListOptional {
-                                    value: Box::new(lowered_condition),
-                                    question_span: condition.span,
-                                },
-                            };
-                            let presence = Expr {
-                                line: condition.line,
-                                span: condition.span,
-                                kind: ExprKind::Field {
-                                    base: Box::new(Expr {
-                                        line: condition.line,
-                                        span: condition.span,
-                                        kind: ExprKind::List(vec![optional_item]),
-                                    }),
-                                    name: "isNotEmpty".to_string(),
-                                    name_span: condition.span,
-                                    optional: false,
-                                },
-                            };
-                            lowered_items.push(Expr {
-                                line: item.line,
-                                span: item.span,
-                                kind: ExprKind::Conditional {
-                                    then_expr: Box::new(selected),
-                                    cond: Box::new(presence),
-                                    else_expr: Box::new(else_value.clone()),
-                                },
-                            });
                         } else {
                             let mut lowered_item = item.clone();
                             let ExprKind::ListIf { condition, .. } = &mut lowered_item.kind else {
@@ -34982,8 +34994,75 @@ fn reusable_ui_list_projection_items(
     }
 }
 
+fn reusable_ui_optional_binding_candidate(
+    condition: &Expr,
+    binding: &crate::ast::PatternBinding,
+    value: &Expr,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+) -> Result<Option<(Expr, Expr)>, Diagnostic> {
+    if !transparent_native_component_argument_is_reusable(condition)
+        || !transparent_native_component_argument_is_reusable(value)
+    {
+        return Ok(None);
+    }
+    let Some(optional_ty) = ui_optional_scalar_type(condition, view, signatures) else {
+        return Ok(None);
+    };
+    let Some(default_value) = optional_scalar_default_expr(&optional_ty, condition, signatures)
+    else {
+        return Ok(None);
+    };
+    let unwrapped = Expr {
+        line: condition.line,
+        span: condition.span,
+        kind: ExprKind::Binary {
+            left: Box::new(condition.clone()),
+            op: BinOp::Coalesce,
+            right: Box::new(default_value),
+        },
+    };
+    let mut selected = value.clone();
+    let bindings = HashMap::from([(binding.name.clone(), unwrapped)]);
+    let parameter_names = HashSet::from([binding.name.as_str()]);
+    substitute_transparent_native_component_parameters(
+        &mut selected,
+        &bindings,
+        &parameter_names,
+        "native",
+    )?;
+    if !transparent_native_component_argument_is_reusable(&selected) {
+        return Ok(None);
+    }
+
+    let optional_item = Expr {
+        line: condition.line,
+        span: condition.span,
+        kind: ExprKind::ListOptional {
+            value: Box::new(condition.clone()),
+            question_span: condition.span,
+        },
+    };
+    let presence = Expr {
+        line: condition.line,
+        span: condition.span,
+        kind: ExprKind::Field {
+            base: Box::new(Expr {
+                line: condition.line,
+                span: condition.span,
+                kind: ExprKind::List(vec![optional_item]),
+            }),
+            name: "isNotEmpty".to_string(),
+            name_span: condition.span,
+            optional: false,
+        },
+    };
+    Ok(Some((presence, selected)))
+}
+
 fn reusable_ui_runtime_list_candidates(
     expr: &Expr,
+    view: &crate::ast::ViewDef,
     signatures: &Signatures,
 ) -> Result<Option<Vec<(Option<Expr>, Expr)>>, Diagnostic> {
     if let ExprKind::Slice {
@@ -34998,7 +35077,8 @@ fn reusable_ui_runtime_list_candidates(
                 projected.into_iter().map(|value| (None, value)).collect(),
             ));
         }
-        let Some(base_candidates) = reusable_ui_runtime_list_candidates(base, signatures)? else {
+        let Some(base_candidates) = reusable_ui_runtime_list_candidates(base, view, signatures)?
+        else {
             return Ok(None);
         };
         let Some((_, representative)) = base_candidates.first() else {
@@ -35042,7 +35122,7 @@ fn reusable_ui_runtime_list_candidates(
                     optional: false,
                     ..
                 } = &item.kind
-                && let Some(nested) = reusable_ui_runtime_list_candidates(value, signatures)?
+                && let Some(nested) = reusable_ui_runtime_list_candidates(value, view, signatures)?
             {
                 candidates.extend(nested);
             } else {
@@ -35063,12 +35143,28 @@ fn reusable_ui_runtime_list_candidates(
             {
                 candidates.push((Some(condition.as_ref().clone()), value.as_ref().clone()));
             }
+            ExprKind::ListIf {
+                condition,
+                binding: Some(binding),
+                value,
+                else_value: None,
+                ..
+            } => {
+                let Some((presence, selected)) = reusable_ui_optional_binding_candidate(
+                    condition, binding, value, view, signatures,
+                )?
+                else {
+                    return Ok(None);
+                };
+                candidates.push((Some(presence), selected));
+            }
             ExprKind::ListSpread {
                 value,
                 optional: false,
                 ..
             } => {
-                let Some(nested) = reusable_ui_runtime_list_candidates(value, signatures)? else {
+                let Some(nested) = reusable_ui_runtime_list_candidates(value, view, signatures)?
+                else {
                     return Ok(None);
                 };
                 candidates.extend(nested);
@@ -35170,6 +35266,24 @@ fn reusable_ui_runtime_list_index_candidates(
                 candidates.push(ReusableUiRuntimeListIndexCandidate {
                     condition: Some(condition.as_ref().clone()),
                     value: ReusableUiRuntimeListIndexValue::Expr(value.as_ref().clone()),
+                });
+            }
+            ExprKind::ListIf {
+                condition,
+                binding: Some(binding),
+                value,
+                else_value: None,
+                ..
+            } => {
+                let Some((presence, selected)) = reusable_ui_optional_binding_candidate(
+                    condition, binding, value, view, signatures,
+                )?
+                else {
+                    return Ok(None);
+                };
+                candidates.push(ReusableUiRuntimeListIndexCandidate {
+                    condition: Some(presence),
+                    value: ReusableUiRuntimeListIndexValue::Expr(selected),
                 });
             }
             ExprKind::ListSpread {
@@ -35278,6 +35392,23 @@ fn reusable_ui_runtime_list_length_c(
                     ui_expr_c_for_view_identity(condition, view, signatures, view_identity)?;
                 dynamic_terms.push(format!("(({condition}) ? INT64_C(1) : INT64_C(0))"));
             }
+            ExprKind::ListIf {
+                condition,
+                binding: Some(binding),
+                value,
+                else_value: None,
+                ..
+            } => {
+                let Some((presence, _)) = reusable_ui_optional_binding_candidate(
+                    condition, binding, value, view, signatures,
+                )?
+                else {
+                    return Ok(None);
+                };
+                let presence =
+                    ui_expr_c_for_view_identity(&presence, view, signatures, view_identity)?;
+                dynamic_terms.push(format!("(({presence}) ? INT64_C(1) : INT64_C(0))"));
+            }
             ExprKind::ListOptional { value, .. } => {
                 let Some(optional_ty) = ui_optional_scalar_type(value, view, signatures) else {
                     return Ok(None);
@@ -35318,9 +35449,10 @@ fn reusable_ui_runtime_list_length_c(
 fn reusable_ui_runtime_list_edge_expr(
     expr: &Expr,
     first: bool,
+    view: &crate::ast::ViewDef,
     signatures: &Signatures,
 ) -> Result<Option<Expr>, Diagnostic> {
-    let Some(candidates) = reusable_ui_runtime_list_candidates(expr, signatures)? else {
+    let Some(candidates) = reusable_ui_runtime_list_candidates(expr, view, signatures)? else {
         return Ok(None);
     };
 
@@ -37538,9 +37670,12 @@ fn ui_expr_c_for_view_identity(
             }
             let list_member = crate::builtin_names::list_member_impl(name);
             if matches!(list_member, "first" | "last") {
-                if let Some(edge) =
-                    reusable_ui_runtime_list_edge_expr(base, list_member == "first", signatures)?
-                {
+                if let Some(edge) = reusable_ui_runtime_list_edge_expr(
+                    base,
+                    list_member == "first",
+                    view,
+                    signatures,
+                )? {
                     return ui_expr_c_for_view_identity(&edge, view, signatures, view_identity);
                 }
                 let edge_index = Expr {
