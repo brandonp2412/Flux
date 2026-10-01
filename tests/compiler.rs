@@ -83262,6 +83262,66 @@ app App
 }
 
 #[test]
+fn lowers_nested_optional_field_list_cardinality_in_composed_views() {
+    let source = r#"
+struct Point {
+    x: i64
+}
+
+struct Wrapper {
+    point: Point?
+}
+
+fn maybeWrapper(value: bool) -> Wrapper? {
+    print("maybeWrapper")
+    if value:
+        return Wrapper { point: Point { x: 7 } }
+    return none
+}
+
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        visible: ([?maybeWrapper(windowIsLandscape)?.point?.x]).isNotEmpty
+}
+
+app App
+"#;
+
+    check_source(source).expect("nested optional-field list cardinality should typecheck");
+    let linux = compile_to_c(source)
+        .expect("nested optional-field list cardinality should lower through Linux");
+    assert!(linux.contains("flux__ui_component_optional_length_"));
+    assert!(linux.matches("flux__ui_optional_field_base_").count() >= 2);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("nested optional-field list cardinality fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("nested optional-field list cardinality should lower natively");
+        assert!(generated.contains("flux__ui_component_optional_length_"));
+        assert!(generated.matches("flux__ui_optional_field_base_").count() >= 2);
+    }
+}
+
+#[test]
 fn composed_view_projection_argument_preserves_effectful_base_evaluation() {
     let source = r#"
 fn probe() -> bool {

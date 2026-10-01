@@ -36041,34 +36041,7 @@ fn ui_optional_scalar_type(
     view: &crate::ast::ViewDef,
     signatures: &Signatures,
 ) -> Option<Type> {
-    let ty = match &expr.kind {
-        ExprKind::Var(name) => view
-            .states
-            .iter()
-            .find(|state| state.name == *name)
-            .map(|state| state.ty.clone())
-            .or_else(|| {
-                view.derived
-                    .iter()
-                    .find(|derived| derived.name == *name)
-                    .map(|derived| derived.ty.clone())
-            })
-            .or_else(|| {
-                view.params
-                    .iter()
-                    .find(|param| param.name == *name)
-                    .map(|param| param.ty.clone())
-            })?,
-        ExprKind::Call { name, .. } => {
-            let signature = signatures.get(name)?;
-            let [ty] = signature.returns.as_slice() else {
-                return None;
-            };
-            ty.clone()
-        }
-        _ => return None,
-    };
-    let canonical = signatures.canonical_type(&ty);
+    let canonical = ui_expr_known_type(expr, view, signatures)?;
     let Type::Optional(inner) = canonical else {
         return None;
     };
