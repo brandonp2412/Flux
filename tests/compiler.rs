@@ -85012,6 +85012,83 @@ app Badge
 }
 
 #[test]
+fn composed_view_effectful_copy_aggregate_static_slice_index_preserves_order() {
+    let source = r#"
+struct Flags {
+    enabled: bool
+}
+
+fn makeFlags(value: bool) -> Flags {
+    print("makeFlags")
+    return Flags { enabled: value }
+}
+
+fn choose() -> i64 {
+    print("choose")
+    return 1
+}
+
+view Badge {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: (([makeFlags(false), makeFlags(windowIsLandscape), makeFlags(true)][0:2])[choose()]).enabled
+}
+
+app Badge
+"#;
+
+    check_source(source)
+        .expect("effectful Copy aggregate static-slice index fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__ui_slice_index_item_").count() >= 3,
+            "all Copy aggregate base items should use ordered typed temporaries"
+        );
+        let first = generated
+            .find(" = (flux__fn_makeFlags(false));")
+            .expect("first aggregate base item should be evaluated");
+        let second = generated
+            .find(" = (flux__fn_makeFlags((flux__ui_window_width > flux__ui_window_height)));")
+            .expect("second aggregate base item should be evaluated");
+        let third = generated
+            .find(" = (flux__fn_makeFlags(true));")
+            .expect("unselected aggregate base item should still be evaluated");
+        let index = generated
+            .find(" = (flux__fn_choose());")
+            .expect("slice runtime index should be evaluated once");
+        assert!(
+            first < second && second < third && third < index,
+            "static slice base items must evaluate in source order before the runtime index"
+        );
+        assert!(generated.contains("Flux runtime error: list index out of range"));
+        assert!(generated.contains(".flux__field_enabled"));
+    };
+
+    let linux = compile_to_c(source)
+        .expect("effectful Copy aggregate static-slice index should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful Copy aggregate static-slice index fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful Copy aggregate static-slice index should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn composed_view_constant_list_property_does_not_drop_effectful_items() {
     let source = r#"
 fn probe() -> bool {
