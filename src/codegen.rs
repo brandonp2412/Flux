@@ -34362,6 +34362,106 @@ fn static_ui_slice_bound(len: i64, value: Option<i64>, end: bool, step: i64) -> 
     resolved
 }
 
+fn reusable_ui_list_projection_items<'a>(
+    expr: &'a Expr,
+    signatures: &Signatures,
+) -> Result<Option<Vec<&'a Expr>>, Diagnostic> {
+    match &expr.kind {
+        ExprKind::List(items)
+            if items.iter().all(|item| {
+                !matches!(
+                    item.kind,
+                    ExprKind::ListSpread { .. }
+                        | ExprKind::ListOptional { .. }
+                        | ExprKind::ListIf { .. }
+                ) && transparent_native_component_argument_is_reusable(item)
+            }) =>
+        {
+            Ok(Some(items.iter().collect()))
+        }
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+            optional: false,
+        } => {
+            let Some(items) = reusable_ui_list_projection_items(base, signatures)? else {
+                return Ok(None);
+            };
+            let Ok(len) = i64::try_from(items.len()) else {
+                return Ok(None);
+            };
+            let start = if let Some(start) = start {
+                let Some(ConstantValue::I64(value)) = fold_ui_primitive_expr(start, signatures)?
+                else {
+                    return Ok(None);
+                };
+                Some(value)
+            } else {
+                None
+            };
+            let end = if let Some(end) = end {
+                let Some(ConstantValue::I64(value)) = fold_ui_primitive_expr(end, signatures)?
+                else {
+                    return Ok(None);
+                };
+                Some(value)
+            } else {
+                None
+            };
+            let step = if let Some(step) = step {
+                let Some(ConstantValue::I64(value)) = fold_ui_primitive_expr(step, signatures)?
+                else {
+                    return Ok(None);
+                };
+                value
+            } else {
+                1
+            };
+            if step == 0 {
+                return Ok(None);
+            }
+
+            let first = static_ui_slice_bound(len, start, false, step);
+            let last = static_ui_slice_bound(len, end, true, step);
+            let mut selected = Vec::new();
+            let mut index = first;
+            if step > 0 {
+                while index < last {
+                    let Ok(index_usize) = usize::try_from(index) else {
+                        return Ok(None);
+                    };
+                    let Some(item) = items.get(index_usize) else {
+                        return Ok(None);
+                    };
+                    selected.push(*item);
+                    let Some(next) = index.checked_add(step) else {
+                        break;
+                    };
+                    index = next;
+                }
+            } else {
+                while index > last {
+                    let Ok(index_usize) = usize::try_from(index) else {
+                        return Ok(None);
+                    };
+                    let Some(item) = items.get(index_usize) else {
+                        return Ok(None);
+                    };
+                    selected.push(*item);
+                    let Some(next) = index.checked_add(step) else {
+                        break;
+                    };
+                    index = next;
+                }
+            }
+            Ok(Some(selected))
+        }
+        _ => Ok(None),
+    }
+}
+
 fn fold_ui_primitive_expr_with_binding(
     expr: &Expr,
     binding_name: &str,
@@ -35186,11 +35286,7 @@ fn ui_expr_c_for_view_identity(
             index,
             optional: false,
         } => {
-            if let ExprKind::List(items) = &base.kind
-                && items
-                    .iter()
-                    .all(transparent_native_component_argument_is_reusable)
-            {
+            if let Some(items) = reusable_ui_list_projection_items(base, signatures)? {
                 if let Some(ConstantValue::I64(index)) = fold_ui_primitive_expr(index, signatures)?
                 {
                     let resolved = if index < 0 {
@@ -35202,12 +35298,12 @@ fn ui_expr_c_for_view_identity(
                     };
                     if let Some(item) = resolved
                         .and_then(|index| usize::try_from(index).ok())
-                        .and_then(|index| items.get(index))
+                        .and_then(|index| items.get(index).copied())
                     {
                         return ui_expr_c_for_view_identity(item, view, signatures, view_identity);
                     }
                 } else if let Ok(len) = i64::try_from(items.len())
-                    && let Some(last) = items.last()
+                    && let Some(last) = items.last().copied()
                 {
                     let index_code =
                         ui_expr_c_for_view_identity(index, view, signatures, view_identity)?;
@@ -35240,6 +35336,46 @@ fn ui_expr_c_for_view_identity(
             optional: false,
             ..
         } => {
+            if let Some(items) = reusable_ui_list_projection_items(base, signatures)? {
+                match crate::builtin_names::list_member_impl(name) {
+                    "length" => return Ok(format!("INT64_C({})", items.len())),
+                    "isEmpty" => {
+                        return Ok(if items.is_empty() { "true" } else { "false" }.to_string());
+                    }
+                    "isNotEmpty" => {
+                        return Ok(if items.is_empty() { "false" } else { "true" }.to_string());
+                    }
+                    "first" => {
+                        if let Some(item) = items.first().copied() {
+                            return ui_expr_c_for_view_identity(
+                                item,
+                                view,
+                                signatures,
+                                view_identity,
+                            );
+                        }
+                    }
+                    "last" => {
+                        if let Some(item) = items.last().copied() {
+                            return ui_expr_c_for_view_identity(
+                                item,
+                                view,
+                                signatures,
+                                view_identity,
+                            );
+                        }
+                    }
+                    "single" if items.len() == 1 => {
+                        return ui_expr_c_for_view_identity(
+                            items[0],
+                            view,
+                            signatures,
+                            view_identity,
+                        );
+                    }
+                    _ => {}
+                }
+            }
             match &base.kind {
                 ExprKind::RecordLiteral { fields }
                     if fields.iter().all(|field| {
@@ -35271,50 +35407,6 @@ fn ui_expr_c_for_view_identity(
                             signatures,
                             view_identity,
                         );
-                    }
-                }
-                ExprKind::List(items)
-                    if items
-                        .iter()
-                        .all(transparent_native_component_argument_is_reusable) =>
-                {
-                    match crate::builtin_names::list_member_impl(name) {
-                        "length" => return Ok(format!("INT64_C({})", items.len())),
-                        "isEmpty" => {
-                            return Ok(if items.is_empty() { "true" } else { "false" }.to_string());
-                        }
-                        "isNotEmpty" => {
-                            return Ok(if items.is_empty() { "false" } else { "true" }.to_string());
-                        }
-                        "first" => {
-                            if let Some(item) = items.first() {
-                                return ui_expr_c_for_view_identity(
-                                    item,
-                                    view,
-                                    signatures,
-                                    view_identity,
-                                );
-                            }
-                        }
-                        "last" => {
-                            if let Some(item) = items.last() {
-                                return ui_expr_c_for_view_identity(
-                                    item,
-                                    view,
-                                    signatures,
-                                    view_identity,
-                                );
-                            }
-                        }
-                        "single" if items.len() == 1 => {
-                            return ui_expr_c_for_view_identity(
-                                &items[0],
-                                view,
-                                signatures,
-                                view_identity,
-                            );
-                        }
-                        _ => {}
                     }
                 }
                 _ => {}
