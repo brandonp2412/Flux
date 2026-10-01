@@ -12800,6 +12800,8 @@ fn flatten_transparent_native_view_element(
     parent_columns: &[crate::ast::GridTrack],
     parent_rows: &[crate::ast::GridTrack],
     parent_gap: u32,
+    lowered_states: &mut Vec<crate::ast::ViewState>,
+    used_state_names: &mut HashSet<String>,
 ) -> Result<Vec<crate::ast::ViewElement>, Diagnostic> {
     if typecheck::BUILTIN_VIEW_ELEMENT_KINDS.contains(&element.kind.as_str()) {
         let mut lowered = element.clone();
@@ -12830,19 +12832,6 @@ fn flatten_transparent_native_view_element(
             ),
         ));
     }
-    if !target.states.is_empty() {
-        return Err(diag(
-            element.kind_span,
-            &format!(
-                "{backend} app backend currently lowers only stateless composed views"
-            ),
-        )
-        .with_note(format!(
-            "view '{}' declares component-owned state; parameter forwarding and reusable derived values are supported, but mutable component state still needs native instance storage",
-            target.name
-        )));
-    }
-
     let transparent_grid = target.grid.flow.is_none()
         && target.grid.padding.unwrap_or(0) == 0
         && !target.grid.scroll.unwrap_or(false)
@@ -12926,10 +12915,34 @@ fn flatten_transparent_native_view_element(
         bindings.insert(param.name.clone(), value.clone());
     }
 
+    let mut state_names = HashMap::<String, String>::new();
+    for state in &target.states {
+        let base_name = format!("__component_{instance_name}__{}", state.name);
+        let mut lowered_name = base_name.clone();
+        let mut suffix = 2usize;
+        while !used_state_names.insert(lowered_name.clone()) {
+            lowered_name = format!("{base_name}_{suffix}");
+            suffix += 1;
+        }
+        let mut lowered_state = state.clone();
+        lowered_state.name = lowered_name.clone();
+        lowered_states.push(lowered_state);
+        state_names.insert(state.name.clone(), lowered_name.clone());
+        bindings.insert(
+            state.name.clone(),
+            Expr {
+                line: state.line,
+                span: state.name_span,
+                kind: ExprKind::Var(lowered_name),
+            },
+        );
+    }
+
     let mut binding_names = target
         .params
         .iter()
         .map(|param| param.name.as_str())
+        .chain(target.states.iter().map(|state| state.name.as_str()))
         .collect::<HashSet<_>>();
     for derived in &target.derived {
         let mut value = derived.value.clone();
@@ -12965,6 +12978,11 @@ fn flatten_transparent_native_view_element(
                 &binding_names,
                 backend,
             )?;
+            if let Some(transition) = &mut property.transition
+                && let Some(lowered_state) = state_names.get(&transition.state)
+            {
+                transition.state = lowered_state.clone();
+            }
         }
         let child_instance_name = format!("{instance_name}__{}", child.name);
         let descendants = flatten_transparent_native_view_element(
@@ -12976,6 +12994,8 @@ fn flatten_transparent_native_view_element(
             &target.grid.columns,
             &target.grid.rows,
             target.grid.gap.unwrap_or(0),
+            lowered_states,
+            used_state_names,
         )?;
         for mut lowered in descendants {
             if single_cell {
@@ -13002,6 +13022,11 @@ fn flatten_transparent_native_root_view(
     backend: &str,
 ) -> Result<crate::ast::ViewDef, Diagnostic> {
     let mut lowered = view.clone();
+    let mut used_state_names = lowered
+        .states
+        .iter()
+        .map(|state| state.name.clone())
+        .collect::<HashSet<_>>();
     let mut elements = Vec::with_capacity(view.elements.len());
     for element in &view.elements {
         let mut stack = vec![view.name.clone()];
@@ -13014,6 +13039,8 @@ fn flatten_transparent_native_root_view(
             &view.grid.columns,
             &view.grid.rows,
             view.grid.gap.unwrap_or(0),
+            &mut lowered.states,
+            &mut used_state_names,
         )?);
     }
     lowered.elements = elements;

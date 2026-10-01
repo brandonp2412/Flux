@@ -81300,33 +81300,53 @@ app App
 }
 
 #[test]
-fn native_composed_view_lowering_keeps_stateful_and_structural_cases_explicit() {
-    let stateful = r#"
-view Badge {
-    state selected: bool = true
+fn lowers_component_owned_state_with_independent_native_instances() {
+    let source = r#"
+view StatefulToggle {
+    state selected: bool = false
+    derived enabled: bool = selected || true
     grid columns: 1fr
     grid rows: 1fr
-    Text title at 1,1
-        text: "Flux"
-        selectable: selected
+    Toggle toggle at 1,1
+        label: "Enabled"
+        checked: selected
+        enabled: enabled
+        onChange: selected => true
 }
 
 view App {
-    grid columns: 1fr
+    grid columns: 1fr 1fr
     grid rows: 1fr
-    Badge badge at 1,1
+    StatefulToggle left at 1,1
+    StatefulToggle right at 1,2
 }
 
 app App
 "#;
-    let error = compile_to_c(stateful)
-        .expect_err("component-owned state needs native per-instance storage before flattening");
-    assert!(
-        error
-            .message
-            .contains("currently lowers only stateless composed views")
-    );
 
+    check_source(source).expect("component-owned state should typecheck before native flattening");
+    let linux = compile_to_c(source)
+        .expect("component-owned state should flatten into independent Linux root state");
+    assert!(linux.contains("flux__ui_state___component_left__selected"));
+    assert!(linux.contains("flux__ui_state___component_right__selected"));
+    assert!(linux.contains("left__toggle"));
+    assert!(linux.contains("right__toggle"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("component-owned state should analyze for Android");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("component-owned state should flatten into independent Android root state");
+    assert!(android.contains("flux__ui_state___component_left__selected"));
+    assert!(android.contains("flux__ui_state___component_right__selected"));
+}
+
+#[test]
+fn native_composed_view_lowering_keeps_nonmatching_structural_cases_explicit() {
     let multi_child = r#"
 view Badge {
     grid columns: 1fr 1fr
