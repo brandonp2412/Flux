@@ -81091,23 +81091,29 @@ app Screen
 #[test]
 fn lowers_transparent_stateless_composed_views_on_linux_and_android() {
     let source = r#"
-view Badge {
+view Badge(label: str, selectable: bool = false) {
     grid columns: 1fr
     grid rows: 1fr
     Text title at 1,1
-        text: "Flux"
+        text: label
+        selectable: selectable
 }
 
-view BadgeShell {
+view BadgeShell(label: str, selectable: bool) {
     grid columns: 1fr
     grid rows: 1fr
     Badge badge at 1,1
+        label: label
+        selectable: selectable
 }
 
 view App {
+    state selected: bool = true
     grid columns: 1fr
     grid rows: 1fr
     BadgeShell card at 1,1
+        label: "Flux"
+        selectable: selected
 }
 
 app App
@@ -81134,30 +81140,30 @@ app App
 
 #[test]
 fn native_composed_view_lowering_keeps_stateful_and_structural_cases_explicit() {
-    let parameterized = r#"
-view Badge(label: str) {
+    let stateful = r#"
+view Badge {
+    state selected: bool = true
     grid columns: 1fr
     grid rows: 1fr
     Text title at 1,1
-        text: label
+        text: "Flux"
+        selectable: selected
 }
 
 view App {
     grid columns: 1fr
     grid rows: 1fr
     Badge badge at 1,1
-        label: "Flux"
 }
 
 app App
 "#;
-    let error = compile_to_c(parameterized).expect_err(
-        "parameterized composed native views must remain explicit until binding lowering exists",
-    );
+    let error = compile_to_c(stateful)
+        .expect_err("component-owned state needs native per-instance storage before flattening");
     assert!(
         error
             .message
-            .contains("currently lowers only stateless zero-parameter composed views")
+            .contains("currently lowers only stateless composed views")
     );
 
     let multi_child = r#"

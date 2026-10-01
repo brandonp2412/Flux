@@ -12687,15 +12687,15 @@ fn flatten_transparent_native_view_element(
             ),
         ));
     }
-    if !target.params.is_empty() || !target.states.is_empty() || !target.derived.is_empty() {
+    if !target.states.is_empty() || !target.derived.is_empty() {
         return Err(diag(
             element.kind_span,
             &format!(
-                "{backend} app backend currently lowers only stateless zero-parameter composed views"
+                "{backend} app backend currently lowers only stateless composed views"
             ),
         )
         .with_note(format!(
-            "view '{}' declares parameters, state, or derived values; keep it as a transparent stateless component for native composition in this bootstrap slice",
+            "view '{}' declares component-owned state or derived values; parameter forwarding is supported, but owned component state still needs native instance storage",
             target.name
         )));
     }
@@ -12734,11 +12734,78 @@ fn flatten_transparent_native_view_element(
         ));
     }
 
+    let mut bindings = HashMap::<String, Expr>::new();
+    for param in &target.params {
+        let supplied = element
+            .properties
+            .iter()
+            .find(|property| property.name == param.name)
+            .map(|property| &property.value);
+        let value = supplied.or(param.default.as_ref()).ok_or_else(|| {
+            diag(
+                element.span,
+                &format!(
+                    "{backend} composed view '{}' is missing required parameter '{}' during native lowering",
+                    target.name, param.name
+                ),
+            )
+        })?;
+        if supplied.is_some()
+            && !matches!(
+                value.kind,
+                ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::Str(_) | ExprKind::Var(_)
+            )
+        {
+            return Err(diag(
+                value.span,
+                &format!(
+                    "{backend} transparent composed-view parameter '{}' currently requires a literal or direct binding",
+                    param.name
+                ),
+            )
+            .with_note(
+                "direct state/derived/constant/function bindings stay reactive after flattening; compound argument expressions need a compiler-owned single-evaluation binding before they can be duplicated safely",
+            ));
+        }
+        bindings.insert(param.name.clone(), value.clone());
+    }
+
+    let mut child = child.clone();
+    let parameter_names = target
+        .params
+        .iter()
+        .map(|param| param.name.as_str())
+        .collect::<HashSet<_>>();
+    for property in &mut child.properties {
+        if let ExprKind::Var(name) = &property.value.kind
+            && let Some(binding) = bindings.get(name)
+        {
+            property.value = binding.clone();
+            continue;
+        }
+        let mut reads = HashSet::new();
+        typecheck::collect_expr_reads(&property.value, &mut reads);
+        if let Some(parameter) = reads
+            .iter()
+            .find(|name| parameter_names.contains(name.as_str()))
+        {
+            return Err(diag(
+                property.value.span,
+                &format!(
+                    "{backend} transparent composed-view parameter '{parameter}' is currently supported only as a direct child-property binding"
+                ),
+            )
+            .with_note(
+                "compound parameter expressions need a native component binding environment so each argument is evaluated once while remaining reactive",
+            ));
+        }
+    }
+
     stack.push(target.name.clone());
     let child_instance_name = format!("{instance_name}__{}", child.name);
     let mut lowered = flatten_transparent_native_view_element(
         program,
-        child,
+        &child,
         &child_instance_name,
         backend,
         stack,
