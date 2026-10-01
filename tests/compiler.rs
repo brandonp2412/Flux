@@ -81288,6 +81288,63 @@ app App
 }
 
 #[test]
+fn lowers_overlay_composed_subgrids_on_all_native_backends() {
+    let source = r#"
+view OverlayCard(label: str) {
+    grid columns: 1fr 1fr
+    grid rows: 1fr 1fr
+    grid overlay: true
+    Text backdrop at 1,1 span rows 2 span columns 2
+        text: "Background"
+    Text foreground at 2,2
+        text: label
+}
+
+view App {
+    grid columns: 1fr 1fr
+    grid rows: 1fr 1fr
+    OverlayCard card at 1,1 span rows 2 span columns 2
+        label: "Foreground"
+}
+
+app App
+"#;
+
+    check_source(source).expect("overlay composed subgrid should typecheck");
+    let linux = compile_to_c(source).expect("overlay composed subgrid should lower through Linux");
+    assert!(linux.contains("card__backdrop"));
+    assert!(linux.contains("card__foreground"));
+    assert!(linux.contains("gtk_grid_attach(GTK_GRID(grid), flux__ui_card__backdrop, 0, 0, 2, 2)"));
+    assert!(
+        linux.contains("gtk_grid_attach(GTK_GRID(grid), flux__ui_card__foreground, 1, 1, 1, 1)")
+    );
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("overlay composed subgrid should analyze for native targets");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("overlay composed subgrid should lower through Android");
+    assert!(android.contains("Background"));
+    assert!(android.contains("Foreground"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("overlay composed subgrid should lower through Windows");
+    assert!(windows.contains("card__backdrop"));
+    assert!(windows.contains("card__foreground"));
+    assert!(windows.contains("Background"));
+    assert!(windows.contains("Foreground"));
+}
+
+#[test]
 fn lowers_reusable_composed_view_derived_values_on_linux_and_android() {
     let source = r#"
 view Badge(enabled: bool) {
