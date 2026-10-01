@@ -13161,7 +13161,7 @@ fn flatten_transparent_native_view_element(
                     ),
                 )
                 .with_note(
-                    "single-evaluation component argument storage currently supports bool/i64/str values plus synchronous bool?/i64?/str? call arguments",
+                    "single-evaluation component argument storage currently supports bool/i64/str values, synchronous optional-scalar calls, and ownership-safe optional index/field projections handled by the dynamic UI emitter",
                 ));
             }
             let base_name = format!("__component_{instance_name}__param_{}", param.name);
@@ -35853,18 +35853,23 @@ fn native_ui_component_argument_storage_supported(
                 Type::I64 | Type::Bool | Type::Str
             ) =>
         {
-            let ExprKind::Call { name, .. } = &value.kind else {
-                return false;
-            };
-            let Some(signature) = signatures.get(name) else {
-                return false;
-            };
-            !signature.asynchronous
-                && matches!(
-                    signature.returns.as_slice(),
-                    [return_ty] if signatures.canonical_type(return_ty)
-                        == Type::Optional(inner.clone())
-                )
+            match &value.kind {
+                ExprKind::Call { name, .. } => {
+                    let Some(signature) = signatures.get(name) else {
+                        return false;
+                    };
+                    !signature.asynchronous
+                        && matches!(
+                            signature.returns.as_slice(),
+                            [return_ty] if signatures.canonical_type(return_ty)
+                                == Type::Optional(inner.clone())
+                        )
+                }
+                ExprKind::Index { optional: true, .. } | ExprKind::Field { optional: true, .. } => {
+                    true
+                }
+                _ => false,
+            }
         }
         _ => false,
     }
@@ -35879,6 +35884,17 @@ fn native_ui_stored_scalar_type_supported(ty: &Type, signatures: &Signatures) ->
         ),
         _ => false,
     }
+}
+
+fn native_ui_dynamic_call_result_supported(ty: &Type, signatures: &Signatures) -> bool {
+    if native_ui_stored_scalar_type_supported(ty, signatures) {
+        return true;
+    }
+    let Type::Optional(inner) = signatures.canonical_type(ty) else {
+        return false;
+    };
+    let inner = signatures.canonical_type(&inner);
+    matches!(inner, Type::Named(_) | Type::Record(_)) && signatures.is_copy_type(&inner)
 }
 
 fn native_ui_derived_initial_c(ty: &Type, signatures: &Signatures) -> Option<String> {
@@ -35899,6 +35915,70 @@ fn native_ui_derived_initial_c(ty: &Type, signatures: &Signatures) -> Option<Str
         }
         _ => None,
     }
+}
+
+fn ui_scalar_expr_type(
+    expr: &Expr,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+) -> Option<Type> {
+    let ty = match &expr.kind {
+        ExprKind::Bool(_) => Type::Bool,
+        ExprKind::Int(_) => Type::I64,
+        ExprKind::Str(_) => Type::Str,
+        ExprKind::Var(name) => view
+            .states
+            .iter()
+            .find(|state| state.name == *name)
+            .map(|state| state.ty.clone())
+            .or_else(|| {
+                view.derived
+                    .iter()
+                    .find(|derived| derived.name == *name)
+                    .map(|derived| derived.ty.clone())
+            })
+            .or_else(|| {
+                view.params
+                    .iter()
+                    .find(|param| param.name == *name)
+                    .map(|param| param.ty.clone())
+            })
+            .or_else(|| {
+                signatures
+                    .constant(name)
+                    .map(|constant| match constant.value {
+                        ConstantValue::Bool(_) => Type::Bool,
+                        ConstantValue::I64(_) => Type::I64,
+                        ConstantValue::Str(_) => Type::Str,
+                    })
+            })?,
+        ExprKind::Call { name, .. } => {
+            let signature = signatures.get(name)?;
+            let [ty] = signature.returns.as_slice() else {
+                return None;
+            };
+            ty.clone()
+        }
+        ExprKind::Conditional {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let then_ty = ui_scalar_expr_type(then_expr, view, signatures)?;
+            let else_ty = ui_scalar_expr_type(else_expr, view, signatures)?;
+            if signatures.canonical_type(&then_ty) != signatures.canonical_type(&else_ty) {
+                return None;
+            }
+            then_ty
+        }
+        _ => return None,
+    };
+    let canonical = signatures.canonical_type(&ty);
+    matches!(
+        canonical,
+        Type::Bool | Type::I64 | Type::Str | Type::Optional(_)
+    )
+    .then_some(canonical)
 }
 
 fn ui_optional_scalar_type(
@@ -36057,6 +36137,50 @@ fn ui_expr_c_for_view_identity(
         ExprKind::Index {
             base,
             index,
+            optional: true,
+        } => {
+            if let Some(items) = reusable_ui_list_projection_items(base, signatures)?
+                && let Some(first) = items.first()
+            {
+                let Some(element_ty) = ui_scalar_expr_type(first, view, signatures) else {
+                    return Err(diag(
+                        expr.span,
+                        "bootstrap optional UI indexing could not recover the reusable list element type",
+                    ));
+                };
+                let element_ty = signatures.canonical_type(&element_ty);
+                if !matches!(element_ty, Type::Bool | Type::I64 | Type::Str)
+                    || !items.iter().all(|item| {
+                        ui_scalar_expr_type(item, view, signatures)
+                            .is_some_and(|ty| signatures.canonical_type(&ty) == element_ty)
+                    })
+                {
+                    return Err(diag(
+                        expr.span,
+                        "bootstrap optional UI indexing currently requires a reusable scalar list",
+                    ));
+                }
+                if let Some(indexed) =
+                    reusable_ui_runtime_list_index_c(base, index, view, signatures, view_identity)?
+                {
+                    let result_ty = Type::Optional(Box::new(element_ty));
+                    let result_c = c_type(&result_ty, signatures);
+                    return Ok(format!(
+                        "({result_c}){{ .has_value = true, .value = ({indexed}) }}"
+                    ));
+                }
+            }
+            Err(diag(
+                expr.span,
+                "bootstrap dynamic optional UI indexing currently requires a composition-resolved reusable scalar list receiver",
+            )
+            .with_note(
+                "runtime optional list storage remains pending; a component-bound list that resolves to a reusable present list can still preserve lazy checked indexing",
+            ))
+        }
+        ExprKind::Index {
+            base,
+            index,
             optional: false,
         } => {
             if let Some(items) = reusable_ui_list_projection_items(base, signatures)? {
@@ -36106,6 +36230,133 @@ fn ui_expr_c_for_view_identity(
             Err(diag(
                 expr.span,
                 "bootstrap dynamic UI expression currently supports primitive literals, view environment/state/constants, primitive operators, conditional expressions, and reusable static aggregate projections",
+            ))
+        }
+        ExprKind::Field {
+            base,
+            name,
+            optional: true,
+            ..
+        } => {
+            let base_ty = match &base.kind {
+                ExprKind::Var(name) => view
+                    .states
+                    .iter()
+                    .find(|state| state.name == *name)
+                    .map(|state| state.ty.clone())
+                    .or_else(|| {
+                        view.derived
+                            .iter()
+                            .find(|derived| derived.name == *name)
+                            .map(|derived| derived.ty.clone())
+                    })
+                    .or_else(|| {
+                        view.params
+                            .iter()
+                            .find(|param| param.name == *name)
+                            .map(|param| param.ty.clone())
+                    }),
+                ExprKind::Call { name, .. } => signatures.get(name).and_then(|signature| {
+                    let [ty] = signature.returns.as_slice() else {
+                        return None;
+                    };
+                    Some(ty.clone())
+                }),
+                _ => None,
+            };
+            let Some(base_ty) = base_ty else {
+                return Err(diag(
+                    expr.span,
+                    "bootstrap dynamic optional UI field access requires a typed optional receiver",
+                ));
+            };
+            let base_ty = signatures.canonical_type(&base_ty);
+            let Type::Optional(inner) = &base_ty else {
+                return Err(diag(
+                    expr.span,
+                    "bootstrap dynamic optional UI field access requires an optional receiver",
+                ));
+            };
+            let inner_ty = signatures.canonical_type(inner);
+            let base_name = format!(
+                "flux__ui_optional_field_base_{}_{}",
+                expr.span.line, expr.span.column
+            );
+            let inner_value = format!("{base_name}.value");
+            let field_ty_and_code = match &inner_ty {
+                Type::Record(fields) => {
+                    let index = if let Ok(index) = name.parse::<usize>() {
+                        index
+                    } else {
+                        fields
+                            .iter()
+                            .position(|field| field.name.as_deref() == Some(name.as_str()))
+                            .ok_or_else(|| {
+                                diag(expr.span, "bootstrap optional UI record field is unknown")
+                            })?
+                    };
+                    let field = fields.get(index).ok_or_else(|| {
+                        diag(
+                            expr.span,
+                            "bootstrap optional UI record field is out of range",
+                        )
+                    })?;
+                    Some((
+                        field.ty.clone(),
+                        format!(
+                            "({inner_value}).{}",
+                            record_field_c_name(field.name.as_deref(), index)
+                        ),
+                    ))
+                }
+                Type::Named(struct_name) => {
+                    let definition = signatures.struct_type(struct_name).ok_or_else(|| {
+                        diag(expr.span, "bootstrap optional UI struct type is unknown")
+                    })?;
+                    let field = definition.field(name).ok_or_else(|| {
+                        diag(expr.span, "bootstrap optional UI struct field is unknown")
+                    })?;
+                    Some((
+                        field.ty.clone(),
+                        format!("{inner_value}.{}", field_c_name(name)),
+                    ))
+                }
+                _ => None,
+            };
+            let Some((field_ty, field_code)) = field_ty_and_code else {
+                return Err(diag(
+                    expr.span,
+                    "bootstrap dynamic optional UI field access currently supports copyable records and structs",
+                ));
+            };
+            let field_ty = signatures.canonical_type(&field_ty);
+            let result_ty = match &field_ty {
+                Type::Bool | Type::I64 | Type::Str => Type::Optional(Box::new(field_ty.clone())),
+                Type::Optional(inner)
+                    if matches!(
+                        signatures.canonical_type(inner),
+                        Type::Bool | Type::I64 | Type::Str
+                    ) =>
+                {
+                    field_ty.clone()
+                }
+                _ => {
+                    return Err(diag(
+                        expr.span,
+                        "bootstrap dynamic optional UI field access currently requires a scalar field",
+                    ));
+                }
+            };
+            let base_code = ui_expr_c_for_view_identity(base, view, signatures, view_identity)?;
+            let base_c = c_type(&base_ty, signatures);
+            let result_c = c_type(&result_ty, signatures);
+            let present = if matches!(field_ty, Type::Optional(_)) {
+                field_code
+            } else {
+                format!("({result_c}){{ .has_value = true, .value = {field_code} }}")
+            };
+            Ok(format!(
+                "__extension__ ({{ {base_c} {base_name} = ({base_code}); {base_name}.has_value ? {present} : ({result_c}){{ .has_value = false }}; }})"
             ))
         }
         ExprKind::Field {
@@ -36404,10 +36655,10 @@ fn ui_expr_c_for_view_identity(
                     "bootstrap dynamic UI expressions require a single-value function result",
                 ));
             };
-            if !native_ui_stored_scalar_type_supported(return_ty, signatures) {
+            if !native_ui_dynamic_call_result_supported(return_ty, signatures) {
                 return Err(diag(
                     expr.span,
-                    "bootstrap dynamic UI function calls currently require bool, i64, str, or optional scalar results",
+                    "bootstrap dynamic UI function calls currently require scalar, optional scalar, or copyable optional record results",
                 ));
             }
 

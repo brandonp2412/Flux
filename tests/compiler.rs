@@ -83064,7 +83064,7 @@ app App
 }
 
 #[test]
-fn composed_view_optional_projection_argument_rejects_effectful_index() {
+fn lowers_composed_view_effectful_optional_index_argument_on_all_native_backends() {
     let source = r#"
 fn pick() -> i64 {
     print("pick")
@@ -83098,13 +83098,103 @@ app App
 
     check_source(source)
         .expect("effectful optional projection component argument should typecheck");
-    let error = compile_to_c(source)
-        .expect_err("effectful optional index must not become a reusable component argument");
-    assert!(
-        error
-            .message
-            .contains("needs scalar per-instance storage for this observable argument")
-    );
+    let linux = compile_to_c(source)
+        .expect("effectful optional index component argument should lower through Linux");
+    assert!(linux.contains("flux__ui_derived___component_wrapper__badge__param_flag"));
+    assert!(linux.contains("flux__ui_component_index_"));
+    assert!(linux.contains("Flux runtime error: list index out of range\\n"));
+    assert_eq!(linux.matches("flux__fn_pick()").count(), 1);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful optional index fixture should analyze for native targets");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("effectful optional index component argument should lower through Android");
+    assert!(android.contains("flux__ui_derived___component_wrapper__badge__param_flag"));
+    assert!(android.contains("flux__ui_component_index_"));
+    assert_eq!(android.matches("flux__fn_pick()").count(), 1);
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("effectful optional index component argument should lower through Windows");
+    assert!(windows.contains("flux__ui_derived___component_wrapper__badge__param_flag"));
+    assert!(windows.contains("flux__ui_component_index_"));
+    assert_eq!(windows.matches("flux__fn_pick()").count(), 1);
+}
+
+#[test]
+fn lowers_composed_view_runtime_optional_struct_field_on_all_native_backends() {
+    let source = r#"
+struct Flags {
+    enabled: bool
+}
+
+fn maybeFlags(value: bool) -> Flags? {
+    print("maybeFlags")
+    if value:
+        return Flags { enabled: true }
+    return none
+}
+
+view Badge(flag: bool?) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: ([?flag]).isNotEmpty
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        flag: maybeFlags(windowIsLandscape)?.enabled
+}
+
+app App
+"#;
+
+    check_source(source)
+        .expect("runtime optional struct field component argument should typecheck");
+    let linux = compile_to_c(source)
+        .expect("runtime optional struct field component argument should lower through Linux");
+    assert!(linux.contains("flux__ui_derived___component_badge__param_flag"));
+    let linux_optional = linux
+        .find("flux__ui_optional_field_base_")
+        .expect("Linux should evaluate the optional struct receiver into one temporary");
+    let linux_optional = &linux[linux_optional..];
+    assert!(linux_optional.contains(".has_value ?"));
+    assert!(linux_optional.contains("= (flux__fn_maybeFlags("));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("runtime optional struct field fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("runtime optional struct field component argument should lower natively");
+        assert!(generated.contains("flux__ui_derived___component_badge__param_flag"));
+        let optional = generated.find("flux__ui_optional_field_base_").expect(
+            "native backend should evaluate the optional struct receiver into one temporary",
+        );
+        let optional = &generated[optional..];
+        assert!(optional.contains(".has_value ?"));
+        assert!(optional.contains("= (flux__fn_maybeFlags("));
+    }
 }
 
 #[test]
