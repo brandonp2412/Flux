@@ -34691,6 +34691,117 @@ fn reusable_ui_runtime_list_candidates(
     Ok(Some(candidates))
 }
 
+#[derive(Clone)]
+enum ReusableUiRuntimeListIndexValue {
+    Expr(Expr),
+    OptionalScalar { optional: Expr, ty: Type },
+}
+
+#[derive(Clone)]
+struct ReusableUiRuntimeListIndexCandidate {
+    condition: Option<Expr>,
+    value: ReusableUiRuntimeListIndexValue,
+}
+
+fn reusable_ui_runtime_list_index_candidates(
+    expr: &Expr,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+) -> Result<Option<Vec<ReusableUiRuntimeListIndexCandidate>>, Diagnostic> {
+    let ExprKind::List(items) = &expr.kind else {
+        return Ok(None);
+    };
+
+    let mut candidates = Vec::new();
+    for item in items {
+        let singleton = Expr {
+            line: item.line,
+            span: item.span,
+            kind: ExprKind::List(vec![item.clone()]),
+        };
+        if let Some(projected) = reusable_ui_list_projection_items(&singleton, signatures)? {
+            if projected.is_empty()
+                && let ExprKind::ListIf {
+                    condition,
+                    binding: None,
+                    value,
+                    else_value: None,
+                    ..
+                } = &item.kind
+                && transparent_native_component_argument_is_reusable(condition)
+                && transparent_native_component_argument_is_reusable(value)
+            {
+                candidates.push(ReusableUiRuntimeListIndexCandidate {
+                    condition: Some(condition.as_ref().clone()),
+                    value: ReusableUiRuntimeListIndexValue::Expr(value.as_ref().clone()),
+                });
+            } else if projected.is_empty()
+                && let ExprKind::ListSpread {
+                    value,
+                    optional: false,
+                    ..
+                } = &item.kind
+                && let Some(nested) =
+                    reusable_ui_runtime_list_index_candidates(value, view, signatures)?
+            {
+                candidates.extend(nested);
+            } else {
+                candidates.extend(projected.into_iter().map(|value| {
+                    ReusableUiRuntimeListIndexCandidate {
+                        condition: None,
+                        value: ReusableUiRuntimeListIndexValue::Expr(value),
+                    }
+                }));
+            }
+            continue;
+        }
+
+        match &item.kind {
+            ExprKind::ListOptional { value, .. } => {
+                let Some(ty) = ui_optional_scalar_type(value, view, signatures) else {
+                    return Ok(None);
+                };
+                candidates.push(ReusableUiRuntimeListIndexCandidate {
+                    condition: None,
+                    value: ReusableUiRuntimeListIndexValue::OptionalScalar {
+                        optional: value.as_ref().clone(),
+                        ty,
+                    },
+                });
+            }
+            ExprKind::ListIf {
+                condition,
+                binding: None,
+                value,
+                else_value: None,
+                ..
+            } if transparent_native_component_argument_is_reusable(condition)
+                && transparent_native_component_argument_is_reusable(value) =>
+            {
+                candidates.push(ReusableUiRuntimeListIndexCandidate {
+                    condition: Some(condition.as_ref().clone()),
+                    value: ReusableUiRuntimeListIndexValue::Expr(value.as_ref().clone()),
+                });
+            }
+            ExprKind::ListSpread {
+                value,
+                optional: false,
+                ..
+            } => {
+                let Some(nested) =
+                    reusable_ui_runtime_list_index_candidates(value, view, signatures)?
+                else {
+                    return Ok(None);
+                };
+                candidates.extend(nested);
+            }
+            _ => return Ok(None),
+        }
+    }
+
+    Ok(Some(candidates))
+}
+
 fn reusable_ui_runtime_list_length_c(
     expr: &Expr,
     view: &crate::ast::ViewDef,
@@ -34922,7 +35033,9 @@ fn reusable_ui_runtime_list_index_c(
         candidate_expr = base;
     }
 
-    let Some(candidates) = reusable_ui_runtime_list_candidates(candidate_expr, signatures)? else {
+    let Some(candidates) =
+        reusable_ui_runtime_list_index_candidates(candidate_expr, view, signatures)?
+    else {
         return Ok(None);
     };
     if candidates.is_empty() {
@@ -34935,19 +35048,53 @@ fn reusable_ui_runtime_list_index_c(
     );
     let mut condition_declarations = String::new();
     let mut condition_names = Vec::with_capacity(candidates.len());
-    for (position, (condition, _)) in candidates.iter().enumerate() {
-        let Some(condition) = condition else {
-            condition_names.push(None);
-            continue;
+    let mut value_codes = Vec::with_capacity(candidates.len());
+    for (position, candidate) in candidates.iter().enumerate() {
+        let explicit_condition = if let Some(condition) = &candidate.condition {
+            let condition_code =
+                ui_expr_c_for_view_identity(condition, view, signatures, view_identity)?;
+            let condition_name = format!(
+                "flux__ui_component_present_{}_{}_{}",
+                expr.span.line, expr.span.column, position
+            );
+            condition_declarations
+                .push_str(&format!("bool {condition_name} = ({condition_code}); "));
+            Some(condition_name)
+        } else {
+            None
         };
-        let condition_code =
-            ui_expr_c_for_view_identity(condition, view, signatures, view_identity)?;
-        let condition_name = format!(
-            "flux__ui_component_present_{}_{}_{}",
-            expr.span.line, expr.span.column, position
-        );
-        condition_declarations.push_str(&format!("bool {condition_name} = ({condition_code}); "));
-        condition_names.push(Some(condition_name));
+
+        match &candidate.value {
+            ReusableUiRuntimeListIndexValue::Expr(value) => {
+                value_codes.push(ui_expr_c_for_view_identity(
+                    value,
+                    view,
+                    signatures,
+                    view_identity,
+                )?);
+                condition_names.push(explicit_condition);
+            }
+            ReusableUiRuntimeListIndexValue::OptionalScalar { optional, ty } => {
+                let optional_code =
+                    ui_expr_c_for_view_identity(optional, view, signatures, view_identity)?;
+                let optional_name = format!(
+                    "flux__ui_component_optional_{}_{}_{}",
+                    expr.span.line, expr.span.column, position
+                );
+                condition_declarations.push_str(&format!(
+                    "{} {optional_name} = ({optional_code}); ",
+                    c_type(ty, signatures)
+                ));
+                let presence = match explicit_condition {
+                    Some(condition) => {
+                        format!("(({condition}) && {optional_name}.has_value)")
+                    }
+                    None => format!("{optional_name}.has_value"),
+                };
+                condition_names.push(Some(presence));
+                value_codes.push(format!("{optional_name}.value"));
+            }
+        }
     }
 
     let mut prefix_terms = Vec::new();
@@ -34966,15 +35113,9 @@ fn reusable_ui_runtime_list_index_c(
         });
     }
     let length = prefix_terms.join(" + ");
-    let mut selection = ui_expr_c_for_view_identity(
-        &candidates.last().expect("non-empty candidates").1,
-        view,
-        signatures,
-        view_identity,
-    )?;
+    let mut selection = value_codes.last().expect("non-empty candidates").clone();
     for position in (0..candidates.len() - 1).rev() {
-        let value =
-            ui_expr_c_for_view_identity(&candidates[position].1, view, signatures, view_identity)?;
+        let value = &value_codes[position];
         let guard = match &condition_names[position] {
             Some(condition_name) => format!(
                 "(({condition_name}) && {index_name} == ({}))",
