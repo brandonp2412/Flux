@@ -83790,6 +83790,99 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_effectful_copy_dynamic_single_control_aggregate_slices_on_all_native_backends()
+ {
+    let source = r#"
+struct Flags {
+    enabled: bool
+    marker: i64
+}
+
+type FlagRecord = (enabled: bool, marker: i64)
+
+fn mark(value: i64) -> i64 {
+    print("mark")
+    return value
+}
+
+fn pickIndex() -> i64 {
+    print("pickIndex")
+    return 0
+}
+
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr
+    Badge structBadge at 1,1
+        visible: ([if windowIsLandscape: Flags { enabled: true, marker: mark(1) } else: Flags { enabled: false, marker: mark(2) }][0:1]).first.enabled
+    Badge recordBadge at 2,1
+        visible: ([if windowIsLandscape: (enabled: true, marker: mark(3)) else: (enabled: false, marker: mark(4))][0:1][pickIndex()]).enabled
+}
+
+app App
+"#;
+
+    check_source(source)
+        .expect("effectful dynamic single-control aggregate slice fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__fn_mark(").count() >= 4,
+            "slice lowering should retain both lazy aggregate branch producers"
+        );
+        assert!(
+            generated.contains("flux__ui_slice_property_item_"),
+            "slice property lowering should materialize the selected aggregate once"
+        );
+        assert!(
+            generated.contains("flux__ui_slice_index_item_"),
+            "slice index lowering should materialize the selected aggregate once"
+        );
+        assert!(
+            generated.contains("flux__fn_pickIndex()"),
+            "slice indexing should retain the dynamic index producer"
+        );
+        assert!(
+            generated.contains("flux__ui_slice_index_"),
+            "slice indexing should retain checked index normalization"
+        );
+        assert!(
+            generated.matches("flux__ui_field_base_").count() >= 2,
+            "slice-selected Copy aggregates should be evaluated once before field projection"
+        );
+        assert!(generated.contains(".flux__field_enabled"));
+    };
+
+    let linux = compile_to_c(source)
+        .expect("effectful dynamic single-control aggregate slices should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful dynamic single-control aggregate slice fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful dynamic single-control aggregate slices should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn lowers_composed_view_effectful_copy_aggregate_index_on_all_native_backends() {
     let source = r#"
 struct Flags {

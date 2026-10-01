@@ -34805,6 +34805,73 @@ fn static_ui_slice_bound(len: i64, value: Option<i64>, end: bool, step: i64) -> 
     resolved
 }
 
+fn static_ui_slice_indices(
+    len: usize,
+    start: &Option<Box<Expr>>,
+    end: &Option<Box<Expr>>,
+    step: &Option<Box<Expr>>,
+    signatures: &Signatures,
+) -> Result<Option<Vec<usize>>, Diagnostic> {
+    let static_bound = |bound: &Option<Box<Expr>>| -> Result<Option<Option<i64>>, Diagnostic> {
+        let Some(bound) = bound else {
+            return Ok(Some(None));
+        };
+        Ok(match fold_ui_primitive_expr(bound, signatures)? {
+            Some(ConstantValue::I64(value)) => Some(Some(value)),
+            _ => None,
+        })
+    };
+    let Some(start) = static_bound(start)? else {
+        return Ok(None);
+    };
+    let Some(end) = static_bound(end)? else {
+        return Ok(None);
+    };
+    let step = if let Some(step) = step {
+        let Some(ConstantValue::I64(step)) = fold_ui_primitive_expr(step, signatures)? else {
+            return Ok(None);
+        };
+        step
+    } else {
+        1
+    };
+    if step == 0 {
+        return Ok(None);
+    }
+
+    let Ok(len) = i64::try_from(len) else {
+        return Ok(None);
+    };
+    let first = static_ui_slice_bound(len, start, false, step);
+    let last = static_ui_slice_bound(len, end, true, step);
+    let mut selected = Vec::new();
+    let mut index = first;
+    if step > 0 {
+        while index < last {
+            let Ok(position) = usize::try_from(index) else {
+                return Ok(None);
+            };
+            selected.push(position);
+            let Some(next) = index.checked_add(step) else {
+                break;
+            };
+            index = next;
+        }
+    } else {
+        while index > last {
+            let Ok(position) = usize::try_from(index) else {
+                return Ok(None);
+            };
+            selected.push(position);
+            let Some(next) = index.checked_add(step) else {
+                break;
+            };
+            index = next;
+        }
+    }
+    Ok(Some(selected))
+}
+
 fn reusable_ui_runtime_slice_args_c(
     start: Option<&Expr>,
     end: Option<&Expr>,
@@ -35769,30 +35836,23 @@ fn effectful_copy_ui_list_index_c(
         return Ok(None);
     }
 
-    if let Some(selected) = dynamic_single_ui_list_control_value(expr, signatures)?
-        && let Some(element_ty) = ui_expr_known_type(&selected, view, signatures)
+    if let Some((element_ty, value)) =
+        dynamic_single_copy_ui_list_control_c(expr, view, signatures, view_identity)?
     {
-        let element_ty = signatures.canonical_type(&element_ty);
-        let aggregate_element = is_copy_ui_aggregate_type(&element_ty, signatures);
-        if aggregate_element
-            && let Some(value) =
-                copy_ui_aggregate_expr_c(&selected, &element_ty, view, signatures, view_identity)?
-        {
-            let element_name = format!(
-                "flux__ui_list_item_{}_{}_0",
-                expr.span.line, expr.span.column
-            );
-            let index_name = format!(
-                "flux__ui_list_index_{}_{}",
-                expr.span.line, expr.span.column
-            );
-            let index_code = ui_expr_c_for_view_identity(index, view, signatures, view_identity)?;
-            return Ok(Some(format!(
-                r#"__extension__ ({{ {} {element_name} = ({value}); int64_t {index_name} = ({index_code}); if ({index_name} < INT64_C(0)) {index_name} += INT64_C(1); if ({index_name} != INT64_C(0)) {{ fputs("Flux runtime error: list index out of range
+        let element_name = format!(
+            "flux__ui_list_item_{}_{}_0",
+            expr.span.line, expr.span.column
+        );
+        let index_name = format!(
+            "flux__ui_list_index_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let index_code = ui_expr_c_for_view_identity(index, view, signatures, view_identity)?;
+        return Ok(Some(format!(
+            r#"__extension__ ({{ {} {element_name} = ({value}); int64_t {index_name} = ({index_code}); if ({index_name} < INT64_C(0)) {index_name} += INT64_C(1); if ({index_name} != INT64_C(0)) {{ fputs("Flux runtime error: list index out of range
 ", stderr); abort(); }} {element_name}; }})"#,
-                c_type(&element_ty, signatures)
-            )));
-        }
+            c_type(&element_ty, signatures)
+        )));
     }
 
     let Some(layout) = statically_selected_ui_list_layout(expr, signatures)? else {
@@ -35806,14 +35866,7 @@ fn effectful_copy_ui_list_index_c(
     };
     let element_ty = signatures.canonical_type(&element_ty);
     let scalar_element = matches!(&element_ty, Type::Bool | Type::I64 | Type::Str);
-    let aggregate_element = matches!(&element_ty, Type::Record(_))
-        && signatures.is_copy_type(&element_ty)
-        || matches!(
-            &element_ty,
-            Type::Named(name)
-                if signatures.struct_type(name).is_some()
-                    && signatures.is_copy_type(&element_ty)
-        );
+    let aggregate_element = is_copy_ui_aggregate_type(&element_ty, signatures);
     if (!scalar_element && !aggregate_element)
         || !layout.evaluation_items.iter().all(|item| {
             ui_expr_known_type(item, view, signatures)
@@ -35912,6 +35965,30 @@ fn dynamic_single_ui_list_control_value(
     }))
 }
 
+fn dynamic_single_copy_ui_list_control_c(
+    expr: &Expr,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+    view_identity: Option<usize>,
+) -> Result<Option<(Type, String)>, Diagnostic> {
+    let Some(selected) = dynamic_single_ui_list_control_value(expr, signatures)? else {
+        return Ok(None);
+    };
+    let Some(element_ty) = ui_expr_known_type(&selected, view, signatures) else {
+        return Ok(None);
+    };
+    let element_ty = signatures.canonical_type(&element_ty);
+    if !is_copy_ui_aggregate_type(&element_ty, signatures) {
+        return Ok(None);
+    }
+    let Some(value) =
+        copy_ui_aggregate_expr_c(&selected, &element_ty, view, signatures, view_identity)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some((element_ty, value)))
+}
+
 fn effectful_copy_ui_list_property_c(
     expr: &Expr,
     name: &str,
@@ -35925,17 +36002,10 @@ fn effectful_copy_ui_list_property_c(
 
     let list_member = crate::builtin_names::list_member_impl(name);
     if matches!(list_member, "first" | "last" | "single")
-        && let Some(selected) = dynamic_single_ui_list_control_value(expr, signatures)?
-        && let Some(element_ty) = ui_expr_known_type(&selected, view, signatures)
+        && let Some((_, value)) =
+            dynamic_single_copy_ui_list_control_c(expr, view, signatures, view_identity)?
     {
-        let element_ty = signatures.canonical_type(&element_ty);
-        let aggregate_element = is_copy_ui_aggregate_type(&element_ty, signatures);
-        if aggregate_element
-            && let Some(value) =
-                copy_ui_aggregate_expr_c(&selected, &element_ty, view, signatures, view_identity)?
-        {
-            return Ok(Some(value));
-        }
+        return Ok(Some(value));
     }
 
     let Some(layout) = statically_selected_ui_list_layout(expr, signatures)? else {
@@ -35957,14 +36027,7 @@ fn effectful_copy_ui_list_property_c(
     };
     let element_ty = signatures.canonical_type(&element_ty);
     let scalar_element = matches!(&element_ty, Type::Bool | Type::I64 | Type::Str);
-    let aggregate_element = matches!(&element_ty, Type::Record(_))
-        && signatures.is_copy_type(&element_ty)
-        || matches!(
-            &element_ty,
-            Type::Named(name)
-                if signatures.struct_type(name).is_some()
-                    && signatures.is_copy_type(&element_ty)
-        );
+    let aggregate_element = is_copy_ui_aggregate_type(&element_ty, signatures);
     if (!scalar_element && !aggregate_element)
         || !layout.evaluation_items.iter().all(|item| {
             ui_expr_known_type(item, view, signatures)
@@ -36073,6 +36136,47 @@ fn effectful_copy_ui_static_slice_property_c(
     else {
         return Ok(None);
     };
+
+    let list_member = crate::builtin_names::list_member_impl(name);
+    if !matches!(
+        list_member,
+        "length" | "isEmpty" | "isNotEmpty" | "first" | "last" | "single"
+    ) {
+        return Ok(None);
+    }
+
+    if let Some((element_ty, value)) =
+        dynamic_single_copy_ui_list_control_c(base, view, signatures, view_identity)?
+    {
+        let Some(selected_indices) = static_ui_slice_indices(1, start, end, step, signatures)?
+        else {
+            return Ok(None);
+        };
+        let element_name = format!(
+            "flux__ui_slice_property_item_{}_{}_0",
+            expr.span.line, expr.span.column
+        );
+        let fallback = element_name.clone();
+        let selected = match list_member {
+            "length" => format!("INT64_C({})", selected_indices.len()),
+            "isEmpty" => selected_indices.is_empty().to_string(),
+            "isNotEmpty" => (!selected_indices.is_empty()).to_string(),
+            "first" | "last" if !selected_indices.is_empty() => element_name.clone(),
+            "first" | "last" => format!(
+                r#"fputs("Flux runtime error: list index out of range\n", stderr); abort(); {fallback}"#
+            ),
+            "single" if selected_indices.len() == 1 => element_name.clone(),
+            "single" => format!(
+                r#"fputs("Flux runtime error: list.single requires exactly one element\n", stderr); abort(); {fallback}"#
+            ),
+            _ => unreachable!(),
+        };
+        return Ok(Some(format!(
+            "__extension__ ({{ {} {element_name} = ({value}); {selected}; }})",
+            c_type(&element_ty, signatures)
+        )));
+    }
+
     let Some(items) = statically_selected_ui_list_items(base, signatures)? else {
         return Ok(None);
     };
@@ -36091,14 +36195,7 @@ fn effectful_copy_ui_static_slice_property_c(
     };
     let element_ty = signatures.canonical_type(&element_ty);
     let scalar_element = matches!(&element_ty, Type::Bool | Type::I64 | Type::Str);
-    let aggregate_element = matches!(&element_ty, Type::Record(_))
-        && signatures.is_copy_type(&element_ty)
-        || matches!(
-            &element_ty,
-            Type::Named(name)
-                if signatures.struct_type(name).is_some()
-                    && signatures.is_copy_type(&element_ty)
-        );
+    let aggregate_element = is_copy_ui_aggregate_type(&element_ty, signatures);
     if (!scalar_element && !aggregate_element)
         || !items.iter().all(|item| {
             ui_expr_known_type(item, view, signatures)
@@ -36108,71 +36205,11 @@ fn effectful_copy_ui_static_slice_property_c(
         return Ok(None);
     }
 
-    let static_bound = |bound: &Option<Box<Expr>>| -> Result<Option<Option<i64>>, Diagnostic> {
-        let Some(bound) = bound else {
-            return Ok(Some(None));
-        };
-        Ok(match fold_ui_primitive_expr(bound, signatures)? {
-            Some(ConstantValue::I64(value)) => Some(Some(value)),
-            _ => None,
-        })
-    };
-    let Some(start) = static_bound(start)? else {
+    let Some(selected_indices) =
+        static_ui_slice_indices(items.len(), start, end, step, signatures)?
+    else {
         return Ok(None);
     };
-    let Some(end) = static_bound(end)? else {
-        return Ok(None);
-    };
-    let step = if let Some(step) = step {
-        let Some(ConstantValue::I64(step)) = fold_ui_primitive_expr(step, signatures)? else {
-            return Ok(None);
-        };
-        step
-    } else {
-        1
-    };
-    if step == 0 {
-        return Ok(None);
-    }
-
-    let Ok(len) = i64::try_from(items.len()) else {
-        return Ok(None);
-    };
-    let first = static_ui_slice_bound(len, start, false, step);
-    let last = static_ui_slice_bound(len, end, true, step);
-    let mut selected_indices = Vec::new();
-    let mut index = first;
-    if step > 0 {
-        while index < last {
-            let Ok(position) = usize::try_from(index) else {
-                return Ok(None);
-            };
-            selected_indices.push(position);
-            let Some(next) = index.checked_add(step) else {
-                break;
-            };
-            index = next;
-        }
-    } else {
-        while index > last {
-            let Ok(position) = usize::try_from(index) else {
-                return Ok(None);
-            };
-            selected_indices.push(position);
-            let Some(next) = index.checked_add(step) else {
-                break;
-            };
-            index = next;
-        }
-    }
-
-    let list_member = crate::builtin_names::list_member_impl(name);
-    if !matches!(
-        list_member,
-        "length" | "isEmpty" | "isNotEmpty" | "first" | "last" | "single"
-    ) {
-        return Ok(None);
-    }
 
     let element_c = c_type(&element_ty, signatures);
     let mut declarations = String::new();
@@ -36262,6 +36299,32 @@ fn effectful_copy_ui_static_slice_index_c(
     else {
         return Ok(None);
     };
+
+    if let Some((element_ty, value)) =
+        dynamic_single_copy_ui_list_control_c(base, view, signatures, view_identity)?
+    {
+        let Some(selected_indices) = static_ui_slice_indices(1, start, end, step, signatures)?
+        else {
+            return Ok(None);
+        };
+        let element_name = format!(
+            "flux__ui_slice_index_item_{}_{}_0",
+            expr.span.line, expr.span.column
+        );
+        let index_code = ui_expr_c_for_view_identity(index_expr, view, signatures, view_identity)?;
+        let index_name = format!(
+            "flux__ui_slice_index_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let Ok(slice_len) = i64::try_from(selected_indices.len()) else {
+            return Ok(None);
+        };
+        return Ok(Some(format!(
+            r#"__extension__ ({{ {} {element_name} = ({value}); int64_t {index_name} = ({index_code}); if ({index_name} < INT64_C(0)) {index_name} += INT64_C({slice_len}); if ({index_name} < INT64_C(0) || {index_name} >= INT64_C({slice_len})) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {element_name}; }})"#,
+            c_type(&element_ty, signatures)
+        )));
+    }
+
     let Some(items) = statically_selected_ui_list_items(base, signatures)? else {
         return Ok(None);
     };
@@ -36280,14 +36343,7 @@ fn effectful_copy_ui_static_slice_index_c(
     };
     let element_ty = signatures.canonical_type(&element_ty);
     let scalar_element = matches!(&element_ty, Type::Bool | Type::I64 | Type::Str);
-    let aggregate_element = matches!(&element_ty, Type::Record(_))
-        && signatures.is_copy_type(&element_ty)
-        || matches!(
-            &element_ty,
-            Type::Named(name)
-                if signatures.struct_type(name).is_some()
-                    && signatures.is_copy_type(&element_ty)
-        );
+    let aggregate_element = is_copy_ui_aggregate_type(&element_ty, signatures);
     if (!scalar_element && !aggregate_element)
         || !items.iter().all(|item| {
             ui_expr_known_type(item, view, signatures)
@@ -36297,63 +36353,11 @@ fn effectful_copy_ui_static_slice_index_c(
         return Ok(None);
     }
 
-    let static_bound = |bound: &Option<Box<Expr>>| -> Result<Option<Option<i64>>, Diagnostic> {
-        let Some(bound) = bound else {
-            return Ok(Some(None));
-        };
-        Ok(match fold_ui_primitive_expr(bound, signatures)? {
-            Some(ConstantValue::I64(value)) => Some(Some(value)),
-            _ => None,
-        })
-    };
-    let Some(start) = static_bound(start)? else {
+    let Some(selected_indices) =
+        static_ui_slice_indices(items.len(), start, end, step, signatures)?
+    else {
         return Ok(None);
     };
-    let Some(end) = static_bound(end)? else {
-        return Ok(None);
-    };
-    let step = if let Some(step) = step {
-        let Some(ConstantValue::I64(step)) = fold_ui_primitive_expr(step, signatures)? else {
-            return Ok(None);
-        };
-        step
-    } else {
-        1
-    };
-    if step == 0 {
-        return Ok(None);
-    }
-
-    let Ok(base_len) = i64::try_from(items.len()) else {
-        return Ok(None);
-    };
-    let first = static_ui_slice_bound(base_len, start, false, step);
-    let last = static_ui_slice_bound(base_len, end, true, step);
-    let mut selected_indices = Vec::new();
-    let mut slice_index = first;
-    if step > 0 {
-        while slice_index < last {
-            let Ok(position) = usize::try_from(slice_index) else {
-                return Ok(None);
-            };
-            selected_indices.push(position);
-            let Some(next) = slice_index.checked_add(step) else {
-                break;
-            };
-            slice_index = next;
-        }
-    } else {
-        while slice_index > last {
-            let Ok(position) = usize::try_from(slice_index) else {
-                return Ok(None);
-            };
-            selected_indices.push(position);
-            let Some(next) = slice_index.checked_add(step) else {
-                break;
-            };
-            slice_index = next;
-        }
-    }
 
     let element_c = c_type(&element_ty, signatures);
     let mut declarations = String::new();
