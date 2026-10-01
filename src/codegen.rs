@@ -12693,6 +12693,14 @@ fn transparent_native_component_argument_is_reusable(expr: &Expr) -> bool {
         ExprKind::List(items) => items
             .iter()
             .all(transparent_native_component_argument_is_reusable),
+        ExprKind::RecordLiteral { fields } => fields
+            .iter()
+            .all(|field| transparent_native_component_argument_is_reusable(&field.value)),
+        ExprKind::StructLiteral {
+            base: None, fields, ..
+        } => fields
+            .iter()
+            .all(|field| transparent_native_component_argument_is_reusable(&field.value)),
         _ => false,
     }
 }

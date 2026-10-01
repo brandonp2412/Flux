@@ -82022,6 +82022,102 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_reusable_record_and_struct_parameters_on_all_native_backends() {
+    let source = r#"
+struct Flags {
+    enabled: bool
+}
+
+view RecordBadge(flags: (enabled: bool)) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Record"
+        visible: flags.enabled
+}
+
+view StructBadge(flags: Flags) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Struct"
+        visible: flags.enabled
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr
+    RecordBadge recordBadge at 1,1
+        flags: (enabled: true)
+    StructBadge structBadge at 2,1
+        flags: Flags { enabled: true }
+}
+
+app App
+"#;
+
+    check_source(source).expect("composed-view aggregate parameter fixture should typecheck");
+    let linux = compile_to_c(source)
+        .expect("reusable record and struct component parameters should lower through Linux");
+    assert!(linux.contains("recordBadge__title"));
+    assert!(linux.contains("structBadge__title"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("composed-view aggregate parameter fixture should analyze for native targets");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("reusable record and struct component parameters should lower through Android");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("reusable record and struct component parameters should lower through Windows");
+}
+
+#[test]
+fn composed_view_reusable_record_parameter_rejects_effectful_fields() {
+    let source = r#"
+fn probe() -> bool {
+    print("probe")
+    return true
+}
+
+view Badge(flags: (enabled: bool)) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: flags.enabled
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        flags: (enabled: probe())
+}
+
+app App
+"#;
+
+    check_source(source).expect("effectful record component argument fixture should typecheck");
+    let error = compile_to_c(source).expect_err(
+        "effectful record component argument must keep single-evaluation storage semantics",
+    );
+    assert!(
+        error
+            .message
+            .contains("needs scalar per-instance storage for this observable argument")
+    );
+}
+
+#[test]
 fn composed_view_constant_projection_does_not_drop_effectful_aggregate_fields() {
     let source = r#"
 fn probe() -> bool {
