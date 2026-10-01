@@ -12690,6 +12690,9 @@ fn transparent_native_component_argument_is_reusable(expr: &Expr) -> bool {
                 && transparent_native_component_argument_is_reusable(then_expr)
                 && transparent_native_component_argument_is_reusable(else_expr)
         }
+        ExprKind::List(items) => items
+            .iter()
+            .all(transparent_native_component_argument_is_reusable),
         _ => false,
     }
 }
