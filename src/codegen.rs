@@ -12769,6 +12769,77 @@ fn substitute_transparent_native_component_parameters(
                 backend,
             )?;
         }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } => {
+            if parameter_names.contains(name.as_str())
+                && let Some(binding) = bindings.get(name)
+            {
+                let ExprKind::Var(replacement) = &binding.kind else {
+                    return Err(diag(
+                        expr.span,
+                        &format!(
+                            "{backend} transparent composed-view callable parameter '{name}' requires a direct function binding"
+                        ),
+                    )
+                    .with_note(
+                        "call targets remain identifier-shaped during native composition; pass a named function binding rather than a computed callable",
+                    ));
+                };
+                *name = replacement.clone();
+            }
+            for argument in args {
+                substitute_transparent_native_component_parameters(
+                    argument,
+                    bindings,
+                    parameter_names,
+                    backend,
+                )?;
+            }
+            for argument in named_args {
+                substitute_transparent_native_component_parameters(
+                    &mut argument.value,
+                    bindings,
+                    parameter_names,
+                    backend,
+                )?;
+            }
+        }
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                let InterpolatedStringPart::Binding { name, .. } = part else {
+                    continue;
+                };
+                let Some(binding) = bindings.get(name) else {
+                    continue;
+                };
+                match &binding.kind {
+                    ExprKind::Var(replacement) => *name = replacement.clone(),
+                    ExprKind::Str(value) => {
+                        *part = InterpolatedStringPart::Text(value.clone());
+                    }
+                    ExprKind::Int(value) => {
+                        *part = InterpolatedStringPart::Text(value.to_string());
+                    }
+                    ExprKind::Bool(value) => {
+                        *part = InterpolatedStringPart::Text(value.to_string());
+                    }
+                    _ => {
+                        return Err(diag(
+                            expr.span,
+                            &format!(
+                                "{backend} transparent composed-view interpolation binding '{name}' requires a direct scalar binding"
+                            ),
+                        )
+                        .with_note(
+                            "computed interpolation arguments still require an explicit single-evaluation binding before flattening",
+                        ));
+                    }
+                }
+            }
+        }
         _ => {
             let mut reads = HashSet::new();
             typecheck::collect_expr_reads(expr, &mut reads);
@@ -12783,7 +12854,7 @@ fn substitute_transparent_native_component_parameters(
                     ),
                 )
                 .with_note(
-                    "native composition can currently substitute parameters through reusable pure scalar expressions; calls, awaits, aggregates, projections, and interpolation bindings need a component binding environment",
+                    "native composition can currently substitute parameters through reusable pure scalar expressions, ordinary scalar calls, and direct interpolation bindings; awaits, aggregates, projections, and other shapes still need an explicit component binding environment",
                 ));
             }
         }
@@ -12802,6 +12873,8 @@ fn flatten_transparent_native_view_element(
     parent_gap: u32,
     lowered_states: &mut Vec<crate::ast::ViewState>,
     used_state_names: &mut HashSet<String>,
+    lowered_derived: &mut Vec<crate::ast::ViewDerived>,
+    used_derived_names: &mut HashSet<String>,
 ) -> Result<Vec<crate::ast::ViewElement>, Diagnostic> {
     if typecheck::BUILTIN_VIEW_ELEMENT_KINDS.contains(&element.kind.as_str()) {
         let mut lowered = element.clone();
@@ -12946,25 +13019,35 @@ fn flatten_transparent_native_view_element(
         .collect::<HashSet<_>>();
     for derived in &target.derived {
         let mut value = derived.value.clone();
-        if !transparent_native_component_argument_is_reusable(&value) {
-            return Err(diag(
-                derived.value.span,
-                &format!(
-                    "{backend} transparent composed-view derived value '{}' must be a reusable pure scalar expression",
-                    derived.name
-                ),
-            )
-            .with_note(
-                "derived component values are inlined during transparent native composition; calls, awaits, aggregates, projections, and other observable expressions require per-instance derived storage",
-            ));
-        }
         substitute_transparent_native_component_parameters(
             &mut value,
             &bindings,
             &binding_names,
             backend,
         )?;
-        bindings.insert(derived.name.clone(), value);
+        if transparent_native_component_argument_is_reusable(&derived.value) {
+            bindings.insert(derived.name.clone(), value);
+        } else {
+            let base_name = format!("__component_{instance_name}__{}", derived.name);
+            let mut lowered_name = base_name.clone();
+            let mut suffix = 2usize;
+            while !used_derived_names.insert(lowered_name.clone()) {
+                lowered_name = format!("{base_name}_{suffix}");
+                suffix += 1;
+            }
+            let mut lowered_value = derived.clone();
+            lowered_value.name = lowered_name.clone();
+            lowered_value.value = value;
+            lowered_derived.push(lowered_value);
+            bindings.insert(
+                derived.name.clone(),
+                Expr {
+                    line: derived.line,
+                    span: derived.name_span,
+                    kind: ExprKind::Var(lowered_name),
+                },
+            );
+        }
         binding_names.insert(derived.name.as_str());
     }
     stack.push(target.name.clone());
@@ -12996,6 +13079,8 @@ fn flatten_transparent_native_view_element(
             target.grid.gap.unwrap_or(0),
             lowered_states,
             used_state_names,
+            lowered_derived,
+            used_derived_names,
         )?;
         for mut lowered in descendants {
             if single_cell {
@@ -13027,6 +13112,11 @@ fn flatten_transparent_native_root_view(
         .iter()
         .map(|state| state.name.clone())
         .collect::<HashSet<_>>();
+    let mut used_derived_names = lowered
+        .derived
+        .iter()
+        .map(|derived| derived.name.clone())
+        .collect::<HashSet<_>>();
     let mut elements = Vec::with_capacity(view.elements.len());
     for element in &view.elements {
         let mut stack = vec![view.name.clone()];
@@ -13041,6 +13131,8 @@ fn flatten_transparent_native_root_view(
             view.grid.gap.unwrap_or(0),
             &mut lowered.states,
             &mut used_state_names,
+            &mut lowered.derived,
+            &mut used_derived_names,
         )?);
     }
     lowered.elements = elements;
@@ -34495,6 +34587,79 @@ fn ui_expr_c_for_view_identity(
                 BinOp::Ne if string_comparison => Ok(format!("(strcmp({left}, {right}) != 0)")),
                 _ => Ok(format!("({left} {} {right})", c_operator(*op))),
             }
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } => {
+            let signature = signatures.get(name).ok_or_else(|| {
+                diag(
+                    expr.span,
+                    &format!("bootstrap dynamic UI expression cannot resolve function '{name}'"),
+                )
+            })?;
+            if signature.asynchronous {
+                return Err(diag(
+                    expr.span,
+                    "bootstrap dynamic UI expressions cannot call async functions directly",
+                ));
+            }
+            let [return_ty] = signature.returns.as_slice() else {
+                return Err(diag(
+                    expr.span,
+                    "bootstrap dynamic UI expressions require a single-value function result",
+                ));
+            };
+            if !matches!(
+                signatures.canonical_type(return_ty),
+                Type::Bool | Type::I64 | Type::Str
+            ) {
+                return Err(diag(
+                    expr.span,
+                    "bootstrap dynamic UI function calls currently require bool, i64, or str results",
+                ));
+            }
+
+            let mut rendered = Vec::with_capacity(signature.param_details.len());
+            let mut positional_index = 0usize;
+            for param in &signature.param_details {
+                if !param.named_only && positional_index < args.len() {
+                    rendered.push(ui_expr_c_for_view_identity(
+                        &args[positional_index],
+                        view,
+                        signatures,
+                        view_identity,
+                    )?);
+                    positional_index += 1;
+                    continue;
+                }
+                if let Some(named) = named_args.iter().find(|arg| arg.name == param.name) {
+                    rendered.push(ui_expr_c_for_view_identity(
+                        &named.value,
+                        view,
+                        signatures,
+                        view_identity,
+                    )?);
+                    continue;
+                }
+                if let Some(default) = &param.default {
+                    rendered.push(constant_c_value(default));
+                    continue;
+                }
+                return Err(diag(
+                    param.span,
+                    &format!(
+                        "missing argument '{}' reached dynamic UI code generation after type checking",
+                        param.name
+                    ),
+                ));
+            }
+            let callee = signature
+                .foreign_symbol
+                .clone()
+                .unwrap_or_else(|| function_c_name(name));
+            Ok(format!("{callee}({})", rendered.join(", ")))
         }
         ExprKind::Conditional {
             then_expr,

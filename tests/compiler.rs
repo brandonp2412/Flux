@@ -81226,7 +81226,7 @@ app App
 }
 
 #[test]
-fn native_composed_view_lowering_rejects_observable_derived_values() {
+fn lowers_observable_composed_view_derived_values_once_per_instance() {
     let source = r#"
 fn invert(value: bool) -> bool {
     return value == false
@@ -81242,25 +81242,36 @@ view Badge(enabled: bool) {
 }
 
 view App {
-    grid columns: 1fr
+    grid columns: 1fr 1fr
     grid rows: 1fr
-    Badge badge at 1,1
+    Badge left at 1,1
         enabled: true
+    Badge right at 1,2
+        enabled: false
 }
 
 app App
 "#;
 
     check_source(source).expect("observable derived-value fixture should typecheck");
-    let error = compile_to_c(source)
-        .expect_err("observable component-derived values need per-instance storage");
-    assert!(
-        error
-            .message
-            .contains("derived value 'visible' must be a reusable pure scalar expression"),
-        "{}",
-        error.message
-    );
+    let linux = compile_to_c(source)
+        .expect("observable component-derived values should lower through Linux");
+    assert!(linux.contains("flux__ui_derived___component_left__visible"));
+    assert!(linux.contains("flux__ui_derived___component_right__visible"));
+    assert!(linux.contains("left__title"));
+    assert!(linux.contains("right__title"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("observable component-derived values should analyze for Android");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("observable component-derived values should lower through Android");
+    assert!(android.contains("flux__ui_derived___component_left__visible"));
+    assert!(android.contains("flux__ui_derived___component_right__visible"));
 }
 
 #[test]
