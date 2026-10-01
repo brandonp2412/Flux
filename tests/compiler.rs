@@ -6319,6 +6319,238 @@ app Screen(title: "Flux Windows multi-window smoke")
     );
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_native_gui_runtime_smoke_dispatches_text_input_changes() {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn FindWindowW(class_name: *const u16, window_name: *const u16) -> *mut std::ffi::c_void;
+        fn FindWindowExW(
+            parent: *mut std::ffi::c_void,
+            child_after: *mut std::ffi::c_void,
+            class_name: *const u16,
+            window_name: *const u16,
+        ) -> *mut std::ffi::c_void;
+        fn SendMessageW(
+            window: *mut std::ffi::c_void,
+            message: u32,
+            wparam: usize,
+            lparam: isize,
+        ) -> isize;
+        fn PostMessageW(
+            window: *mut std::ffi::c_void,
+            message: u32,
+            wparam: usize,
+            lparam: isize,
+        ) -> i32;
+    }
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn terminate(child: &mut std::process::Child) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    const WM_SETTEXT: u32 = 0x000C;
+    const BM_CLICK: u32 = 0x00F5;
+    const WINDOW_TITLE: &str = "Flux Windows text input smoke";
+    const CHANGED_TEXT: &str = "Typed through Win32";
+    const EXIT_TEXT: &str = "Exit after input";
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-windows-text-input-runtime-smoke-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("Windows text-input smoke directory should be writable");
+    let source = root.join("main.flux");
+    fs::write(
+        &source,
+        r#"
+fn exitApp() -> void {
+    process.exit(41)
+}
+
+view Screen {
+    state query: str = ""
+    grid columns: 1fr
+    grid rows: auto auto auto
+    TextInput input at 1,1
+        text: query
+        placeholder: "Type here"
+        onChange: query, value => value
+    Text mirror at 2,1
+        text: query
+    Button exit at 3,1
+        text: "Exit after input"
+        onPress: exitApp
+}
+
+app Screen(title: "Flux Windows text input smoke")
+"#,
+    )
+    .expect("Windows text-input smoke source should be writable");
+
+    let binary = root.join("text-input-runtime-smoke.exe");
+    let build = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .args(["--mode", "debug"])
+        .output()
+        .expect("fluxc should launch for native Windows text-input smoke");
+    assert!(
+        build.status.success(),
+        "native Windows text-input smoke build failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let mut child = Command::new(&binary)
+        .spawn()
+        .expect("native Windows text-input smoke executable should launch");
+    let window_title = wide(WINDOW_TITLE);
+    let edit_class = wide("EDIT");
+    let static_class = wide("STATIC");
+    let button_class = wide("BUTTON");
+    let changed_text = wide(CHANGED_TEXT);
+    let exit_text = wide(EXIT_TEXT);
+    let find_deadline = Instant::now() + Duration::from_secs(15);
+
+    let window = loop {
+        if let Some(status) = child
+            .try_wait()
+            .expect("native Windows text-input smoke process status should be readable")
+        {
+            let _ = fs::remove_dir_all(&root);
+            panic!(
+                "native Windows text-input smoke exited before creating its window: {:?}",
+                status.code()
+            );
+        }
+        let found = unsafe { FindWindowW(std::ptr::null(), window_title.as_ptr()) };
+        if !found.is_null() {
+            break found;
+        }
+        if Instant::now() >= find_deadline {
+            terminate(&mut child);
+            let _ = fs::remove_dir_all(&root);
+            panic!("native Windows text-input smoke did not create its top-level HWND");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+
+    let edit = loop {
+        let found = unsafe {
+            FindWindowExW(
+                window,
+                std::ptr::null_mut(),
+                edit_class.as_ptr(),
+                std::ptr::null(),
+            )
+        };
+        if !found.is_null() {
+            break found;
+        }
+        if Instant::now() >= find_deadline {
+            terminate(&mut child);
+            let _ = fs::remove_dir_all(&root);
+            panic!("native Windows text-input smoke did not create its EDIT HWND");
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+
+    let set_result = unsafe { SendMessageW(edit, WM_SETTEXT, 0, changed_text.as_ptr() as isize) };
+    assert_ne!(
+        set_result, 0,
+        "native WM_SETTEXT should be accepted by the generated TextInput"
+    );
+
+    let mirror = loop {
+        let found = unsafe {
+            FindWindowExW(
+                window,
+                std::ptr::null_mut(),
+                static_class.as_ptr(),
+                changed_text.as_ptr(),
+            )
+        };
+        if !found.is_null() {
+            break found;
+        }
+        if let Some(status) = child
+            .try_wait()
+            .expect("native Windows text-input smoke process status should be readable")
+        {
+            let _ = fs::remove_dir_all(&root);
+            panic!(
+                "native Windows text-input smoke exited before state refresh: {:?}",
+                status.code()
+            );
+        }
+        if Instant::now() >= find_deadline {
+            terminate(&mut child);
+            let _ = fs::remove_dir_all(&root);
+            panic!(
+                "native EDIT change did not reach Flux state and refresh the bound Text control"
+            );
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+    assert!(
+        !mirror.is_null(),
+        "typed Flux onChange state transition should update a native Text HWND"
+    );
+
+    let exit_button = unsafe {
+        FindWindowExW(
+            window,
+            std::ptr::null_mut(),
+            button_class.as_ptr(),
+            exit_text.as_ptr(),
+        )
+    };
+    assert!(
+        !exit_button.is_null(),
+        "native Windows text-input smoke should keep its exit BUTTON addressable"
+    );
+    assert_ne!(
+        unsafe { PostMessageW(exit_button, BM_CLICK, 0, 0) },
+        0,
+        "native exit BUTTON click should post successfully after text input"
+    );
+
+    let exit_deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .expect("native Windows text-input smoke process status should be readable")
+        {
+            break status;
+        }
+        if Instant::now() >= exit_deadline {
+            terminate(&mut child);
+            let _ = fs::remove_dir_all(&root);
+            panic!("root callback did not terminate the text-input smoke");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    let _ = fs::remove_dir_all(&root);
+    assert_eq!(
+        status.code(),
+        Some(41),
+        "native TextInput state refresh must preserve later Button callback dispatch"
+    );
+}
+
 #[test]
 fn windows_backend_refreshes_dynamic_color_properties_in_place() {
     let source = r##"
@@ -71632,6 +71864,15 @@ app Screen
         parameterized_windows
             .contains("flux__ui_view_1_derived_hasId = (flux__ui_view_1_param_id > INT64_C(0));")
     );
+    assert!(parameterized_windows.contains(
+        "flux__win_set_refreshing(previous_refreshing); }\nstatic void flux__win_refresh_view_1(void)"
+    ));
+    assert!(parameterized_windows.contains(
+        "static void flux__win_refresh_view_1(void) { FluxWindowsWindowContext *context = flux__windows_active_context; if (context == NULL || context->view_identity != UINT32_C(1) || context->control_windows == NULL) return; bool previous_refreshing = flux__win_is_refreshing(); flux__win_set_refreshing(true);"
+    ));
+    assert!(parameterized_windows.contains(
+        "flux__win_set_refreshing(previous_refreshing); }\nstatic void flux__win_refresh(void)"
+    ));
     if header_root.join("windows.h").is_file()
         && Command::new("clang").arg("--version").output().is_ok()
     {

@@ -23998,6 +23998,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             ));
         }
     }
+    out.push_str("flux__win_set_refreshing(previous_refreshing); }\n");
     let mut secondary_refresh_dispatch = String::new();
     for (view_identity, secondary_view) in &secondary_window_views {
         let secondary_needs_layout_refresh = secondary_view.elements.iter().any(|element| {
@@ -24082,7 +24083,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 })
         });
         out.push_str(&format!(
-            "static void flux__win_refresh_view_{view_identity}(void) {{ FluxWindowsWindowContext *context = flux__windows_active_context; if (context == NULL || context->view_identity != UINT32_C({view_identity}) || context->control_windows == NULL) return;\n"
+            "static void flux__win_refresh_view_{view_identity}(void) {{ FluxWindowsWindowContext *context = flux__windows_active_context; if (context == NULL || context->view_identity != UINT32_C({view_identity}) || context->control_windows == NULL) return; bool previous_refreshing = flux__win_is_refreshing(); flux__win_set_refreshing(true);\n"
         ));
         for derived in &secondary_view.derived {
             let value = ui_expr_c_for_view_identity(
@@ -24909,12 +24910,12 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 "RECT flux__win_view_{view_identity}_refresh_client = {{0}}; if (context->hwnd != NULL && GetClientRect(context->hwnd, &flux__win_view_{view_identity}_refresh_client)) flux__win_layout_view_{view_identity}(context, flux__win_view_{view_identity}_refresh_client.right - flux__win_view_{view_identity}_refresh_client.left, flux__win_view_{view_identity}_refresh_client.bottom - flux__win_view_{view_identity}_refresh_client.top);\n"
             ));
         }
-        out.push_str("}\n");
+        out.push_str("flux__win_set_refreshing(previous_refreshing); }\n");
         secondary_refresh_dispatch.push_str(&format!(
             " case UINT32_C({view_identity}): flux__win_refresh_view_{view_identity}(); return;"
         ));
     }
-    out.push_str(&format!("flux__win_set_refreshing(previous_refreshing); }}\nstatic void flux__win_refresh(void) {{ if (flux__windows_active_context == NULL) return; switch (flux__windows_active_context->view_identity) {{ case UINT32_C({root_view_identity}): flux__win_refresh_root_view(); return;{secondary_refresh_dispatch} default: return; }} }}\n"));
+    out.push_str(&format!("static void flux__win_refresh(void) {{ if (flux__windows_active_context == NULL) return; switch (flux__windows_active_context->view_identity) {{ case UINT32_C({root_view_identity}): flux__win_refresh_root_view(); return;{secondary_refresh_dispatch} default: return; }} }}\n"));
     out.push_str("static bool flux__windows_app_foreground = false;\nstatic int flux__win_handle_root_view_command(WPARAM wparam, LPARAM lparam);\n");
     for (view_identity, _) in &secondary_window_views {
         out.push_str(&format!("static int flux__win_handle_view_{view_identity}_command(WPARAM wparam, LPARAM lparam);\n"));
