@@ -36047,6 +36047,146 @@ fn effectful_copy_ui_static_slice_index_c(
     )))
 }
 
+fn copy_ui_aggregate_literal_c(
+    value: &Expr,
+    ty: &Type,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+    view_identity: Option<usize>,
+) -> Result<Option<String>, Diagnostic> {
+    let ty = signatures.canonical_type(ty);
+    if !signatures.is_copy_type(&ty) {
+        return Ok(None);
+    }
+
+    match (&value.kind, &ty) {
+        (ExprKind::RecordLiteral { fields }, Type::Record(type_fields))
+            if fields.len() == type_fields.len() =>
+        {
+            let mut declarations = String::new();
+            let mut rendered = Vec::with_capacity(fields.len());
+            for (index, field) in fields.iter().enumerate() {
+                let expected = if let Some(name) = field.name.as_deref() {
+                    type_fields
+                        .iter()
+                        .find(|candidate| candidate.name.as_deref() == Some(name))
+                } else {
+                    type_fields.get(index)
+                };
+                let Some(expected) = expected else {
+                    return Ok(None);
+                };
+                let field_ty = signatures.canonical_type(&expected.ty);
+                let scalar_leaf = matches!(&field_ty, Type::Bool | Type::I64 | Type::Str)
+                    || matches!(
+                        &field_ty,
+                        Type::Optional(inner)
+                            if matches!(
+                                signatures.canonical_type(inner),
+                                Type::Bool | Type::I64 | Type::Str
+                            )
+                    );
+                let field_code = if scalar_leaf {
+                    ui_expr_c_for_view_identity(&field.value, view, signatures, view_identity)?
+                } else if matches!(&field_ty, Type::Record(_) | Type::Named(_)) {
+                    let Some(code) = copy_ui_aggregate_literal_c(
+                        &field.value,
+                        &field_ty,
+                        view,
+                        signatures,
+                        view_identity,
+                    )?
+                    else {
+                        return Ok(None);
+                    };
+                    code
+                } else {
+                    return Ok(None);
+                };
+                let value_name = format!(
+                    "flux__ui_aggregate_literal_field_{}_{}_{}",
+                    value.span.line, value.span.column, index
+                );
+                declarations.push_str(&format!(
+                    "{} {value_name} = ({field_code}); ",
+                    c_type(&field_ty, signatures)
+                ));
+                rendered.push(format!(
+                    ".{} = {value_name}",
+                    record_field_c_name(expected.name.as_deref(), index)
+                ));
+            }
+            Ok(Some(format!(
+                "__extension__ ({{ {declarations}({}){{ {} }}; }})",
+                c_type(&ty, signatures),
+                rendered.join(", ")
+            )))
+        }
+        (
+            ExprKind::StructLiteral {
+                name,
+                base: None,
+                fields,
+                ..
+            },
+            Type::Named(type_name),
+        ) if name == type_name => {
+            let Some(definition) = signatures.struct_type(type_name) else {
+                return Ok(None);
+            };
+            let mut declarations = String::new();
+            let mut rendered = Vec::with_capacity(fields.len());
+            for (index, field) in fields.iter().enumerate() {
+                let Some(expected) = definition.field(&field.name) else {
+                    return Ok(None);
+                };
+                let field_ty = signatures.canonical_type(&expected.ty);
+                let scalar_leaf = matches!(&field_ty, Type::Bool | Type::I64 | Type::Str)
+                    || matches!(
+                        &field_ty,
+                        Type::Optional(inner)
+                            if matches!(
+                                signatures.canonical_type(inner),
+                                Type::Bool | Type::I64 | Type::Str
+                            )
+                    );
+                let field_code = if scalar_leaf {
+                    ui_expr_c_for_view_identity(&field.value, view, signatures, view_identity)?
+                } else if matches!(&field_ty, Type::Record(_) | Type::Named(_)) {
+                    let Some(code) = copy_ui_aggregate_literal_c(
+                        &field.value,
+                        &field_ty,
+                        view,
+                        signatures,
+                        view_identity,
+                    )?
+                    else {
+                        return Ok(None);
+                    };
+                    code
+                } else {
+                    return Ok(None);
+                };
+                let value_name = format!(
+                    "flux__ui_aggregate_literal_field_{}_{}_{}",
+                    value.span.line, value.span.column, index
+                );
+                declarations.push_str(&format!(
+                    "{} {value_name} = ({field_code}); ",
+                    c_type(&field_ty, signatures)
+                ));
+                rendered.push(format!(".{} = {value_name}", field_c_name(&field.name)));
+            }
+            Ok(Some(format!(
+                "__extension__ ({{ {declarations}((struct {}){{ {} }}); }})",
+                struct_c_name(type_name),
+                rendered.join(", ")
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
 fn effectful_copy_ui_field_projection_c(
     base: &Expr,
     name: &str,
@@ -36092,6 +36232,7 @@ fn effectful_copy_ui_field_projection_c(
     if values
         .iter()
         .all(|value| transparent_native_component_argument_is_reusable(value))
+        && ui_scalar_expr_type(values[selected_index], view, signatures).is_some()
     {
         return Ok(None);
     }
@@ -36099,10 +36240,22 @@ fn effectful_copy_ui_field_projection_c(
     let mut declarations = String::new();
     let mut selected = None;
     for (position, value) in values.into_iter().enumerate() {
-        let Some(ty) = ui_scalar_expr_type(value, view, signatures) else {
+        let Some(ty) = ui_expr_known_type(value, view, signatures) else {
             return Ok(None);
         };
-        let value_code = ui_expr_c_for_view_identity(value, view, signatures, view_identity)?;
+        let ty = signatures.canonical_type(&ty);
+        let value_code = if ui_scalar_expr_type(value, view, signatures).is_some() {
+            ui_expr_c_for_view_identity(value, view, signatures, view_identity)?
+        } else if matches!(&ty, Type::Record(_) | Type::Named(_)) {
+            let Some(code) =
+                copy_ui_aggregate_literal_c(value, &ty, view, signatures, view_identity)?
+            else {
+                return Ok(None);
+            };
+            code
+        } else {
+            return Ok(None);
+        };
         let value_name = format!(
             "flux__ui_aggregate_field_{}_{}_{}",
             base.span.line, base.span.column, position
@@ -37179,7 +37332,8 @@ fn ui_expr_known_type(
                         ConstantValue::I64(_) => Type::I64,
                         ConstantValue::Str(_) => Type::Str,
                     })
-            })?,
+            })
+            .or_else(|| typecheck::view_environment_type(name))?,
         ExprKind::Call { name, .. } => {
             let signature = signatures.get(name)?;
             let [ty] = signature.returns.as_slice() else {
@@ -37187,6 +37341,16 @@ fn ui_expr_known_type(
             };
             ty.clone()
         }
+        ExprKind::RecordLiteral { fields } => {
+            let field_types = fields
+                .iter()
+                .map(|field| ui_expr_known_type(&field.value, view, signatures))
+                .collect::<Option<Vec<_>>>()?;
+            typecheck::record_literal_result_type(fields, &field_types, signatures).ok()?
+        }
+        ExprKind::StructLiteral {
+            name, base: None, ..
+        } => Type::Named(name.clone()),
         ExprKind::Conditional {
             then_expr,
             else_expr,
@@ -37838,6 +38002,11 @@ fn ui_expr_c_for_view_identity(
                     if supported
                         && matches!(&base_ty, Type::Named(_) | Type::Record(_))
                         && signatures.is_copy_type(&base_ty)
+                        && !matches!(
+                            &base.kind,
+                            ExprKind::RecordLiteral { .. }
+                                | ExprKind::StructLiteral { base: None, .. }
+                        )
                     {
                         let base_code =
                             ui_expr_c_for_view_identity(base, view, signatures, view_identity)?;

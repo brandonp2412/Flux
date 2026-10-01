@@ -83910,6 +83910,113 @@ app App
 }
 
 #[test]
+fn composed_view_nested_copy_aggregate_projection_preserves_effectful_order() {
+    let source = r#"
+fn recordLeaf() -> bool {
+    print("record leaf")
+    return true
+}
+
+fn recordMarker() -> bool {
+    print("record marker")
+    return false
+}
+
+fn structLeaf() -> bool {
+    print("struct leaf")
+    return true
+}
+
+fn structMarker() -> bool {
+    print("struct marker")
+    return false
+}
+
+struct InnerFlags {
+    visible: bool
+}
+
+struct OuterFlags {
+    inner: InnerFlags
+    marker: bool
+}
+
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr 1fr 1fr
+    Badge recordBadge at 1,1
+        visible: (inner: (visible: recordLeaf()), marker: recordMarker()).inner.visible
+    Badge structBadge at 2,1
+        visible: (OuterFlags { inner: InnerFlags { visible: structLeaf() }, marker: structMarker() }).inner.visible
+    Badge pureStructBadge at 3,1
+        visible: (OuterFlags { inner: InnerFlags { visible: windowIsLandscape }, marker: true }).inner.visible
+    Badge pureRecordBadge at 4,1
+        visible: (inner: (visible: windowIsLandscape), marker: true).inner.visible
+}
+
+app App
+"#;
+
+    check_source(source).expect("nested Copy aggregate projection fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.contains("flux__ui_aggregate_literal_field_"),
+            "nested Copy aggregate fields should be reconstructed from ordered scalar temporaries"
+        );
+        let record_leaf = generated
+            .find(" = (flux__fn_recordLeaf());")
+            .expect("nested record leaf should be evaluated");
+        let record_marker = generated
+            .find(" = (flux__fn_recordMarker());")
+            .expect("outer record sibling should be evaluated");
+        assert!(
+            record_leaf < record_marker,
+            "nested record and its following sibling must preserve source-order eager evaluation"
+        );
+
+        let struct_leaf = generated
+            .find(" = (flux__fn_structLeaf());")
+            .expect("nested struct leaf should be evaluated");
+        let struct_marker = generated
+            .find(" = (flux__fn_structMarker());")
+            .expect("outer struct sibling should be evaluated");
+        assert!(
+            struct_leaf < struct_marker,
+            "nested struct and its following sibling must preserve source-order eager evaluation"
+        );
+    };
+
+    let linux =
+        compile_to_c(source).expect("nested Copy aggregate projections should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("nested Copy aggregate projection fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("nested Copy aggregate projections should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn composed_view_effectful_list_slice_parameter_preserves_unselected_effects() {
     let source = r#"
 fn probe() -> bool {
