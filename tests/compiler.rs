@@ -84326,6 +84326,179 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_effectful_copy_dynamic_fixed_aggregate_runtime_slices_on_all_native_backends()
+ {
+    let source = r#"
+struct Flags {
+    enabled: bool
+    marker: i64
+}
+
+fn mark(value: i64) -> i64 {
+    print("mark")
+    return value
+}
+
+view Badge(firstVisible: bool, lastVisible: bool, singleVisible: bool, indexedVisible: bool, lengthMatches: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: firstVisible && lastVisible && singleVisible && indexedVisible && lengthMatches
+}
+
+view Wrapper(start: i64, end: i64, step: i64, index: i64, enabled: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        firstVisible: ([Flags { enabled: false, marker: mark(1) }, if enabled: Flags { enabled: true, marker: mark(2) } else: Flags { enabled: false, marker: mark(3) }][start:end:step]).first.enabled
+        lastVisible: ([Flags { enabled: false, marker: mark(4) }, if enabled: Flags { enabled: true, marker: mark(5) } else: Flags { enabled: false, marker: mark(6) }][start:end:step]).last.enabled
+        singleVisible: ([Flags { enabled: true, marker: mark(7) }, if enabled: Flags { enabled: false, marker: mark(8) } else: Flags { enabled: true, marker: mark(9) }][start:end:step]).single.enabled
+        indexedVisible: ([(enabled: false, marker: mark(10)), if enabled: (enabled: true, marker: mark(11)) else: (enabled: false, marker: mark(12))][start:end:step][index]).enabled
+        lengthMatches: ([Flags { enabled: false, marker: mark(13) }, if enabled: Flags { enabled: true, marker: mark(14) } else: Flags { enabled: false, marker: mark(15) }][start:end:step]).length >= 0
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        start: 0
+        end: windowWidth
+        step: windowHeight
+        index: 0
+        enabled: windowIsLandscape
+}
+
+app App
+"#;
+
+    check_source(source)
+        .expect("dynamic fixed Copy aggregate runtime slice fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__fn_mark(").count() >= 15,
+            "runtime aggregate slices must retain eager and selected branch field producers"
+        );
+        assert!(generated.contains("flux__ui_component_slice_base_length_aggregate_property_"));
+        assert!(generated.contains("flux__ui_component_slice_index_base_length_aggregate_index_"));
+        assert!(generated.contains("flux__ui_slice_property_base_index_"));
+        assert!(generated.contains("flux__ui_slice_index_base_"));
+        assert!(generated.contains("Flux runtime error: list slice step cannot be zero\\n"));
+        assert!(generated.contains("Flux runtime error: list index out of range\\n"));
+        assert!(
+            generated.contains("Flux runtime error: list.single requires exactly one element\\n")
+        );
+        assert!(generated.contains(".flux__field_enabled"));
+    };
+
+    let linux = compile_to_c(source)
+        .expect("dynamic fixed Copy aggregate runtime slices should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic fixed Copy aggregate runtime slice fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("dynamic fixed Copy aggregate runtime slices should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
+fn lowers_composed_view_effectful_copy_static_aggregate_runtime_slices_on_all_native_backends() {
+    let source = r#"
+struct Flags {
+    enabled: bool
+    marker: i64
+}
+
+fn mark(value: i64) -> i64 {
+    print("mark")
+    return value
+}
+
+view Badge(firstVisible: bool, lastVisible: bool, singleVisible: bool, indexedVisible: bool, lengthMatches: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: firstVisible && lastVisible && singleVisible && indexedVisible && lengthMatches
+}
+
+view Wrapper(start: i64, end: i64, step: i64, index: i64) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        firstVisible: ([...[Flags { enabled: false, marker: mark(1) }, Flags { enabled: true, marker: mark(2) }], Flags { enabled: true, marker: mark(3) }][start:end:step]).first.enabled
+        lastVisible: ([Flags { enabled: false, marker: mark(4) }, ...[Flags { enabled: true, marker: mark(5) }, Flags { enabled: true, marker: mark(6) }]][start:end:step]).last.enabled
+        singleVisible: ([Flags { enabled: true, marker: mark(7) }, Flags { enabled: false, marker: mark(8) }, Flags { enabled: true, marker: mark(9) }][start:end:step]).single.enabled
+        indexedVisible: ([(enabled: false, marker: mark(10)), ...[(enabled: true, marker: mark(11))], (enabled: true, marker: mark(12))][start:end:step][index]).enabled
+        lengthMatches: ([Flags { enabled: false, marker: mark(13) }, Flags { enabled: true, marker: mark(14) }, Flags { enabled: true, marker: mark(15) }][start:end:step]).length >= 0
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        start: 0
+        end: windowWidth
+        step: windowHeight
+        index: 0
+}
+
+app App
+"#;
+
+    check_source(source).expect("effectful Copy aggregate runtime slice fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__fn_mark(").count() >= 15,
+            "runtime slices must retain every eagerly constructed aggregate producer"
+        );
+        assert!(generated.contains("flux__ui_component_slice_base_length_effectful_property_"));
+        assert!(generated.contains("flux__ui_component_slice_index_base_length_effectful_index_"));
+        assert!(generated.contains("flux__ui_effectful_slice_property_base_index_"));
+        assert!(generated.contains("flux__ui_effectful_slice_index_base_"));
+        assert!(generated.contains("Flux runtime error: list slice step cannot be zero\\n"));
+        assert!(generated.contains("Flux runtime error: list index out of range\\n"));
+        assert!(
+            generated.contains("Flux runtime error: list.single requires exactly one element\\n")
+        );
+        assert!(generated.contains(".flux__field_enabled"));
+    };
+
+    let linux = compile_to_c(source)
+        .expect("effectful Copy aggregate runtime slices should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful Copy aggregate runtime slice fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful Copy aggregate runtime slices should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn lowers_composed_view_effectful_copy_aggregate_index_on_all_native_backends() {
     let source = r#"
 struct Flags {
