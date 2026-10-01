@@ -12840,6 +12840,16 @@ fn substitute_transparent_native_component_parameters(
                 }
             }
         }
+        ExprKind::List(items) => {
+            for item in items {
+                substitute_transparent_native_component_parameters(
+                    item,
+                    bindings,
+                    parameter_names,
+                    backend,
+                )?;
+            }
+        }
         ExprKind::Index { base, index, .. } => {
             substitute_transparent_native_component_parameters(
                 base,
@@ -34271,6 +34281,11 @@ fn fold_ui_primitive_expr(
             let ExprKind::List(items) = &base.kind else {
                 return Ok(None);
             };
+            for item in items {
+                if fold_ui_primitive_expr(item, signatures)?.is_none() {
+                    return Ok(None);
+                }
+            }
             let Ok(index) = usize::try_from(index) else {
                 return Ok(None);
             };
