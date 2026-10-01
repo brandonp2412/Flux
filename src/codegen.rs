@@ -35917,7 +35917,25 @@ fn native_ui_derived_initial_c(ty: &Type, signatures: &Signatures) -> Option<Str
     }
 }
 
-fn ui_scalar_expr_type(
+fn ui_field_type(base_ty: &Type, name: &str, signatures: &Signatures) -> Option<Type> {
+    match signatures.canonical_type(base_ty) {
+        Type::Record(fields) => {
+            let index = name.parse::<usize>().ok().or_else(|| {
+                fields
+                    .iter()
+                    .position(|field| field.name.as_deref() == Some(name))
+            })?;
+            fields.get(index).map(|field| field.ty.clone())
+        }
+        Type::Named(struct_name) => signatures
+            .struct_type(&struct_name)?
+            .field(name)
+            .map(|field| field.ty.clone()),
+        _ => None,
+    }
+}
+
+fn ui_expr_known_type(
     expr: &Expr,
     view: &crate::ast::ViewDef,
     signatures: &Signatures,
@@ -35964,21 +35982,58 @@ fn ui_scalar_expr_type(
             else_expr,
             ..
         } => {
-            let then_ty = ui_scalar_expr_type(then_expr, view, signatures)?;
-            let else_ty = ui_scalar_expr_type(else_expr, view, signatures)?;
+            let then_ty = ui_expr_known_type(then_expr, view, signatures)?;
+            let else_ty = ui_expr_known_type(else_expr, view, signatures)?;
             if signatures.canonical_type(&then_ty) != signatures.canonical_type(&else_ty) {
                 return None;
             }
             then_ty
         }
+        ExprKind::Field {
+            base,
+            name,
+            optional,
+            ..
+        } => {
+            let base_ty = ui_expr_known_type(base, view, signatures)?;
+            if *optional {
+                let Type::Optional(inner) = signatures.canonical_type(&base_ty) else {
+                    return None;
+                };
+                let field_ty = ui_field_type(&inner, name, signatures)?;
+                let field_ty = signatures.canonical_type(&field_ty);
+                if matches!(&field_ty, Type::Optional(_)) {
+                    field_ty
+                } else {
+                    Type::Optional(Box::new(field_ty))
+                }
+            } else {
+                ui_field_type(&base_ty, name, signatures)?
+            }
+        }
         _ => return None,
     };
-    let canonical = signatures.canonical_type(&ty);
-    matches!(
-        canonical,
-        Type::Bool | Type::I64 | Type::Str | Type::Optional(_)
-    )
-    .then_some(canonical)
+    Some(signatures.canonical_type(&ty))
+}
+
+fn ui_scalar_expr_type(
+    expr: &Expr,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+) -> Option<Type> {
+    let canonical = ui_expr_known_type(expr, view, signatures)?;
+    match &canonical {
+        Type::Bool | Type::I64 | Type::Str => Some(canonical),
+        Type::Optional(inner)
+            if matches!(
+                signatures.canonical_type(inner),
+                Type::Bool | Type::I64 | Type::Str
+            ) =>
+        {
+            Some(canonical)
+        }
+        _ => None,
+    }
 }
 
 fn ui_optional_scalar_type(
@@ -36238,33 +36293,7 @@ fn ui_expr_c_for_view_identity(
             optional: true,
             ..
         } => {
-            let base_ty = match &base.kind {
-                ExprKind::Var(name) => view
-                    .states
-                    .iter()
-                    .find(|state| state.name == *name)
-                    .map(|state| state.ty.clone())
-                    .or_else(|| {
-                        view.derived
-                            .iter()
-                            .find(|derived| derived.name == *name)
-                            .map(|derived| derived.ty.clone())
-                    })
-                    .or_else(|| {
-                        view.params
-                            .iter()
-                            .find(|param| param.name == *name)
-                            .map(|param| param.ty.clone())
-                    }),
-                ExprKind::Call { name, .. } => signatures.get(name).and_then(|signature| {
-                    let [ty] = signature.returns.as_slice() else {
-                        return None;
-                    };
-                    Some(ty.clone())
-                }),
-                _ => None,
-            };
-            let Some(base_ty) = base_ty else {
+            let Some(base_ty) = ui_expr_known_type(base, view, signatures) else {
                 return Err(diag(
                     expr.span,
                     "bootstrap dynamic optional UI field access requires a typed optional receiver",
@@ -36332,18 +36361,27 @@ fn ui_expr_c_for_view_identity(
             let field_ty = signatures.canonical_type(&field_ty);
             let result_ty = match &field_ty {
                 Type::Bool | Type::I64 | Type::Str => Type::Optional(Box::new(field_ty.clone())),
-                Type::Optional(inner)
-                    if matches!(
-                        signatures.canonical_type(inner),
-                        Type::Bool | Type::I64 | Type::Str
-                    ) =>
-                {
-                    field_ty.clone()
+                Type::Named(_) | Type::Record(_) if signatures.is_copy_type(&field_ty) => {
+                    Type::Optional(Box::new(field_ty.clone()))
+                }
+                Type::Optional(inner) => {
+                    let inner = signatures.canonical_type(inner);
+                    if matches!(&inner, Type::Bool | Type::I64 | Type::Str)
+                        || (matches!(&inner, Type::Named(_) | Type::Record(_))
+                            && signatures.is_copy_type(&inner))
+                    {
+                        field_ty.clone()
+                    } else {
+                        return Err(diag(
+                            expr.span,
+                            "bootstrap dynamic optional UI field access currently requires a scalar or copyable record/struct field",
+                        ));
+                    }
                 }
                 _ => {
                     return Err(diag(
                         expr.span,
-                        "bootstrap dynamic optional UI field access currently requires a scalar field",
+                        "bootstrap dynamic optional UI field access currently requires a scalar or copyable record/struct field",
                     ));
                 }
             };

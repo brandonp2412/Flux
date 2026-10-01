@@ -83198,6 +83198,70 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_nested_runtime_optional_struct_fields_on_all_native_backends() {
+    let source = r#"
+struct Point {
+    x: i64
+}
+
+struct Wrapper {
+    point: Point?
+}
+
+fn maybeWrapper(value: bool) -> Wrapper? {
+    print("maybeWrapper")
+    if value:
+        return Wrapper { point: Point { x: 7 } }
+    return none
+}
+
+view Badge(value: i64?) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: ([?value]).isNotEmpty
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        value: maybeWrapper(windowIsLandscape)?.point?.x
+}
+
+app App
+"#;
+
+    check_source(source).expect("nested runtime optional struct fields should typecheck");
+    let linux = compile_to_c(source)
+        .expect("nested runtime optional struct fields should lower through Linux");
+    assert!(linux.contains("flux__ui_derived___component_badge__param_value"));
+    assert!(linux.contains("flux__fn_maybeWrapper("));
+    assert!(linux.matches("flux__ui_optional_field_base_").count() >= 2);
+    assert!(linux.contains(".has_value ?"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("nested runtime optional struct field fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("nested runtime optional struct fields should lower natively");
+        assert!(generated.contains("flux__ui_derived___component_badge__param_value"));
+        assert!(generated.contains("flux__fn_maybeWrapper("));
+        assert!(generated.matches("flux__ui_optional_field_base_").count() >= 2);
+        assert!(generated.contains(".has_value ?"));
+    }
+}
+
+#[test]
 fn composed_view_projection_argument_preserves_effectful_base_evaluation() {
     let source = r#"
 fn probe() -> bool {
