@@ -81757,6 +81757,101 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_reusable_optional_binding_list_control_on_all_native_backends() {
+    let source = r#"
+view Badge(flags: bool[]) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: flags.length == 2 && flags.first && flags.last
+}
+
+view Wrapper(maybe: bool?, fallback: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        flags: [if let value = maybe: value else: fallback, true]
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr
+    Wrapper present at 1,1
+        maybe: true
+        fallback: false
+    Wrapper absent at 2,1
+        maybe: none
+        fallback: true
+}
+
+app App
+"#;
+
+    check_source(source).expect("optional-binding component list control should typecheck");
+    let linux = compile_to_c(source)
+        .expect("optional-binding component list control should lower through Linux");
+    assert!(linux.contains("present__badge__title"));
+    assert!(linux.contains("absent__badge__title"));
+    assert!(!linux.contains("flux__ui_derived___component_present__badge__param_"));
+    assert!(!linux.contains("flux__ui_derived___component_absent__badge__param_"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("optional-binding component list control fixture should analyze");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("optional-binding component list control should lower through Android");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("optional-binding component list control should lower through Windows");
+}
+
+#[test]
+fn composed_view_optional_binding_list_control_rejects_effectful_condition() {
+    let source = r#"
+fn maybe() -> bool? {
+    print("maybe")
+    return true
+}
+
+view Badge(flags: bool[]) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: flags.first
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        flags: [if let value = maybe(): value else: false]
+}
+
+app App
+"#;
+
+    check_source(source)
+        .expect("effectful optional-binding component list control should typecheck");
+    let error = compile_to_c(source)
+        .expect_err("effectful optional-binding component list control must stay explicit");
+    assert!(
+        error
+            .message
+            .contains("needs scalar per-instance storage for this observable argument")
+    );
+}
+
+#[test]
 fn composed_view_optional_projection_argument_rejects_effectful_index() {
     let source = r#"
 fn pick() -> i64 {

@@ -12698,7 +12698,6 @@ fn transparent_native_component_argument_is_reusable(expr: &Expr) -> bool {
         }
         ExprKind::ListIf {
             condition,
-            binding: None,
             value,
             else_value,
             ..
@@ -12911,49 +12910,29 @@ fn substitute_transparent_native_component_parameters(
         }
         ExprKind::ListIf {
             condition,
-            binding,
             value,
             else_value,
             ..
         } => {
-            if binding.is_some() {
-                let mut reads = HashSet::new();
-                typecheck::collect_expr_reads(expr, &mut reads);
-                if let Some(parameter) = reads
-                    .iter()
-                    .find(|name| parameter_names.contains(name.as_str()))
-                {
-                    return Err(diag(
-                        expr.span,
-                        &format!(
-                            "{backend} transparent composed-view parameter '{parameter}' is not yet supported in optional-binding list control"
-                        ),
-                    )
-                    .with_note(
-                        "optional-binding list control needs explicit binding-scope substitution before native composition",
-                    ));
-                }
-            } else {
+            substitute_transparent_native_component_parameters(
+                condition,
+                bindings,
+                parameter_names,
+                backend,
+            )?;
+            substitute_transparent_native_component_parameters(
+                value,
+                bindings,
+                parameter_names,
+                backend,
+            )?;
+            if let Some(else_value) = else_value {
                 substitute_transparent_native_component_parameters(
-                    condition,
+                    else_value,
                     bindings,
                     parameter_names,
                     backend,
                 )?;
-                substitute_transparent_native_component_parameters(
-                    value,
-                    bindings,
-                    parameter_names,
-                    backend,
-                )?;
-                if let Some(else_value) = else_value {
-                    substitute_transparent_native_component_parameters(
-                        else_value,
-                        bindings,
-                        parameter_names,
-                        backend,
-                    )?;
-                }
             }
         }
         ExprKind::Index { base, index, .. } => {
@@ -34490,6 +34469,34 @@ fn fold_ui_primitive_list_expr(
                             return Ok(None);
                         };
                         if let Some(value) = value {
+                            folded.push(value);
+                        }
+                    }
+                    ExprKind::ListIf {
+                        condition,
+                        binding: Some(binding),
+                        value,
+                        else_value,
+                        ..
+                    } => {
+                        let Some(condition) =
+                            fold_ui_optional_primitive_expr(condition, signatures)?
+                        else {
+                            return Ok(None);
+                        };
+                        if let Some(bound) = condition {
+                            let ExprKind::Var(name) = &value.kind else {
+                                return Ok(None);
+                            };
+                            if name != &binding.name {
+                                return Ok(None);
+                            }
+                            folded.push(bound);
+                        } else if let Some(else_value) = else_value {
+                            let Some(value) = fold_ui_primitive_expr(else_value, signatures)?
+                            else {
+                                return Ok(None);
+                            };
                             folded.push(value);
                         }
                     }
