@@ -34731,6 +34731,111 @@ fn reusable_ui_runtime_list_edge_expr(
     Ok(Some(result))
 }
 
+fn reusable_ui_runtime_list_index_c(
+    expr: &Expr,
+    index: &Expr,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+    view_identity: Option<usize>,
+) -> Result<Option<String>, Diagnostic> {
+    let ExprKind::List(items) = &expr.kind else {
+        return Ok(None);
+    };
+
+    let mut candidates = Vec::new();
+    for item in items {
+        let singleton = Expr {
+            line: item.line,
+            span: item.span,
+            kind: ExprKind::List(vec![item.clone()]),
+        };
+        if let Some(projected) = reusable_ui_list_projection_items(&singleton, signatures)? {
+            candidates.extend(projected.into_iter().map(|value| (None, value)));
+            continue;
+        }
+
+        match &item.kind {
+            ExprKind::ListIf {
+                condition,
+                binding: None,
+                value,
+                else_value: None,
+                ..
+            } if transparent_native_component_argument_is_reusable(condition)
+                && transparent_native_component_argument_is_reusable(value) =>
+            {
+                candidates.push((Some(condition.as_ref().clone()), value.as_ref().clone()));
+            }
+            _ => return Ok(None),
+        }
+    }
+
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    let index_code = ui_expr_c_for_view_identity(index, view, signatures, view_identity)?;
+    let index_name = format!(
+        "flux__ui_component_index_{}_{}",
+        expr.span.line, expr.span.column
+    );
+    let mut condition_declarations = String::new();
+    let mut condition_names = Vec::with_capacity(candidates.len());
+    for (position, (condition, _)) in candidates.iter().enumerate() {
+        let Some(condition) = condition else {
+            condition_names.push(None);
+            continue;
+        };
+        let condition_code =
+            ui_expr_c_for_view_identity(condition, view, signatures, view_identity)?;
+        let condition_name = format!(
+            "flux__ui_component_present_{}_{}_{}",
+            expr.span.line, expr.span.column, position
+        );
+        condition_declarations.push_str(&format!("bool {condition_name} = ({condition_code}); "));
+        condition_names.push(Some(condition_name));
+    }
+
+    let mut prefix_terms = Vec::new();
+    let mut prefixes = Vec::with_capacity(candidates.len());
+    for condition_name in &condition_names {
+        prefixes.push(if prefix_terms.is_empty() {
+            "INT64_C(0)".to_string()
+        } else {
+            prefix_terms.join(" + ")
+        });
+        prefix_terms.push(match condition_name {
+            Some(condition_name) => {
+                format!("(({condition_name}) ? INT64_C(1) : INT64_C(0))")
+            }
+            None => "INT64_C(1)".to_string(),
+        });
+    }
+    let length = prefix_terms.join(" + ");
+    let mut selection = ui_expr_c_for_view_identity(
+        &candidates.last().expect("non-empty candidates").1,
+        view,
+        signatures,
+        view_identity,
+    )?;
+    for position in (0..candidates.len() - 1).rev() {
+        let value =
+            ui_expr_c_for_view_identity(&candidates[position].1, view, signatures, view_identity)?;
+        let guard = match &condition_names[position] {
+            Some(condition_name) => format!(
+                "(({condition_name}) && {index_name} == ({}))",
+                prefixes[position]
+            ),
+            None => format!("({index_name} == ({}))", prefixes[position]),
+        };
+        selection = format!("({guard} ? ({value}) : ({selection}))");
+    }
+
+    Ok(Some(format!(
+        r#"__extension__ ({{ {condition_declarations}int64_t {index_name} = {index_code}; int64_t flux__ui_component_length = {length}; if ({index_name} < INT64_C(0)) {index_name} += flux__ui_component_length; if ({index_name} < INT64_C(0) || {index_name} >= flux__ui_component_length) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {selection}; }})"#
+    )))
+}
+
 fn fold_ui_primitive_expr_with_binding(
     expr: &Expr,
     binding_name: &str,
@@ -35593,6 +35698,11 @@ fn ui_expr_c_for_view_identity(
                         r#"__extension__ ({{ int64_t {index_name} = {index_code}; if ({index_name} < INT64_C(0)) {index_name} += INT64_C({len}); if ({index_name} < INT64_C(0) || {index_name} >= INT64_C({len})) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {selection}; }})"#
                     ));
                 }
+            }
+            if let Some(indexed) =
+                reusable_ui_runtime_list_index_c(base, index, view, signatures, view_identity)?
+            {
+                return Ok(indexed);
             }
             Err(diag(
                 expr.span,
