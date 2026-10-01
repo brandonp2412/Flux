@@ -34971,6 +34971,39 @@ fn reusable_ui_runtime_list_edge_expr(
     Ok(Some(result))
 }
 
+fn statically_selected_ui_list_items<'a>(
+    expr: &'a Expr,
+    signatures: &Signatures,
+) -> Result<Option<Vec<&'a Expr>>, Diagnostic> {
+    let ExprKind::List(items) = &expr.kind else {
+        return Ok(None);
+    };
+
+    let mut selected = Vec::with_capacity(items.len());
+    for item in items {
+        match &item.kind {
+            ExprKind::ListIf {
+                condition,
+                binding: None,
+                value,
+                else_value,
+                ..
+            } => match fold_ui_primitive_expr(condition, signatures)? {
+                Some(ConstantValue::Bool(true)) => selected.push(value.as_ref()),
+                Some(ConstantValue::Bool(false)) => {
+                    if let Some(else_value) = else_value {
+                        selected.push(else_value.as_ref());
+                    }
+                }
+                _ => return Ok(None),
+            },
+            _ => selected.push(item),
+        }
+    }
+
+    Ok(Some(selected))
+}
+
 fn effectful_copy_ui_list_index_c(
     expr: &Expr,
     index: &Expr,
@@ -34978,7 +35011,7 @@ fn effectful_copy_ui_list_index_c(
     signatures: &Signatures,
     view_identity: Option<usize>,
 ) -> Result<Option<String>, Diagnostic> {
-    let ExprKind::List(items) = &expr.kind else {
+    let Some(items) = statically_selected_ui_list_items(expr, signatures)? else {
         return Ok(None);
     };
     let Some(first) = items.first() else {
@@ -35040,7 +35073,7 @@ fn effectful_copy_ui_list_property_c(
     signatures: &Signatures,
     view_identity: Option<usize>,
 ) -> Result<Option<String>, Diagnostic> {
-    let ExprKind::List(items) = &expr.kind else {
+    let Some(items) = statically_selected_ui_list_items(expr, signatures)? else {
         return Ok(None);
     };
     let Some(first) = items.first() else {
@@ -35048,7 +35081,7 @@ fn effectful_copy_ui_list_property_c(
     };
     if items
         .iter()
-        .all(transparent_native_component_argument_is_reusable)
+        .all(|item| transparent_native_component_argument_is_reusable(item))
     {
         return Ok(None);
     }
@@ -35123,7 +35156,7 @@ fn effectful_copy_ui_static_slice_property_c(
     else {
         return Ok(None);
     };
-    let ExprKind::List(items) = &base.kind else {
+    let Some(items) = statically_selected_ui_list_items(base, signatures)? else {
         return Ok(None);
     };
     let Some(first_item) = items.first() else {
@@ -35131,7 +35164,7 @@ fn effectful_copy_ui_static_slice_property_c(
     };
     if items
         .iter()
-        .all(transparent_native_component_argument_is_reusable)
+        .all(|item| transparent_native_component_argument_is_reusable(item))
     {
         return Ok(None);
     }
@@ -35293,7 +35326,7 @@ fn effectful_copy_ui_static_slice_index_c(
     else {
         return Ok(None);
     };
-    let ExprKind::List(items) = &base.kind else {
+    let Some(items) = statically_selected_ui_list_items(base, signatures)? else {
         return Ok(None);
     };
     let Some(first_item) = items.first() else {
@@ -35301,7 +35334,7 @@ fn effectful_copy_ui_static_slice_index_c(
     };
     if items
         .iter()
-        .all(transparent_native_component_argument_is_reusable)
+        .all(|item| transparent_native_component_argument_is_reusable(item))
     {
         return Ok(None);
     }

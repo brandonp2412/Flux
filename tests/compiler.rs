@@ -84226,20 +84226,125 @@ app Badge
 "#;
 
     check_source(skipped).expect("statically skipped list branch fixture should typecheck");
-    compile_to_c(skipped)
+    let skipped_generated = compile_to_c(skipped)
         .expect("statically skipped list branch should not require lowering its effects");
+    assert!(
+        !skipped_generated.contains(" = (flux__fn_probe());"),
+        "statically skipped list branches must not evaluate their value"
+    );
 
     let selected = skipped.replace(
         "visible: ([if false: probe() else: true]).first",
         "visible: ([if true: probe() else: false]).first",
     );
-    let error =
-        compile_to_c(&selected).expect_err("selected effectful list branch must remain explicit");
-    assert!(
-        error
-            .message
-            .contains("bootstrap dynamic UI expression currently supports")
-    );
+    check_source(&selected).expect("statically selected effectful list branch should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(generated.contains("flux__ui_list_property_item_"));
+        assert!(
+            generated.contains(" = (flux__fn_probe());"),
+            "selected effectful list branch must evaluate through the list property path"
+        );
+    };
+
+    let linux =
+        compile_to_c(&selected).expect("selected effectful list branch should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&selected, SourceId::UNKNOWN)
+        .expect("selected effectful list branch fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("selected effectful list branch should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
+fn composed_view_static_list_if_projects_through_index_and_slice() {
+    let source = r#"
+fn probe() -> bool {
+    print("probe")
+    return false
+}
+
+fn choose() -> i64 {
+    print("choose")
+    return 1
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr
+    Text indexedText at 1,1
+        text: "indexed"
+        visible: [if true: probe() else: true, true][choose()]
+    Text slicedText at 2,1
+        text: "sliced"
+        visible: ([if true: probe() else: true, true][0:1]).first
+}
+
+app App
+"#;
+
+    check_source(source).expect("effectful static-list conditional projections should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.contains("flux__ui_list_item_"),
+            "effectful static-list conditionals should lower through ordered list temporaries"
+        );
+        assert!(
+            generated.contains("flux__ui_slice_property_item_"),
+            "static slices should reuse the selected physical list items"
+        );
+        assert!(
+            generated.matches(" = (flux__fn_probe());").count() >= 2,
+            "each selected effectful conditional item should be evaluated"
+        );
+        let first_probe = generated
+            .find(" = (flux__fn_probe());")
+            .expect("selected effectful item should be present");
+        let index = generated
+            .find("int64_t flux__ui_list_index_")
+            .expect("runtime list index should use one temporary");
+        assert!(
+            first_probe < index,
+            "list item effects must run before the runtime index expression"
+        );
+        assert!(
+            generated.contains(" = (flux__fn_choose());"),
+            "runtime index expression should be evaluated exactly through the index temporary"
+        );
+    };
+
+    let linux = compile_to_c(source)
+        .expect("effectful static-list conditional projections should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful static-list conditional fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful static-list conditional projections should lower natively");
+        assert_target(&generated);
+    }
 }
 
 #[test]
