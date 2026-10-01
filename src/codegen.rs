@@ -34608,6 +34608,15 @@ fn reusable_ui_runtime_list_candidates(
                 && transparent_native_component_argument_is_reusable(value)
             {
                 candidates.push((Some(condition.as_ref().clone()), value.as_ref().clone()));
+            } else if projected.is_empty()
+                && let ExprKind::ListSpread {
+                    value,
+                    optional: false,
+                    ..
+                } = &item.kind
+                && let Some(nested) = reusable_ui_runtime_list_candidates(value, signatures)?
+            {
+                candidates.extend(nested);
             } else {
                 candidates.extend(projected.into_iter().map(|value| (None, value)));
             }
