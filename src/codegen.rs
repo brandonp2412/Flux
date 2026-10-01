@@ -11788,6 +11788,7 @@ static inline const char *flux__path_relative(const char *base, const char *targ
     let uses_list_any = runtime_usage.contains("flux_list_any_bool(");
     let uses_list_every = runtime_usage.contains("flux_list_every_bool(");
     let uses_list_slice = runtime_usage.contains("flux_list_slice(");
+    let uses_slice_bound = uses_list_slice || runtime_usage.contains("flux_slice_bound(");
     let uses_list_unchecked = runtime_usage.contains("flux_list_at_unchecked(")
         || uses_list_at
         || uses_list_any
@@ -12573,8 +12574,10 @@ static inline const char *flux__fs_append_bytes(const char *path, struct flux__l
     if uses_list_every {
         out.push_str("static inline bool flux_list_every_bool(struct flux__list list) { for (size_t i = 0; i < list.len; ++i) { if (!*((bool *)flux_list_at_unchecked(list, i, sizeof(bool)))) return false; } return true; }\n");
     }
-    if uses_list_slice {
+    if uses_slice_bound {
         out.push_str("static inline int64_t flux_slice_bound(size_t len, bool present, int64_t value, bool end, int64_t step) { if (step > 0) { if (!present) return end ? (int64_t)len : 0; int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return 0; if ((uint64_t)resolved > (uint64_t)len) return (int64_t)len; return resolved; } if (!present) return end ? -1 : (len == 0 ? -1 : (int64_t)len - 1); int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return -1; if ((uint64_t)resolved >= (uint64_t)len) return len == 0 ? -1 : (int64_t)len - 1; return resolved; }\n");
+    }
+    if uses_list_slice {
         out.push_str("static inline struct flux__list flux_list_slice(struct flux__list list, bool has_start, int64_t start, bool has_end, int64_t end, int64_t step, size_t elem_size) { if (step == 0) { fputs(\"Flux runtime error: list slice step cannot be zero\\n\", stderr); abort(); } if (step > (int64_t)PTRDIFF_MAX || step < (int64_t)PTRDIFF_MIN) { fputs(\"Flux runtime error: list slice step is too large\\n\", stderr); abort(); } int64_t first = flux_slice_bound(list.len, has_start, start, false, step); int64_t last = flux_slice_bound(list.len, has_end, end, true, step); size_t count = 0; if (step > 0 && first < last) { count = (size_t)(1 + (uint64_t)(last - 1 - first) / (uint64_t)step); } else if (step < 0 && first > last) { uint64_t magnitude = (uint64_t)(-(step + 1)) + 1; count = (size_t)(1 + (uint64_t)(first - 1 - last) / magnitude); } ptrdiff_t base_stride = flux_list_stride(list, elem_size); ptrdiff_t next_stride = 0; if (__builtin_mul_overflow(base_stride, (ptrdiff_t)step, &next_stride)) { fputs(\"Flux runtime error: list slice stride overflow\\n\", stderr); abort(); } void *data = list.data; if (count != 0) data = (void *)((char *)list.data + (ptrdiff_t)first * base_stride); struct flux__list result = { .data = data, .len = count, .stride = next_stride }; return result; }\n");
     }
     if runtime_usage.contains("flux__net_wait_readable_many(")
@@ -34369,6 +34372,42 @@ fn static_ui_slice_bound(len: i64, value: Option<i64>, end: bool, step: i64) -> 
     resolved
 }
 
+fn reusable_ui_static_slice_args(
+    start: Option<&Expr>,
+    end: Option<&Expr>,
+    step: Option<&Expr>,
+    signatures: &Signatures,
+) -> Result<Option<(Option<i64>, Option<i64>, i64)>, Diagnostic> {
+    let start = if let Some(start) = start {
+        let Some(ConstantValue::I64(value)) = fold_ui_primitive_expr(start, signatures)? else {
+            return Ok(None);
+        };
+        Some(value)
+    } else {
+        None
+    };
+    let end = if let Some(end) = end {
+        let Some(ConstantValue::I64(value)) = fold_ui_primitive_expr(end, signatures)? else {
+            return Ok(None);
+        };
+        Some(value)
+    } else {
+        None
+    };
+    let step = if let Some(step) = step {
+        let Some(ConstantValue::I64(value)) = fold_ui_primitive_expr(step, signatures)? else {
+            return Ok(None);
+        };
+        value
+    } else {
+        1
+    };
+    if step == 0 {
+        return Ok(None);
+    }
+    Ok(Some((start, end, step)))
+}
+
 fn ui_constant_expr(value: ConstantValue, template: &Expr) -> Expr {
     Expr {
         line: template.line,
@@ -34693,6 +34732,42 @@ fn reusable_ui_runtime_list_length_c(
         return Ok(Some(format!("INT64_C({len})")));
     }
 
+    if let ExprKind::Slice {
+        base,
+        start,
+        end,
+        step,
+        optional: false,
+    } = &expr.kind
+    {
+        let Some((start, end, step)) = reusable_ui_static_slice_args(
+            start.as_deref(),
+            end.as_deref(),
+            step.as_deref(),
+            signatures,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(base_length) =
+            reusable_ui_runtime_list_length_c(base, view, signatures, view_identity)?
+        else {
+            return Ok(None);
+        };
+        let suffix = format!("{}_{}", expr.span.line, expr.span.column);
+        let base_name = format!("flux__ui_component_slice_base_length_{suffix}");
+        let first_name = format!("flux__ui_component_slice_first_{suffix}");
+        let last_name = format!("flux__ui_component_slice_last_{suffix}");
+        let count_name = format!("flux__ui_component_slice_length_{suffix}");
+        let start_present = start.is_some();
+        let end_present = end.is_some();
+        let start = start.unwrap_or(0);
+        let end = end.unwrap_or(0);
+        return Ok(Some(format!(
+            r#"__extension__ ({{ int64_t {base_name} = ({base_length}); int64_t {first_name} = flux_slice_bound((size_t){base_name}, {start_present}, INT64_C({start}), false, INT64_C({step})); int64_t {last_name} = flux_slice_bound((size_t){base_name}, {end_present}, INT64_C({end}), true, INT64_C({step})); int64_t {count_name} = INT64_C(0); if (INT64_C({step}) > INT64_C(0) && {first_name} < {last_name}) {{ {count_name} = INT64_C(1) + ({last_name} - INT64_C(1) - {first_name}) / INT64_C({step}); }} else if (INT64_C({step}) < INT64_C(0) && {first_name} > {last_name}) {{ uint64_t flux__ui_component_slice_magnitude = (uint64_t)(-(INT64_C({step}) + INT64_C(1))) + UINT64_C(1); {count_name} = INT64_C(1) + (int64_t)((uint64_t)({first_name} - INT64_C(1) - {last_name}) / flux__ui_component_slice_magnitude); }} {count_name}; }})"#
+        )));
+    }
+
     let ExprKind::List(items) = &expr.kind else {
         return Ok(None);
     };
@@ -34817,14 +34892,55 @@ fn reusable_ui_runtime_list_index_c(
     signatures: &Signatures,
     view_identity: Option<usize>,
 ) -> Result<Option<String>, Diagnostic> {
-    let Some(candidates) = reusable_ui_runtime_list_candidates(expr, signatures)? else {
+    let mut candidate_expr = expr;
+    let raw_index_code = ui_expr_c_for_view_identity(index, view, signatures, view_identity)?;
+    let index_code = if let ExprKind::Slice {
+        base,
+        start,
+        end,
+        step,
+        optional: false,
+    } = &expr.kind
+    {
+        let Some((start, end, step)) = reusable_ui_static_slice_args(
+            start.as_deref(),
+            end.as_deref(),
+            step.as_deref(),
+            signatures,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(base_length) =
+            reusable_ui_runtime_list_length_c(base, view, signatures, view_identity)?
+        else {
+            return Ok(None);
+        };
+        let suffix = format!("{}_{}", expr.span.line, expr.span.column);
+        let base_name = format!("flux__ui_component_slice_index_base_length_{suffix}");
+        let first_name = format!("flux__ui_component_slice_index_first_{suffix}");
+        let last_name = format!("flux__ui_component_slice_index_last_{suffix}");
+        let count_name = format!("flux__ui_component_slice_index_length_{suffix}");
+        let index_name = format!("flux__ui_component_slice_index_{suffix}");
+        let start_present = start.is_some();
+        let end_present = end.is_some();
+        let start = start.unwrap_or(0);
+        let end = end.unwrap_or(0);
+        candidate_expr = base;
+        format!(
+            r#"__extension__ ({{ int64_t {base_name} = ({base_length}); int64_t {first_name} = flux_slice_bound((size_t){base_name}, {start_present}, INT64_C({start}), false, INT64_C({step})); int64_t {last_name} = flux_slice_bound((size_t){base_name}, {end_present}, INT64_C({end}), true, INT64_C({step})); int64_t {count_name} = INT64_C(0); if (INT64_C({step}) > INT64_C(0) && {first_name} < {last_name}) {{ {count_name} = INT64_C(1) + ({last_name} - INT64_C(1) - {first_name}) / INT64_C({step}); }} else if (INT64_C({step}) < INT64_C(0) && {first_name} > {last_name}) {{ uint64_t flux__ui_component_slice_index_magnitude = (uint64_t)(-(INT64_C({step}) + INT64_C(1))) + UINT64_C(1); {count_name} = INT64_C(1) + (int64_t)((uint64_t)({first_name} - INT64_C(1) - {last_name}) / flux__ui_component_slice_index_magnitude); }} int64_t {index_name} = ({raw_index_code}); if ({index_name} < INT64_C(0)) {index_name} += {count_name}; if ({index_name} < INT64_C(0) || {index_name} >= {count_name}) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {first_name} + {index_name} * INT64_C({step}); }})"#
+        )
+    } else {
+        raw_index_code
+    };
+
+    let Some(candidates) = reusable_ui_runtime_list_candidates(candidate_expr, signatures)? else {
         return Ok(None);
     };
     if candidates.is_empty() {
         return Ok(None);
     }
 
-    let index_code = ui_expr_c_for_view_identity(index, view, signatures, view_identity)?;
     let index_name = format!(
         "flux__ui_component_index_{}_{}",
         expr.span.line, expr.span.column

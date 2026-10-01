@@ -82040,6 +82040,78 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_runtime_conditional_static_slices_on_all_native_backends() {
+    let source = r#"
+view Badge(indexed: bool, reversed: bool, firstVisible: bool, lastVisible: bool, singleVisible: bool, lengthMatches: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: indexed && reversed && firstVisible && lastVisible && singleVisible && lengthMatches
+}
+
+view Wrapper(index: i64, enabled: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        indexed: ([false, if enabled: true][1:])[index]
+        reversed: ([false, if enabled: true][::-1])[index]
+        firstVisible: ([false, if enabled: true][1:]).first
+        lastVisible: ([false, if enabled: true][1:]).last
+        singleVisible: ([false, if enabled: true][1:]).single
+        lengthMatches: ([false, if enabled: true][1:]).length == 1
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        index: windowWidth - windowWidth
+        enabled: windowIsLandscape
+}
+
+app App
+"#;
+
+    check_source(source).expect("runtime conditional static slices should typecheck");
+    let linux =
+        compile_to_c(source).expect("runtime conditional static slices should lower through Linux");
+    assert!(linux.contains("wrapper__badge__title"));
+    assert!(linux.contains("flux_slice_bound("));
+    assert!(linux.contains("flux__ui_component_slice_index_length_"));
+    assert!(linux.contains("flux__ui_component_slice_length_"));
+    assert!(linux.contains("flux__ui_component_present_"));
+    assert!(linux.contains("Flux runtime error: list index out of range\\n"));
+    assert!(linux.contains("Flux runtime error: list.single requires exactly one element\\n"));
+    assert!(linux.contains("INT64_C(-1)"));
+    assert!(!linux.contains("flux__ui_derived___component_wrapper__badge__param_indexed"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("runtime conditional static slice fixture should analyze for native targets");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("runtime conditional static slices should lower through Android");
+    assert!(android.contains("flux_slice_bound("));
+    assert!(android.contains("flux__ui_component_slice_index_length_"));
+    assert!(android.contains("flux__ui_component_slice_length_"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("runtime conditional static slices should lower through Windows");
+    assert!(windows.contains("flux_slice_bound("));
+    assert!(windows.contains("flux__ui_component_slice_index_length_"));
+    assert!(windows.contains("flux__ui_component_slice_length_"));
+}
+
+#[test]
 fn lowers_composed_view_statically_empty_runtime_list_projections_on_all_native_backends() {
     let source = r#"
 view Badge(indexed: bool, nestedIndexed: bool, sliceIndexed: bool, firstVisible: bool, lastVisible: bool, singleVisible: bool, sliceSingle: bool) {
