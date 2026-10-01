@@ -34580,6 +34580,55 @@ fn reusable_ui_list_projection_items(
     }
 }
 
+fn reusable_ui_runtime_list_candidates(
+    expr: &Expr,
+    signatures: &Signatures,
+) -> Result<Option<Vec<(Option<Expr>, Expr)>>, Diagnostic> {
+    let ExprKind::List(items) = &expr.kind else {
+        return Ok(None);
+    };
+
+    let mut candidates = Vec::new();
+    for item in items {
+        let singleton = Expr {
+            line: item.line,
+            span: item.span,
+            kind: ExprKind::List(vec![item.clone()]),
+        };
+        if let Some(projected) = reusable_ui_list_projection_items(&singleton, signatures)? {
+            candidates.extend(projected.into_iter().map(|value| (None, value)));
+            continue;
+        }
+
+        match &item.kind {
+            ExprKind::ListIf {
+                condition,
+                binding: None,
+                value,
+                else_value: None,
+                ..
+            } if transparent_native_component_argument_is_reusable(condition)
+                && transparent_native_component_argument_is_reusable(value) =>
+            {
+                candidates.push((Some(condition.as_ref().clone()), value.as_ref().clone()));
+            }
+            ExprKind::ListSpread {
+                value,
+                optional: false,
+                ..
+            } => {
+                let Some(nested) = reusable_ui_runtime_list_candidates(value, signatures)? else {
+                    return Ok(None);
+                };
+                candidates.extend(nested);
+            }
+            _ => return Ok(None),
+        }
+    }
+
+    Ok(Some(candidates))
+}
+
 fn reusable_ui_runtime_list_length_c(
     expr: &Expr,
     view: &crate::ast::ViewDef,
@@ -34650,37 +34699,9 @@ fn reusable_ui_runtime_list_edge_expr(
     first: bool,
     signatures: &Signatures,
 ) -> Result<Option<Expr>, Diagnostic> {
-    let ExprKind::List(items) = &expr.kind else {
+    let Some(candidates) = reusable_ui_runtime_list_candidates(expr, signatures)? else {
         return Ok(None);
     };
-
-    let mut candidates = Vec::new();
-    for item in items {
-        let singleton = Expr {
-            line: item.line,
-            span: item.span,
-            kind: ExprKind::List(vec![item.clone()]),
-        };
-        if let Some(projected) = reusable_ui_list_projection_items(&singleton, signatures)? {
-            candidates.extend(projected.into_iter().map(|value| (None, value)));
-            continue;
-        }
-
-        match &item.kind {
-            ExprKind::ListIf {
-                condition,
-                binding: None,
-                value,
-                else_value: None,
-                ..
-            } if transparent_native_component_argument_is_reusable(condition)
-                && transparent_native_component_argument_is_reusable(value) =>
-            {
-                candidates.push((Some(condition.as_ref().clone()), value.as_ref().clone()));
-            }
-            _ => return Ok(None),
-        }
-    }
 
     let fallback_index = if first {
         candidates
@@ -34738,38 +34759,9 @@ fn reusable_ui_runtime_list_index_c(
     signatures: &Signatures,
     view_identity: Option<usize>,
 ) -> Result<Option<String>, Diagnostic> {
-    let ExprKind::List(items) = &expr.kind else {
+    let Some(candidates) = reusable_ui_runtime_list_candidates(expr, signatures)? else {
         return Ok(None);
     };
-
-    let mut candidates = Vec::new();
-    for item in items {
-        let singleton = Expr {
-            line: item.line,
-            span: item.span,
-            kind: ExprKind::List(vec![item.clone()]),
-        };
-        if let Some(projected) = reusable_ui_list_projection_items(&singleton, signatures)? {
-            candidates.extend(projected.into_iter().map(|value| (None, value)));
-            continue;
-        }
-
-        match &item.kind {
-            ExprKind::ListIf {
-                condition,
-                binding: None,
-                value,
-                else_value: None,
-                ..
-            } if transparent_native_component_argument_is_reusable(condition)
-                && transparent_native_component_argument_is_reusable(value) =>
-            {
-                candidates.push((Some(condition.as_ref().clone()), value.as_ref().clone()));
-            }
-            _ => return Ok(None),
-        }
-    }
-
     if candidates.is_empty() {
         return Ok(None);
     }
@@ -35756,11 +35748,51 @@ fn ui_expr_c_for_view_identity(
                 }
             }
             let list_member = crate::builtin_names::list_member_impl(name);
-            if matches!(list_member, "first" | "last")
-                && let Some(edge) =
+            if matches!(list_member, "first" | "last") {
+                if let Some(edge) =
                     reusable_ui_runtime_list_edge_expr(base, list_member == "first", signatures)?
+                {
+                    return ui_expr_c_for_view_identity(&edge, view, signatures, view_identity);
+                }
+                let edge_index = Expr {
+                    line: expr.line,
+                    span: expr.span,
+                    kind: ExprKind::Int(if list_member == "first" { 0 } else { -1 }),
+                };
+                if let Some(edge) = reusable_ui_runtime_list_index_c(
+                    base,
+                    &edge_index,
+                    view,
+                    signatures,
+                    view_identity,
+                )? {
+                    return Ok(edge);
+                }
+            }
+            if list_member == "single"
+                && let Some(length) =
+                    reusable_ui_runtime_list_length_c(base, view, signatures, view_identity)?
             {
-                return ui_expr_c_for_view_identity(&edge, view, signatures, view_identity);
+                let first_index = Expr {
+                    line: expr.line,
+                    span: expr.span,
+                    kind: ExprKind::Int(0),
+                };
+                if let Some(value) = reusable_ui_runtime_list_index_c(
+                    base,
+                    &first_index,
+                    view,
+                    signatures,
+                    view_identity,
+                )? {
+                    let length_name = format!(
+                        "flux__ui_component_single_length_{}_{}",
+                        expr.span.line, expr.span.column
+                    );
+                    return Ok(format!(
+                        r#"__extension__ ({{ int64_t {length_name} = {length}; if ({length_name} != INT64_C(1)) {{ fputs("Flux runtime error: list.single requires exactly one element\n", stderr); abort(); }} {value}; }})"#
+                    ));
+                }
             }
             if matches!(list_member, "length" | "isEmpty" | "isNotEmpty")
                 && let Some(length) =

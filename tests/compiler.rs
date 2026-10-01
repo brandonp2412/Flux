@@ -81865,6 +81865,181 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_nested_runtime_list_spread_projections_on_all_native_backends() {
+    let source = r#"
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view Wrapper(index: i64, enabled: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        visible: ([false, ...[if enabled: true]])[index] && ([...[if enabled: true], false]).first
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        index: windowWidth - windowWidth - 1
+        enabled: windowIsLandscape
+}
+
+app App
+"#;
+
+    check_source(source).expect("nested runtime list spread projections should typecheck");
+    let linux = compile_to_c(source)
+        .expect("nested runtime list spread projections should lower through Linux");
+    assert!(linux.contains("wrapper__badge__title"));
+    assert!(linux.contains("flux__ui_component_present_"));
+    assert!(linux.contains("flux__ui_component_length"));
+    assert!(linux.contains("flux__ui_window_width > flux__ui_window_height"));
+    assert!(!linux.contains("flux__ui_derived___component_wrapper__badge__param_visible"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("nested runtime list spread fixture should analyze for native targets");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("nested runtime list spread projections should lower through Android");
+    assert!(android.contains("flux__ui_component_present_"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("nested runtime list spread projections should lower through Windows");
+    assert!(windows.contains("flux__ui_component_present_"));
+}
+
+#[test]
+fn lowers_composed_view_potentially_empty_runtime_list_edges_on_all_native_backends() {
+    let source = r#"
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view Wrapper(enabled: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        visible: ([if enabled: true]).first && ([if enabled: true]).last
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        enabled: windowIsLandscape
+}
+
+app App
+"#;
+
+    check_source(source).expect("potentially empty runtime list edges should typecheck");
+    let linux = compile_to_c(source)
+        .expect("potentially empty runtime list edges should lower through Linux");
+    assert!(linux.contains("wrapper__badge__title"));
+    assert!(linux.contains("flux__ui_component_present_"));
+    assert!(linux.contains("flux__ui_component_length"));
+    assert!(linux.contains("Flux runtime error: list index out of range\\n"));
+    assert!(linux.contains("flux__ui_window_width > flux__ui_window_height"));
+    assert!(!linux.contains("flux__ui_derived___component_wrapper__badge__param_visible"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("potentially empty runtime list edge fixture should analyze for native targets");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("potentially empty runtime list edges should lower through Android");
+    assert!(android.contains("flux__ui_component_present_"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("potentially empty runtime list edges should lower through Windows");
+    assert!(windows.contains("flux__ui_component_present_"));
+}
+
+#[test]
+fn lowers_composed_view_runtime_list_single_on_all_native_backends() {
+    let source = r#"
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view Wrapper(enabled: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        visible: ([if enabled: true]).single
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        enabled: windowIsLandscape
+}
+
+app App
+"#;
+
+    check_source(source).expect("runtime list.single should typecheck");
+    let linux = compile_to_c(source).expect("runtime list.single should lower through Linux");
+    assert!(linux.contains("wrapper__badge__title"));
+    assert!(linux.contains("flux__ui_component_single_length_"));
+    assert!(linux.contains("Flux runtime error: list.single requires exactly one element\\n"));
+    assert!(linux.contains("flux__ui_window_width > flux__ui_window_height"));
+    assert!(!linux.contains("flux__ui_derived___component_wrapper__badge__param_visible"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("runtime list.single fixture should analyze for native targets");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("runtime list.single should lower through Android");
+    assert!(android.contains("flux__ui_component_single_length_"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("runtime list.single should lower through Windows");
+    assert!(windows.contains("flux__ui_component_single_length_"));
+}
+
+#[test]
 fn lowers_composed_view_reusable_static_slice_projections_on_all_native_backends() {
     let source = r#"
 view Badge(indexed: bool, firstVisible: bool, lastVisible: bool) {
