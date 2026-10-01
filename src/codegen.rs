@@ -34352,10 +34352,11 @@ fn fold_ui_primitive_list_expr(
             for item in items {
                 match &item.kind {
                     ExprKind::ListSpread {
-                        value,
-                        optional: false,
-                        ..
+                        value, optional, ..
                     } => {
+                        if *optional && matches!(value.kind, ExprKind::None) {
+                            continue;
+                        }
                         let Some(values) = fold_ui_primitive_list_expr(value, signatures)? else {
                             return Ok(None);
                         };
