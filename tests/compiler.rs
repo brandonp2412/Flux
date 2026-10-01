@@ -81628,6 +81628,86 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_parameterized_static_list_control_on_all_native_backends() {
+    let source = r#"
+view Badge(enabled: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: ([if enabled: true else: false]).first && ([...[false, enabled]]).last
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        enabled: true
+}
+
+app App
+"#;
+
+    check_source(source).expect("composed-view static list control fixture should typecheck");
+    let linux =
+        compile_to_c(source).expect("parameterized static list control should lower through Linux");
+    assert!(linux.contains("badge__title"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("composed-view static list control fixture should analyze for native targets");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("parameterized static list control should lower through Android");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("parameterized static list control should lower through Windows");
+}
+
+#[test]
+fn composed_view_static_list_if_preserves_selected_effect_semantics() {
+    let skipped = r#"
+fn probe() -> bool {
+    print("probe")
+    return false
+}
+
+view Badge {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: ([if false: probe() else: true]).first
+}
+
+app Badge
+"#;
+
+    check_source(skipped).expect("statically skipped list branch fixture should typecheck");
+    compile_to_c(skipped)
+        .expect("statically skipped list branch should not require lowering its effects");
+
+    let selected = skipped.replace(
+        "visible: ([if false: probe() else: true]).first",
+        "visible: ([if true: probe() else: false]).first",
+    );
+    let error =
+        compile_to_c(&selected).expect_err("selected effectful list branch must remain explicit");
+    assert!(
+        error
+            .message
+            .contains("bootstrap dynamic UI expression currently supports")
+    );
+}
+
+#[test]
 fn composed_view_constant_list_slice_does_not_drop_effectful_items() {
     let source = r#"
 fn probe() -> bool {

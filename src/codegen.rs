@@ -12850,6 +12850,61 @@ fn substitute_transparent_native_component_parameters(
                 )?;
             }
         }
+        ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
+            substitute_transparent_native_component_parameters(
+                value,
+                bindings,
+                parameter_names,
+                backend,
+            )?;
+        }
+        ExprKind::ListIf {
+            condition,
+            binding,
+            value,
+            else_value,
+            ..
+        } => {
+            if binding.is_some() {
+                let mut reads = HashSet::new();
+                typecheck::collect_expr_reads(expr, &mut reads);
+                if let Some(parameter) = reads
+                    .iter()
+                    .find(|name| parameter_names.contains(name.as_str()))
+                {
+                    return Err(diag(
+                        expr.span,
+                        &format!(
+                            "{backend} transparent composed-view parameter '{parameter}' is not yet supported in optional-binding list control"
+                        ),
+                    )
+                    .with_note(
+                        "optional-binding list control needs explicit binding-scope substitution before native composition",
+                    ));
+                }
+            } else {
+                substitute_transparent_native_component_parameters(
+                    condition,
+                    bindings,
+                    parameter_names,
+                    backend,
+                )?;
+                substitute_transparent_native_component_parameters(
+                    value,
+                    bindings,
+                    parameter_names,
+                    backend,
+                )?;
+                if let Some(else_value) = else_value {
+                    substitute_transparent_native_component_parameters(
+                        else_value,
+                        bindings,
+                        parameter_names,
+                        backend,
+                    )?;
+                }
+            }
+        }
         ExprKind::Index { base, index, .. } => {
             substitute_transparent_native_component_parameters(
                 base,
@@ -34283,10 +34338,48 @@ fn fold_ui_primitive_list_expr(
         ExprKind::List(items) => {
             let mut folded = Vec::with_capacity(items.len());
             for item in items {
-                let Some(value) = fold_ui_primitive_expr(item, signatures)? else {
-                    return Ok(None);
-                };
-                folded.push(value);
+                match &item.kind {
+                    ExprKind::ListSpread {
+                        value,
+                        optional: false,
+                        ..
+                    } => {
+                        let Some(values) = fold_ui_primitive_list_expr(value, signatures)? else {
+                            return Ok(None);
+                        };
+                        folded.extend(values);
+                    }
+                    ExprKind::ListIf {
+                        condition,
+                        binding: None,
+                        value,
+                        else_value,
+                        ..
+                    } => {
+                        let Some(ConstantValue::Bool(condition)) =
+                            fold_ui_primitive_expr(condition, signatures)?
+                        else {
+                            return Ok(None);
+                        };
+                        let selected = if condition {
+                            Some(value.as_ref())
+                        } else {
+                            else_value.as_deref()
+                        };
+                        if let Some(selected) = selected {
+                            let Some(value) = fold_ui_primitive_expr(selected, signatures)? else {
+                                return Ok(None);
+                            };
+                            folded.push(value);
+                        }
+                    }
+                    _ => {
+                        let Some(value) = fold_ui_primitive_expr(item, signatures)? else {
+                            return Ok(None);
+                        };
+                        folded.push(value);
+                    }
+                }
             }
             Ok(Some(folded))
         }
