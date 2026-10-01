@@ -34442,24 +34442,42 @@ fn reusable_ui_list_projection_items(
                         value,
                         else_value,
                         ..
-                    } => {
-                        let Some(ConstantValue::Bool(condition)) =
-                            fold_ui_primitive_expr(condition, signatures)?
-                        else {
-                            return Ok(None);
-                        };
-                        let selected = if condition {
-                            Some(value.as_ref())
-                        } else {
-                            else_value.as_deref()
-                        };
-                        if let Some(selected) = selected {
-                            if !transparent_native_component_argument_is_reusable(selected) {
+                    } => match fold_ui_primitive_expr(condition, signatures)? {
+                        Some(ConstantValue::Bool(condition)) => {
+                            let selected = if condition {
+                                Some(value.as_ref())
+                            } else {
+                                else_value.as_deref()
+                            };
+                            if let Some(selected) = selected {
+                                if !transparent_native_component_argument_is_reusable(selected) {
+                                    return Ok(None);
+                                }
+                                projected.push(selected.clone());
+                            }
+                        }
+                        Some(_) => return Ok(None),
+                        None => {
+                            let Some(else_value) = else_value else {
+                                return Ok(None);
+                            };
+                            if !transparent_native_component_argument_is_reusable(condition)
+                                || !transparent_native_component_argument_is_reusable(value)
+                                || !transparent_native_component_argument_is_reusable(else_value)
+                            {
                                 return Ok(None);
                             }
-                            projected.push(selected.clone());
+                            projected.push(Expr {
+                                line: item.line,
+                                span: item.span,
+                                kind: ExprKind::Conditional {
+                                    then_expr: value.clone(),
+                                    cond: condition.clone(),
+                                    else_expr: else_value.clone(),
+                                },
+                            });
                         }
-                    }
+                    },
                     ExprKind::ListOptional {
                         value: optional, ..
                     } => {

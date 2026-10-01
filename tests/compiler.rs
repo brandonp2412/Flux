@@ -81879,7 +81879,7 @@ view Wrapper(index: i64, enabled: bool, maybeFlags: bool[]?) {
     Badge badge at 1,1
         spreadVisible: [...[enabled]][index]
         optionalSpreadVisible: [...?maybeFlags][index]
-        conditionalVisible: [if true: enabled else: false][index]
+        conditionalVisible: [if enabled: true else: false][index]
 }
 
 view App {
