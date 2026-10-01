@@ -12797,11 +12797,14 @@ fn flatten_transparent_native_view_element(
     instance_name: &str,
     backend: &str,
     stack: &mut Vec<String>,
-) -> Result<crate::ast::ViewElement, Diagnostic> {
+    parent_columns: &[crate::ast::GridTrack],
+    parent_rows: &[crate::ast::GridTrack],
+    parent_gap: u32,
+) -> Result<Vec<crate::ast::ViewElement>, Diagnostic> {
     if typecheck::BUILTIN_VIEW_ELEMENT_KINDS.contains(&element.kind.as_str()) {
         let mut lowered = element.clone();
         lowered.name = instance_name.to_string();
-        return Ok(lowered);
+        return Ok(vec![lowered]);
     }
 
     let target = program
@@ -12839,39 +12842,57 @@ fn flatten_transparent_native_view_element(
             target.name
         )));
     }
-    let transparent_grid = matches!(
+
+    let transparent_grid = target.grid.flow.is_none()
+        && target.grid.padding.unwrap_or(0) == 0
+        && !target.grid.scroll.unwrap_or(false)
+        && !target.grid.overlay.unwrap_or(false);
+    if !transparent_grid {
+        return Err(diag(
+            element.kind_span,
+            &format!(
+                "{backend} app backend currently lowers composed views only when their grid is transparent"
+            ),
+        )
+        .with_note(format!(
+            "view '{}' must use no flow, padding, scroll, or overlay until native nested-container lowering exists",
+            target.name
+        )));
+    }
+
+    let single_cell = matches!(
         target.grid.columns.as_slice(),
         [crate::ast::GridTrack::Fraction(1)]
     ) && matches!(
         target.grid.rows.as_slice(),
         [crate::ast::GridTrack::Fraction(1)]
-    ) && target.grid.flow.is_none()
-        && target.grid.gap.unwrap_or(0) == 0
-        && target.grid.padding.unwrap_or(0) == 0
-        && !target.grid.scroll.unwrap_or(false)
-        && !target.grid.overlay.unwrap_or(false);
-    if !transparent_grid || target.elements.len() != 1 {
-        return Err(diag(
-            element.kind_span,
-            &format!(
-                "{backend} app backend currently lowers composed views only when they are transparent single-cell native components"
-            ),
-        )
-        .with_note(format!(
-            "view '{}' must use one 1fr column, one 1fr row, no flow/gap/padding/scroll/overlay, and exactly one child element",
-            target.name
-        )));
-    }
-
-    let child = &target.elements[0];
-    if child.row != 1 || child.column != 1 || child.row_span != 1 || child.column_span != 1 {
-        return Err(diag(
-            child.span,
-            &format!(
-                "{backend} transparent composed view '{}' must place its child at 1,1 with a 1x1 span",
-                target.name
-            ),
-        ));
+    );
+    if !single_cell {
+        let column_start = usize::try_from(element.column.saturating_sub(1)).unwrap_or(usize::MAX);
+        let row_start = usize::try_from(element.row.saturating_sub(1)).unwrap_or(usize::MAX);
+        let column_span = usize::try_from(element.column_span).unwrap_or(usize::MAX);
+        let row_span = usize::try_from(element.row_span).unwrap_or(usize::MAX);
+        let column_end = column_start.saturating_add(column_span);
+        let row_end = row_start.saturating_add(row_span);
+        let parent_column_slice = parent_columns.get(column_start..column_end);
+        let parent_row_slice = parent_rows.get(row_start..row_end);
+        if column_span != target.grid.columns.len()
+            || row_span != target.grid.rows.len()
+            || parent_column_slice != Some(target.grid.columns.as_slice())
+            || parent_row_slice != Some(target.grid.rows.as_slice())
+            || parent_gap != target.grid.gap.unwrap_or(0)
+        {
+            return Err(diag(
+                element.kind_span,
+                &format!(
+                    "{backend} composed view '{}' needs a native nested layout container for this grid",
+                    target.name
+                ),
+            )
+            .with_note(
+                "multi-track stateless components can currently flatten only as transparent subgrids: the instance span, covered parent tracks, and parent gap must exactly match the component grid",
+            ));
+        }
     }
 
     let mut bindings = HashMap::<String, Expr>::new();
@@ -12905,37 +12926,51 @@ fn flatten_transparent_native_view_element(
         bindings.insert(param.name.clone(), value.clone());
     }
 
-    let mut child = child.clone();
     let parameter_names = target
         .params
         .iter()
         .map(|param| param.name.as_str())
         .collect::<HashSet<_>>();
-    for property in &mut child.properties {
-        substitute_transparent_native_component_parameters(
-            &mut property.value,
-            &bindings,
-            &parameter_names,
-            backend,
-        )?;
-    }
-
     stack.push(target.name.clone());
-    let child_instance_name = format!("{instance_name}__{}", child.name);
-    let mut lowered = flatten_transparent_native_view_element(
-        program,
-        &child,
-        &child_instance_name,
-        backend,
-        stack,
-    )?;
+    let mut lowered_elements = Vec::new();
+    for source_child in &target.elements {
+        let mut child = source_child.clone();
+        for property in &mut child.properties {
+            substitute_transparent_native_component_parameters(
+                &mut property.value,
+                &bindings,
+                &parameter_names,
+                backend,
+            )?;
+        }
+        let child_instance_name = format!("{instance_name}__{}", child.name);
+        let descendants = flatten_transparent_native_view_element(
+            program,
+            &child,
+            &child_instance_name,
+            backend,
+            stack,
+            &target.grid.columns,
+            &target.grid.rows,
+            target.grid.gap.unwrap_or(0),
+        )?;
+        for mut lowered in descendants {
+            if single_cell {
+                lowered.row = element.row;
+                lowered.column = element.column;
+                lowered.row_span = element.row_span;
+                lowered.column_span = element.column_span;
+            } else {
+                lowered.row = element.row.saturating_add(lowered.row.saturating_sub(1));
+                lowered.column = element
+                    .column
+                    .saturating_add(lowered.column.saturating_sub(1));
+            }
+            lowered_elements.push(lowered);
+        }
+    }
     stack.pop();
-
-    lowered.row = element.row;
-    lowered.column = element.column;
-    lowered.row_span = element.row_span;
-    lowered.column_span = element.column_span;
-    Ok(lowered)
+    Ok(lowered_elements)
 }
 
 fn flatten_transparent_native_root_view(
@@ -12947,12 +12982,15 @@ fn flatten_transparent_native_root_view(
     let mut elements = Vec::with_capacity(view.elements.len());
     for element in &view.elements {
         let mut stack = vec![view.name.clone()];
-        elements.push(flatten_transparent_native_view_element(
+        elements.extend(flatten_transparent_native_view_element(
             program,
             element,
             &element.name,
             backend,
             &mut stack,
+            &view.grid.columns,
+            &view.grid.rows,
+            view.grid.gap.unwrap_or(0),
         )?);
     }
     lowered.elements = elements;

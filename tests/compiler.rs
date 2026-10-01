@@ -81140,6 +81140,51 @@ app App
 }
 
 #[test]
+fn lowers_matching_transparent_composed_subgrids_on_linux_and_android() {
+    let source = r#"
+view Pair(left: str, right: str) {
+    grid columns: 1fr 1fr
+    grid rows: 1fr
+    grid gap: 8
+    Text first at 1,1
+        text: left
+    Text second at 1,2
+        text: right
+}
+
+view App {
+    grid columns: 1fr 1fr
+    grid rows: 1fr
+    grid gap: 8
+    Pair pair at 1,1 span columns 2
+        left: "One"
+        right: "Two"
+}
+
+app App
+"#;
+
+    check_source(source).expect("matching transparent subgrid should typecheck");
+    let linux =
+        compile_to_c(source).expect("matching transparent subgrid should lower through Linux");
+    assert!(linux.contains("pair__first"));
+    assert!(linux.contains("pair__second"));
+    assert!(linux.contains("gtk_grid_attach"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("matching transparent subgrid should analyze for Android");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("matching transparent subgrid should lower through Android");
+    assert!(android.contains("One"));
+    assert!(android.contains("Two"));
+}
+
+#[test]
 fn native_composed_view_lowering_rejects_observable_parameter_arguments() {
     let source = r#"
 fn invert(value: bool) -> bool {
@@ -81226,7 +81271,7 @@ app App
     assert!(
         error
             .message
-            .contains("transparent single-cell native components")
+            .contains("needs a native nested layout container")
     );
 }
 
