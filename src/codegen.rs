@@ -13041,6 +13041,275 @@ fn substitute_transparent_native_component_parameters(
     Ok(())
 }
 
+fn component_argument_scalar_derived(
+    value: &Expr,
+    ty: &Type,
+    base_name: &str,
+    path: &str,
+    name_span: SourceSpan,
+    type_span: SourceSpan,
+    signatures: &Signatures,
+    staged_derived: &mut Vec<crate::ast::ViewDerived>,
+    used_derived_names: &mut HashSet<String>,
+) -> Option<Expr> {
+    if transparent_native_component_argument_is_reusable(value) {
+        return Some(value.clone());
+    }
+    if !native_ui_component_argument_storage_supported(value, ty, signatures) {
+        return None;
+    }
+
+    let preferred_name = if path.is_empty() {
+        base_name.to_string()
+    } else {
+        format!("{base_name}__{path}")
+    };
+    let mut lowered_name = preferred_name.clone();
+    let mut suffix = 2usize;
+    while !used_derived_names.insert(lowered_name.clone()) {
+        lowered_name = format!("{preferred_name}_{suffix}");
+        suffix += 1;
+    }
+    staged_derived.push(crate::ast::ViewDerived {
+        name: lowered_name.clone(),
+        name_span,
+        ty: ty.clone(),
+        type_span,
+        value: value.clone(),
+        line: value.line,
+        span: value.span,
+    });
+    Some(Expr {
+        line: value.line,
+        span: value.span,
+        kind: ExprKind::Var(lowered_name),
+    })
+}
+
+fn scalarize_observable_component_argument(
+    value: &Expr,
+    ty: &Type,
+    base_name: &str,
+    path: &str,
+    name_span: SourceSpan,
+    type_span: SourceSpan,
+    signatures: &Signatures,
+    staged_derived: &mut Vec<crate::ast::ViewDerived>,
+    used_derived_names: &mut HashSet<String>,
+) -> Option<Expr> {
+    if transparent_native_component_argument_is_reusable(value) {
+        return Some(value.clone());
+    }
+
+    let canonical_ty = signatures.canonical_type(ty);
+    match canonical_ty {
+        Type::I64 | Type::Bool | Type::Str | Type::Optional(_) => {
+            component_argument_scalar_derived(
+                value,
+                ty,
+                base_name,
+                path,
+                name_span,
+                type_span,
+                signatures,
+                staged_derived,
+                used_derived_names,
+            )
+        }
+        Type::List(element_ty) => match &value.kind {
+            ExprKind::List(items) => {
+                let mut lowered_items = Vec::with_capacity(items.len());
+                for (index, item) in items.iter().enumerate() {
+                    if matches!(
+                        item.kind,
+                        ExprKind::ListSpread { .. }
+                            | ExprKind::ListOptional { .. }
+                            | ExprKind::ListIf { .. }
+                    ) {
+                        return None;
+                    }
+                    let item_path = if path.is_empty() {
+                        format!("item_{index}")
+                    } else {
+                        format!("{path}__item_{index}")
+                    };
+                    lowered_items.push(scalarize_observable_component_argument(
+                        item,
+                        &element_ty,
+                        base_name,
+                        &item_path,
+                        name_span,
+                        type_span,
+                        signatures,
+                        staged_derived,
+                        used_derived_names,
+                    )?);
+                }
+                Some(Expr {
+                    line: value.line,
+                    span: value.span,
+                    kind: ExprKind::List(lowered_items),
+                })
+            }
+            ExprKind::Slice {
+                base,
+                start,
+                end,
+                step,
+                optional: false,
+            } => {
+                let base_path = if path.is_empty() {
+                    "slice_base".to_string()
+                } else {
+                    format!("{path}__slice_base")
+                };
+                let lowered_base = scalarize_observable_component_argument(
+                    base,
+                    &Type::List(element_ty.clone()),
+                    base_name,
+                    &base_path,
+                    name_span,
+                    type_span,
+                    signatures,
+                    staged_derived,
+                    used_derived_names,
+                )?;
+                let mut lower_bound =
+                    |bound: &Option<Box<Expr>>, suffix: &str| -> Option<Option<Box<Expr>>> {
+                        let Some(bound) = bound else {
+                            return Some(None);
+                        };
+                        let bound_path = if path.is_empty() {
+                            suffix.to_string()
+                        } else {
+                            format!("{path}__{suffix}")
+                        };
+                        scalarize_observable_component_argument(
+                            bound,
+                            &Type::I64,
+                            base_name,
+                            &bound_path,
+                            name_span,
+                            type_span,
+                            signatures,
+                            staged_derived,
+                            used_derived_names,
+                        )
+                        .map(|lowered| Some(Box::new(lowered)))
+                    };
+                let start = lower_bound(start, "slice_start")?;
+                let end = lower_bound(end, "slice_end")?;
+                let step = lower_bound(step, "slice_step")?;
+                Some(Expr {
+                    line: value.line,
+                    span: value.span,
+                    kind: ExprKind::Slice {
+                        base: Box::new(lowered_base),
+                        start,
+                        end,
+                        step,
+                        optional: false,
+                    },
+                })
+            }
+            _ => None,
+        },
+        Type::Record(type_fields) => {
+            let ExprKind::RecordLiteral { fields } = &value.kind else {
+                return None;
+            };
+            let mut lowered_fields = Vec::with_capacity(fields.len());
+            for (index, field) in fields.iter().enumerate() {
+                let expected = if let Some(name) = field.name.as_deref() {
+                    type_fields
+                        .iter()
+                        .find(|candidate| candidate.name.as_deref() == Some(name))
+                } else {
+                    type_fields.get(index)
+                }?;
+                let field_path = if path.is_empty() {
+                    format!("field_{index}")
+                } else {
+                    format!("{path}__field_{index}")
+                };
+                let mut lowered = field.clone();
+                lowered.value = scalarize_observable_component_argument(
+                    &field.value,
+                    &expected.ty,
+                    base_name,
+                    &field_path,
+                    name_span,
+                    type_span,
+                    signatures,
+                    staged_derived,
+                    used_derived_names,
+                )?;
+                lowered_fields.push(lowered);
+            }
+            Some(Expr {
+                line: value.line,
+                span: value.span,
+                kind: ExprKind::RecordLiteral {
+                    fields: lowered_fields,
+                },
+            })
+        }
+        Type::Named(ref name) => {
+            let Some(struct_signature) = signatures.struct_type(name) else {
+                return None;
+            };
+            let ExprKind::StructLiteral {
+                name: literal_name,
+                name_span: literal_name_span,
+                base: None,
+                fields,
+            } = &value.kind
+            else {
+                return None;
+            };
+            if literal_name != name {
+                return None;
+            }
+            let mut lowered_fields = Vec::with_capacity(fields.len());
+            for (index, field) in fields.iter().enumerate() {
+                let expected = struct_signature
+                    .fields
+                    .iter()
+                    .find(|candidate| candidate.name == field.name)?;
+                let field_path = if path.is_empty() {
+                    format!("field_{index}")
+                } else {
+                    format!("{path}__field_{index}")
+                };
+                let mut lowered = field.clone();
+                lowered.value = scalarize_observable_component_argument(
+                    &field.value,
+                    &expected.ty,
+                    base_name,
+                    &field_path,
+                    name_span,
+                    type_span,
+                    signatures,
+                    staged_derived,
+                    used_derived_names,
+                )?;
+                lowered_fields.push(lowered);
+            }
+            Some(Expr {
+                line: value.line,
+                span: value.span,
+                kind: ExprKind::StructLiteral {
+                    name: literal_name.clone(),
+                    name_span: *literal_name_span,
+                    base: None,
+                    fields: lowered_fields,
+                },
+            })
+        }
+        _ => None,
+    }
+}
+
 fn flatten_transparent_native_view_element(
     program: &Program,
     signatures: &Signatures,
@@ -13152,7 +13421,20 @@ fn flatten_transparent_native_view_element(
             )
         })?;
         if supplied.is_some() && !transparent_native_component_argument_is_reusable(value) {
-            if !native_ui_component_argument_storage_supported(value, &param.ty, signatures) {
+            let base_name = format!("__component_{instance_name}__param_{}", param.name);
+            let mut staged_derived = Vec::new();
+            let mut staged_names = used_derived_names.clone();
+            let Some(lowered_value) = scalarize_observable_component_argument(
+                value,
+                &param.ty,
+                &base_name,
+                "",
+                param.name_span,
+                param.type_span,
+                signatures,
+                &mut staged_derived,
+                &mut staged_names,
+            ) else {
                 return Err(diag(
                     value.span,
                     &format!(
@@ -13161,33 +13443,12 @@ fn flatten_transparent_native_view_element(
                     ),
                 )
                 .with_note(
-                    "single-evaluation component argument storage currently supports bool/i64/str values, synchronous optional-scalar calls, and ownership-safe optional index/field projections handled by the dynamic UI emitter",
+                    "single-evaluation component argument storage supports scalar values and fixed list/record/struct aggregates whose observable leaves can be scalarized without changing control flow or ownership",
                 ));
-            }
-            let base_name = format!("__component_{instance_name}__param_{}", param.name);
-            let mut lowered_name = base_name.clone();
-            let mut suffix = 2usize;
-            while !used_derived_names.insert(lowered_name.clone()) {
-                lowered_name = format!("{base_name}_{suffix}");
-                suffix += 1;
-            }
-            lowered_derived.push(crate::ast::ViewDerived {
-                name: lowered_name.clone(),
-                name_span: param.name_span,
-                ty: param.ty.clone(),
-                type_span: param.type_span,
-                value: value.clone(),
-                line: value.line,
-                span: value.span,
-            });
-            bindings.insert(
-                param.name.clone(),
-                Expr {
-                    line: value.line,
-                    span: value.span,
-                    kind: ExprKind::Var(lowered_name),
-                },
-            );
+            };
+            *used_derived_names = staged_names;
+            lowered_derived.extend(staged_derived);
+            bindings.insert(param.name.clone(), lowered_value);
         } else {
             bindings.insert(param.name.clone(), value.clone());
         }

@@ -83756,7 +83756,7 @@ app App
 }
 
 #[test]
-fn composed_view_reusable_list_slice_parameter_rejects_effectful_items() {
+fn composed_view_effectful_list_slice_parameter_preserves_unselected_effects() {
     let source = r#"
 fn probe() -> bool {
     print("probe")
@@ -83783,17 +83783,41 @@ app App
 
     check_source(source)
         .expect("effectful sliced-list component argument fixture should typecheck");
-    let error = compile_to_c(source)
-        .expect_err("effectful sliced-list component argument must preserve single evaluation");
-    assert!(
-        error
-            .message
-            .contains("needs scalar per-instance storage for this observable argument")
-    );
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.contains("__component_badge__param_flags__slice_base__item_0"),
+            "effectful slice base item should use deterministic per-instance scalar storage"
+        );
+        assert!(
+            generated.contains("flux__fn_probe()"),
+            "unselected effectful slice-base items must still be evaluated eagerly"
+        );
+    };
+
+    let linux = compile_to_c(source)
+        .expect("effectful sliced-list component argument should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful sliced-list component argument should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful sliced-list component argument should lower natively");
+        assert_target(&generated);
+    }
 }
 
 #[test]
-fn composed_view_reusable_list_parameter_rejects_effectful_items() {
+fn composed_view_effectful_list_parameter_scalarizes_observable_items() {
     let source = r#"
 fn probe() -> bool {
     print("probe")
@@ -83819,14 +83843,37 @@ app App
 "#;
 
     check_source(source).expect("effectful list component argument fixture should typecheck");
-    let error = compile_to_c(source).expect_err(
-        "effectful list component argument must keep single-evaluation storage semantics",
-    );
-    assert!(
-        error
-            .message
-            .contains("needs scalar per-instance storage for this observable argument")
-    );
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.contains("__component_badge__param_flags__item_0"),
+            "effectful list item should use deterministic per-instance scalar storage"
+        );
+        assert!(
+            generated.contains("flux__fn_probe()"),
+            "observable list item must be evaluated into that storage"
+        );
+    };
+
+    let linux =
+        compile_to_c(source).expect("effectful list component argument should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful list component argument should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful list component argument should lower natively");
+        assert_target(&generated);
+    }
 }
 
 #[test]
@@ -84751,7 +84798,7 @@ app App
 }
 
 #[test]
-fn composed_view_reusable_record_parameter_rejects_effectful_fields() {
+fn composed_view_effectful_record_parameter_scalarizes_observable_fields() {
     let source = r#"
 fn probe() -> bool {
     print("probe")
@@ -84777,14 +84824,101 @@ app App
 "#;
 
     check_source(source).expect("effectful record component argument fixture should typecheck");
-    let error = compile_to_c(source).expect_err(
-        "effectful record component argument must keep single-evaluation storage semantics",
-    );
-    assert!(
-        error
-            .message
-            .contains("needs scalar per-instance storage for this observable argument")
-    );
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.contains("__component_badge__param_flags__field_0"),
+            "effectful record field should use deterministic per-instance scalar storage"
+        );
+        assert!(
+            generated.contains("flux__fn_probe()"),
+            "observable record field must be evaluated into that storage"
+        );
+    };
+
+    let linux = compile_to_c(source)
+        .expect("effectful record component argument should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful record component argument should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful record component argument should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
+fn composed_view_effectful_struct_parameter_scalarizes_observable_fields() {
+    let source = r#"
+struct Flags {
+    enabled: bool
+}
+
+fn probe() -> bool {
+    print("probe")
+    return true
+}
+
+view Badge(flags: Flags) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: flags.enabled
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        flags: Flags { enabled: probe() }
+}
+
+app App
+"#;
+
+    check_source(source).expect("effectful struct component argument fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.contains("__component_badge__param_flags__field_0"),
+            "effectful struct field should use deterministic per-instance scalar storage"
+        );
+        assert!(
+            generated.contains("flux__fn_probe()"),
+            "observable struct field must be evaluated into that storage"
+        );
+    };
+
+    let linux = compile_to_c(source)
+        .expect("effectful struct component argument should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful struct component argument should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful struct component argument should lower natively");
+        assert_target(&generated);
+    }
 }
 
 #[test]
