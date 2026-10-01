@@ -82042,12 +82042,12 @@ app App
 #[test]
 fn lowers_composed_view_statically_empty_runtime_list_projections_on_all_native_backends() {
     let source = r#"
-view Badge(indexed: bool, nestedIndexed: bool, firstVisible: bool, lastVisible: bool, singleVisible: bool) {
+view Badge(indexed: bool, nestedIndexed: bool, sliceIndexed: bool, firstVisible: bool, lastVisible: bool, singleVisible: bool, sliceSingle: bool) {
     grid columns: 1fr
     grid rows: 1fr
     Text title at 1,1
         text: "Flux"
-        visible: indexed && nestedIndexed && firstVisible && lastVisible && singleVisible
+        visible: indexed && nestedIndexed && sliceIndexed && firstVisible && lastVisible && singleVisible && sliceSingle
 }
 
 view Wrapper(index: i64) {
@@ -82056,9 +82056,11 @@ view Wrapper(index: i64) {
     Badge badge at 1,1
         indexed: ([if false: true])[index]
         nestedIndexed: ([...[if false: true]])[index]
+        sliceIndexed: ([true][1:])[index]
         firstVisible: ([if false: true]).first
         lastVisible: ([if false: true]).last
         singleVisible: ([if false: true]).single
+        sliceSingle: ([true][1:]).single
 }
 
 view App {

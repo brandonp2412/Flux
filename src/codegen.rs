@@ -34584,6 +34584,32 @@ fn reusable_ui_runtime_list_candidates(
     expr: &Expr,
     signatures: &Signatures,
 ) -> Result<Option<Vec<(Option<Expr>, Expr)>>, Diagnostic> {
+    if let ExprKind::Slice {
+        base,
+        optional: false,
+        ..
+    } = &expr.kind
+        && let Some(projected) = reusable_ui_list_projection_items(expr, signatures)?
+    {
+        if !projected.is_empty() {
+            return Ok(Some(
+                projected.into_iter().map(|value| (None, value)).collect(),
+            ));
+        }
+        let Some(base_candidates) = reusable_ui_runtime_list_candidates(base, signatures)? else {
+            return Ok(None);
+        };
+        let Some((_, representative)) = base_candidates.first() else {
+            return Ok(None);
+        };
+        let absent = Expr {
+            line: expr.line,
+            span: expr.span,
+            kind: ExprKind::Bool(false),
+        };
+        return Ok(Some(vec![(Some(absent), representative.clone())]));
+    }
+
     let ExprKind::List(items) = &expr.kind else {
         return Ok(None);
     };
@@ -34658,6 +34684,15 @@ fn reusable_ui_runtime_list_length_c(
     signatures: &Signatures,
     view_identity: Option<usize>,
 ) -> Result<Option<String>, Diagnostic> {
+    if !matches!(&expr.kind, ExprKind::List(_))
+        && let Some(projected) = reusable_ui_list_projection_items(expr, signatures)?
+    {
+        let Ok(len) = i64::try_from(projected.len()) else {
+            return Ok(None);
+        };
+        return Ok(Some(format!("INT64_C({len})")));
+    }
+
     let ExprKind::List(items) = &expr.kind else {
         return Ok(None);
     };
