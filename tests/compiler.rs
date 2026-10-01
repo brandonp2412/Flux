@@ -90850,7 +90850,7 @@ fn websocket_peer_close_finishes_after_active_writer() {
     let source = format!(
         r#"fn flood(session: i64) -> void {{
     var count: i64 = 0
-    while count < 64:
+    while count < 4096:
         let writeError: error = websocket.writeText(session, "{payload}")
         if writeError != nil:
             return
