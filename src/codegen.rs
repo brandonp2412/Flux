@@ -12651,6 +12651,128 @@ fn stable_android_element_id(view_name: &str, element_name: &str) -> u32 {
     if id == 0 { 1 } else { id }
 }
 
+fn flatten_transparent_native_view_element(
+    program: &Program,
+    element: &crate::ast::ViewElement,
+    instance_name: &str,
+    backend: &str,
+    stack: &mut Vec<String>,
+) -> Result<crate::ast::ViewElement, Diagnostic> {
+    if typecheck::BUILTIN_VIEW_ELEMENT_KINDS.contains(&element.kind.as_str()) {
+        let mut lowered = element.clone();
+        lowered.name = instance_name.to_string();
+        return Ok(lowered);
+    }
+
+    let target = program
+        .views
+        .iter()
+        .find(|view| view.name == element.kind)
+        .ok_or_else(|| {
+            diag(
+                element.kind_span,
+                &format!(
+                    "{backend} app backend cannot resolve composed view '{}'",
+                    element.kind
+                ),
+            )
+        })?;
+
+    if stack.iter().any(|name| name == &target.name) {
+        return Err(diag(
+            element.kind_span,
+            &format!(
+                "{backend} app backend encountered recursive composed view '{}'",
+                target.name
+            ),
+        ));
+    }
+    if !target.params.is_empty() || !target.states.is_empty() || !target.derived.is_empty() {
+        return Err(diag(
+            element.kind_span,
+            &format!(
+                "{backend} app backend currently lowers only stateless zero-parameter composed views"
+            ),
+        )
+        .with_note(format!(
+            "view '{}' declares parameters, state, or derived values; keep it as a transparent stateless component for native composition in this bootstrap slice",
+            target.name
+        )));
+    }
+    let transparent_grid = matches!(
+        target.grid.columns.as_slice(),
+        [crate::ast::GridTrack::Fraction(1)]
+    ) && matches!(
+        target.grid.rows.as_slice(),
+        [crate::ast::GridTrack::Fraction(1)]
+    ) && target.grid.flow.is_none()
+        && target.grid.gap.unwrap_or(0) == 0
+        && target.grid.padding.unwrap_or(0) == 0
+        && !target.grid.scroll.unwrap_or(false)
+        && !target.grid.overlay.unwrap_or(false);
+    if !transparent_grid || target.elements.len() != 1 {
+        return Err(diag(
+            element.kind_span,
+            &format!(
+                "{backend} app backend currently lowers composed views only when they are transparent single-cell native components"
+            ),
+        )
+        .with_note(format!(
+            "view '{}' must use one 1fr column, one 1fr row, no flow/gap/padding/scroll/overlay, and exactly one child element",
+            target.name
+        )));
+    }
+
+    let child = &target.elements[0];
+    if child.row != 1 || child.column != 1 || child.row_span != 1 || child.column_span != 1 {
+        return Err(diag(
+            child.span,
+            &format!(
+                "{backend} transparent composed view '{}' must place its child at 1,1 with a 1x1 span",
+                target.name
+            ),
+        ));
+    }
+
+    stack.push(target.name.clone());
+    let child_instance_name = format!("{instance_name}__{}", child.name);
+    let mut lowered = flatten_transparent_native_view_element(
+        program,
+        child,
+        &child_instance_name,
+        backend,
+        stack,
+    )?;
+    stack.pop();
+
+    lowered.row = element.row;
+    lowered.column = element.column;
+    lowered.row_span = element.row_span;
+    lowered.column_span = element.column_span;
+    Ok(lowered)
+}
+
+fn flatten_transparent_native_root_view(
+    program: &Program,
+    view: &crate::ast::ViewDef,
+    backend: &str,
+) -> Result<crate::ast::ViewDef, Diagnostic> {
+    let mut lowered = view.clone();
+    let mut elements = Vec::with_capacity(view.elements.len());
+    for element in &view.elements {
+        let mut stack = vec![view.name.clone()];
+        elements.push(flatten_transparent_native_view_element(
+            program,
+            element,
+            &element.name,
+            backend,
+            &mut stack,
+        )?);
+    }
+    lowered.elements = elements;
+    Ok(lowered)
+}
+
 fn emit_android_native_application(
     out: &mut String,
     program: &Program,
@@ -12661,7 +12783,7 @@ fn emit_android_native_application(
         .application
         .as_ref()
         .expect("application lowering requires app declaration");
-    let view = program
+    let source_view = program
         .views
         .iter()
         .find(|view| view.name == application.view_name)
@@ -12671,6 +12793,8 @@ fn emit_android_native_application(
                 "app root view was not found during Android codegen",
             )
         })?;
+    let lowered_view = flatten_transparent_native_root_view(program, source_view, "Android")?;
+    let view = &lowered_view;
 
     let accessibility_order = ordered_accessibility_elements(view, signatures)?;
     let mut stable_ids = HashMap::<u32, &str>::new();
@@ -27264,7 +27388,7 @@ fn emit_linux_gtk_application(
         .application
         .as_ref()
         .expect("application lowering requires app declaration");
-    let view = program
+    let source_view = program
         .views
         .iter()
         .find(|view| view.name == application.view_name)
@@ -27274,6 +27398,8 @@ fn emit_linux_gtk_application(
                 "app root view was not found during codegen",
             )
         })?;
+    let lowered_view = flatten_transparent_native_root_view(program, source_view, "Linux")?;
+    let view = &lowered_view;
     let _ = view_layout_transition_duration(view, signatures)?;
     let mut development_callbacks = linux_ui_zero_arg_callback_functions(view);
     for metadata in [

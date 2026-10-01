@@ -81089,6 +81089,105 @@ app Screen
 }
 
 #[test]
+fn lowers_transparent_stateless_composed_views_on_linux_and_android() {
+    let source = r#"
+view Badge {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+}
+
+view BadgeShell {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    BadgeShell card at 1,1
+}
+
+app App
+"#;
+
+    check_source(source).expect("transparent composed views should typecheck");
+    let linux = compile_to_c(source)
+        .expect("transparent composed views should lower through the Linux native backend");
+    assert!(linux.contains("card__badge__title"));
+    assert!(linux.contains("gtk_label_new"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("transparent composed-view app should analyze for Android");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("transparent composed views should lower through the Android native backend");
+    assert!(android.contains("android/widget/TextView"));
+    assert!(android.contains("Flux"));
+}
+
+#[test]
+fn native_composed_view_lowering_keeps_stateful_and_structural_cases_explicit() {
+    let parameterized = r#"
+view Badge(label: str) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: label
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        label: "Flux"
+}
+
+app App
+"#;
+    let error = compile_to_c(parameterized).expect_err(
+        "parameterized composed native views must remain explicit until binding lowering exists",
+    );
+    assert!(
+        error
+            .message
+            .contains("currently lowers only stateless zero-parameter composed views")
+    );
+
+    let multi_child = r#"
+view Badge {
+    grid columns: 1fr 1fr
+    grid rows: 1fr
+    Text first at 1,1
+        text: "One"
+    Text second at 1,2
+        text: "Two"
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+}
+
+app App
+"#;
+    let error = compile_to_c(multi_child)
+        .expect_err("multi-child composed native views need a real nested native layout container");
+    assert!(
+        error
+            .message
+            .contains("transparent single-cell native components")
+    );
+}
+
+#[test]
 fn composes_parameterized_views_through_typed_data_properties() {
     let source = r#"
 view Greeting(name: str, *, selectable: bool = false) {
