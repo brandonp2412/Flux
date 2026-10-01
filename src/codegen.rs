@@ -21389,7 +21389,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         if uses_border {
             control_subclass_originals.push(format!("flux__win_border_orig_{index}"));
         }
-        if element.kind == "TextInput" {
+        if element.kind == "TextInput" && view_property(element, "on_submit").is_some() {
             let multiline = view_property(element, "multiline")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
                 .unwrap_or(false);

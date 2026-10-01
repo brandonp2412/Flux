@@ -67331,6 +67331,23 @@ app Form
     assert!(android.contains("flux__ui_bounded_length(value, 65536"));
     assert!(android.contains("flux__ui_set_state_query(value); if (flux__android_activity != NULL) flux__android_ui_refresh"));
 
+    let change_only_source =
+        source.replace("        onSubmit: query, submitted => submitted\n", "");
+    let change_only_program = fluxc::parser::parse(&change_only_source)
+        .expect("change-only TextInput should parse for Windows");
+    let change_only_signatures = fluxc::typecheck::check(&change_only_program)
+        .expect("change-only TextInput should typecheck for Windows");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &change_only_program,
+        &change_only_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("change-only TextInput should lower on Windows without a submit subclass");
+    assert!(windows.contains("flux__win_change_0"));
+    assert!(!windows.contains("flux__win_input_orig_0"));
+    assert!(!windows.contains("flux__win_input_proc_0"));
+
     let missing_value = source.replace(
         "onChange: query, value => value",
         "onChange: query => \"fixed\"",
