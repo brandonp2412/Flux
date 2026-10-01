@@ -35575,6 +35575,16 @@ fn statically_selected_ui_list_items<'a>(
     let mut selected = Vec::with_capacity(items.len());
     for item in items {
         match &item.kind {
+            ExprKind::ListSpread {
+                value,
+                optional: false,
+                ..
+            } => {
+                let Some(spread) = statically_selected_ui_list_items(value, signatures)? else {
+                    return Ok(None);
+                };
+                selected.extend(spread);
+            }
             ExprKind::ListIf {
                 condition,
                 binding: None,
@@ -37434,7 +37444,10 @@ fn ui_expr_known_type(
         ExprKind::StructLiteral {
             name, base: None, ..
         } => Type::Named(name.clone()),
-        ExprKind::List(items) => {
+        ExprKind::List(_) => {
+            let items = statically_selected_ui_list_items(expr, signatures)
+                .ok()
+                .flatten()?;
             let first = items.first()?;
             let first_ty = ui_expr_known_type(first, view, signatures)?;
             let first_ty = signatures.canonical_type(&first_ty);

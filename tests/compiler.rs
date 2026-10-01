@@ -83779,6 +83779,92 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_effectful_copy_aggregate_spreads_on_all_native_backends() {
+    let source = r#"
+struct Flags {
+    enabled: bool
+}
+
+fn makeFlags(value: bool) -> Flags {
+    print("makeFlags")
+    return Flags { enabled: value }
+}
+
+fn choose() -> i64 {
+    print("choose")
+    return 1
+}
+
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr
+    Badge edge at 1,1
+        visible: ([...[makeFlags(false), makeFlags(windowIsLandscape)]].last).enabled
+    Badge indexed at 2,1
+        visible: ([...[makeFlags(false), makeFlags(windowIsLandscape)]][choose()]).enabled
+}
+
+app App
+"#;
+
+    check_source(source).expect("effectful Copy aggregate spread fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__ui_list_property_item_").count() >= 2,
+            "aggregate spread list properties should materialize flattened items in order"
+        );
+        assert!(
+            generated.matches("flux__ui_list_item_").count() >= 2,
+            "aggregate spread runtime indexes should materialize flattened items in order"
+        );
+        let first_index_item = generated
+            .find("flux__ui_list_item_")
+            .expect("runtime-index spread should emit list temporaries");
+        let choose = generated
+            .find(" = (flux__fn_choose());")
+            .expect("runtime spread index should evaluate once");
+        assert!(
+            first_index_item < choose,
+            "flattened spread items must be evaluated before the runtime index"
+        );
+        assert!(
+            generated.matches("flux__fn_makeFlags(").count() >= 4,
+            "all aggregate spread producers should remain observable"
+        );
+        assert!(generated.contains(".flux__field_enabled"));
+    };
+
+    let linux =
+        compile_to_c(source).expect("effectful Copy aggregate spreads should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful Copy aggregate spread fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful Copy aggregate spreads should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn lowers_composed_view_runtime_optional_struct_field_on_all_native_backends() {
     let source = r#"
 struct Flags {
