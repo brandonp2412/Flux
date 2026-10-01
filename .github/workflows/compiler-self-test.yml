@@ -61,7 +61,7 @@ jobs:
           clang --version
       - name: Build and launch native Windows smoke
         shell: pwsh
-        run: cargo test --locked windows_native_gui_runtime_smoke_uses_host_target_by_default -- --nocapture
+        run: cargo test --locked windows_native_gui_runtime_smoke -- --nocapture
       - name: Build and validate native MSIX
         shell: pwsh
         run: |

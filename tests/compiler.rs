@@ -5989,6 +5989,336 @@ stderr:
     );
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_native_gui_runtime_smoke_exercises_parameterized_multi_window_lifecycle() {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn FindWindowW(class_name: *const u16, window_name: *const u16) -> *mut std::ffi::c_void;
+        fn FindWindowExW(
+            parent: *mut std::ffi::c_void,
+            child_after: *mut std::ffi::c_void,
+            class_name: *const u16,
+            window_name: *const u16,
+        ) -> *mut std::ffi::c_void;
+        fn PostMessageW(
+            window: *mut std::ffi::c_void,
+            message: u32,
+            wparam: usize,
+            lparam: isize,
+        ) -> i32;
+        fn IsWindow(window: *mut std::ffi::c_void) -> i32;
+        fn IsWindowVisible(window: *mut std::ffi::c_void) -> i32;
+    }
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn terminate(child: &mut std::process::Child) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    unsafe fn find_top_level_with_child(
+        top_level_class: *const u16,
+        child_class: *const u16,
+        child_text: *const u16,
+    ) -> Option<(*mut std::ffi::c_void, *mut std::ffi::c_void)> {
+        let mut after = std::ptr::null_mut();
+        loop {
+            let window = unsafe {
+                FindWindowExW(
+                    std::ptr::null_mut(),
+                    after,
+                    top_level_class,
+                    std::ptr::null(),
+                )
+            };
+            if window.is_null() {
+                return None;
+            }
+            let child =
+                unsafe { FindWindowExW(window, std::ptr::null_mut(), child_class, child_text) };
+            if !child.is_null() {
+                return Some((window, child));
+            }
+            after = window;
+        }
+    }
+
+    const BM_CLICK: u32 = 0x00F5;
+    const WINDOW_TITLE: &str = "Flux Windows multi-window smoke";
+    const OPEN_TEXT: &str = "Open route";
+    const CLOSE_TEXT: &str = "Close route";
+    const EXIT_TEXT: &str = "Exit root";
+    const ROUTE_TEXT: &str = "Route alive";
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-windows-multi-window-runtime-smoke-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("Windows multi-window smoke directory should be writable");
+    let source = root.join("main.flux");
+    fs::write(
+        &source,
+        r#"
+fn openRoute() -> void {
+    window.open(detail, "Route alive")
+}
+
+fn closeRoute() -> void {
+    window.close()
+}
+
+fn exitRoot() -> void {
+    process.exit(31)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Button open at 1,1
+        text: "Open route"
+        onPress: openRoute
+    Button exit at 2,1
+        text: "Exit root"
+        onPress: exitRoot
+}
+
+view Detail(label: str) {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text status at 1,1
+        text: label
+    Button close at 2,1
+        text: "Close route"
+        onPress: closeRoute
+}
+
+route detail = Detail
+app Screen(title: "Flux Windows multi-window smoke")
+"#,
+    )
+    .expect("Windows multi-window smoke source should be writable");
+
+    let binary = root.join("multi-window-runtime-smoke.exe");
+    let build = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .args(["--mode", "debug"])
+        .output()
+        .expect("fluxc should launch for native Windows multi-window smoke");
+    assert!(
+        build.status.success(),
+        "native Windows multi-window smoke build failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let mut child = Command::new(&binary)
+        .spawn()
+        .expect("native Windows multi-window smoke executable should launch");
+    let window_title = wide(WINDOW_TITLE);
+    let window_class = wide("FluxNativeWindow");
+    let button_class = wide("BUTTON");
+    let static_class = wide("STATIC");
+    let open_text = wide(OPEN_TEXT);
+    let close_text = wide(CLOSE_TEXT);
+    let exit_text = wide(EXIT_TEXT);
+    let route_text = wide(ROUTE_TEXT);
+    let find_deadline = Instant::now() + Duration::from_secs(15);
+
+    let root_window = loop {
+        if let Some(status) = child
+            .try_wait()
+            .expect("native Windows multi-window smoke process status should be readable")
+        {
+            let _ = fs::remove_dir_all(&root);
+            panic!(
+                "native Windows multi-window smoke exited before creating its root window: {:?}",
+                status.code()
+            );
+        }
+        let found = unsafe { FindWindowW(std::ptr::null(), window_title.as_ptr()) };
+        if !found.is_null() {
+            break found;
+        }
+        if Instant::now() >= find_deadline {
+            terminate(&mut child);
+            let _ = fs::remove_dir_all(&root);
+            panic!("native Windows multi-window smoke did not create its root HWND");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+
+    let open_button = loop {
+        let found = unsafe {
+            FindWindowExW(
+                root_window,
+                std::ptr::null_mut(),
+                button_class.as_ptr(),
+                open_text.as_ptr(),
+            )
+        };
+        if !found.is_null() {
+            break found;
+        }
+        if Instant::now() >= find_deadline {
+            terminate(&mut child);
+            let _ = fs::remove_dir_all(&root);
+            panic!("native Windows multi-window smoke did not create its open button");
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+
+    assert_ne!(
+        unsafe { PostMessageW(open_button, BM_CLICK, 0, 0) },
+        0,
+        "opening the typed secondary route should post through its root BUTTON"
+    );
+
+    let (route_window, close_button) = loop {
+        if let Some(status) = child
+            .try_wait()
+            .expect("native Windows multi-window smoke process status should be readable")
+        {
+            let _ = fs::remove_dir_all(&root);
+            panic!(
+                "native Windows multi-window smoke exited before opening its route: {:?}",
+                status.code()
+            );
+        }
+        if let Some(found) = unsafe {
+            find_top_level_with_child(
+                window_class.as_ptr(),
+                button_class.as_ptr(),
+                close_text.as_ptr(),
+            )
+        } {
+            break found;
+        }
+        if Instant::now() >= find_deadline {
+            terminate(&mut child);
+            let _ = fs::remove_dir_all(&root);
+            panic!("typed secondary route did not create a second top-level HWND");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+
+    assert_ne!(
+        route_window, root_window,
+        "secondary route must own a distinct HWND"
+    );
+    assert_ne!(
+        unsafe { IsWindowVisible(route_window) },
+        0,
+        "secondary route HWND should be visible"
+    );
+    let parameter_text = unsafe {
+        FindWindowExW(
+            route_window,
+            std::ptr::null_mut(),
+            static_class.as_ptr(),
+            route_text.as_ptr(),
+        )
+    };
+    assert!(
+        !parameter_text.is_null(),
+        "parameterized route value should reach the secondary native Text control"
+    );
+
+    assert_ne!(
+        unsafe { PostMessageW(close_button, BM_CLICK, 0, 0) },
+        0,
+        "closing the secondary route should post through its own BUTTON"
+    );
+    let close_deadline = Instant::now() + Duration::from_secs(10);
+    while unsafe { IsWindow(route_window) } != 0 {
+        if let Some(status) = child
+            .try_wait()
+            .expect("native Windows multi-window smoke process status should be readable")
+        {
+            let _ = fs::remove_dir_all(&root);
+            panic!(
+                "closing a secondary route must not terminate the root process: {:?}",
+                status.code()
+            );
+        }
+        if Instant::now() >= close_deadline {
+            terminate(&mut child);
+            let _ = fs::remove_dir_all(&root);
+            panic!("window.close() did not destroy the secondary route HWND");
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    assert_ne!(
+        unsafe { IsWindow(root_window) },
+        0,
+        "root HWND should survive secondary route closure"
+    );
+    assert_ne!(
+        unsafe { IsWindowVisible(root_window) },
+        0,
+        "root HWND should remain visible after secondary route closure"
+    );
+    assert!(
+        child
+            .try_wait()
+            .expect("native Windows multi-window smoke process status should be readable")
+            .is_none(),
+        "root process should still be alive after secondary route closure"
+    );
+
+    let exit_button = unsafe {
+        FindWindowExW(
+            root_window,
+            std::ptr::null_mut(),
+            button_class.as_ptr(),
+            exit_text.as_ptr(),
+        )
+    };
+    assert!(
+        !exit_button.is_null(),
+        "root exit button should remain addressable after route closure"
+    );
+    assert_ne!(
+        unsafe { PostMessageW(exit_button, BM_CLICK, 0, 0) },
+        0,
+        "surviving root BUTTON should still dispatch after route closure"
+    );
+
+    let exit_deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .expect("native Windows multi-window smoke process status should be readable")
+        {
+            break status;
+        }
+        if Instant::now() >= exit_deadline {
+            terminate(&mut child);
+            let _ = fs::remove_dir_all(&root);
+            panic!("surviving root callback did not terminate the multi-window smoke");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    let _ = fs::remove_dir_all(&root);
+    assert_eq!(
+        status.code(),
+        Some(31),
+        "root callback should remain wired after secondary route lifecycle"
+    );
+}
+
 #[test]
 fn windows_backend_refreshes_dynamic_color_properties_in_place() {
     let source = r##"
