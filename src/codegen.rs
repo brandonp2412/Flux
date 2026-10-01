@@ -12864,6 +12864,7 @@ fn substitute_transparent_native_component_parameters(
 
 fn flatten_transparent_native_view_element(
     program: &Program,
+    signatures: &Signatures,
     element: &crate::ast::ViewElement,
     instance_name: &str,
     backend: &str,
@@ -12974,18 +12975,48 @@ fn flatten_transparent_native_view_element(
             )
         })?;
         if supplied.is_some() && !transparent_native_component_argument_is_reusable(value) {
-            return Err(diag(
-                value.span,
-                &format!(
-                    "{backend} transparent composed-view parameter '{}' currently requires a reusable pure scalar expression",
-                    param.name
-                ),
-            )
-            .with_note(
-                "literal, direct binding, interpolation, negation/not, scalar binary, and conditional arguments are reusable; calls, awaits, aggregates, projections, and other observable expressions need a single-evaluation component binding environment",
-            ));
+            if !matches!(
+                signatures.canonical_type(&param.ty),
+                Type::Bool | Type::I64 | Type::Str
+            ) {
+                return Err(diag(
+                    value.span,
+                    &format!(
+                        "{backend} transparent composed-view parameter '{}' needs scalar per-instance storage for this observable argument",
+                        param.name
+                    ),
+                )
+                .with_note(
+                    "single-evaluation component argument storage currently supports bool, i64, and str parameters",
+                ));
+            }
+            let base_name = format!("__component_{instance_name}__param_{}", param.name);
+            let mut lowered_name = base_name.clone();
+            let mut suffix = 2usize;
+            while !used_derived_names.insert(lowered_name.clone()) {
+                lowered_name = format!("{base_name}_{suffix}");
+                suffix += 1;
+            }
+            lowered_derived.push(crate::ast::ViewDerived {
+                name: lowered_name.clone(),
+                name_span: param.name_span,
+                ty: param.ty.clone(),
+                type_span: param.type_span,
+                value: value.clone(),
+                line: value.line,
+                span: value.span,
+            });
+            bindings.insert(
+                param.name.clone(),
+                Expr {
+                    line: value.line,
+                    span: value.span,
+                    kind: ExprKind::Var(lowered_name),
+                },
+            );
+        } else {
+            bindings.insert(param.name.clone(), value.clone());
         }
-        bindings.insert(param.name.clone(), value.clone());
     }
 
     let mut state_names = HashMap::<String, String>::new();
@@ -13070,6 +13101,7 @@ fn flatten_transparent_native_view_element(
         let child_instance_name = format!("{instance_name}__{}", child.name);
         let descendants = flatten_transparent_native_view_element(
             program,
+            signatures,
             &child,
             &child_instance_name,
             backend,
@@ -13103,6 +13135,7 @@ fn flatten_transparent_native_view_element(
 
 fn flatten_transparent_native_root_view(
     program: &Program,
+    signatures: &Signatures,
     view: &crate::ast::ViewDef,
     backend: &str,
 ) -> Result<crate::ast::ViewDef, Diagnostic> {
@@ -13122,6 +13155,7 @@ fn flatten_transparent_native_root_view(
         let mut stack = vec![view.name.clone()];
         elements.extend(flatten_transparent_native_view_element(
             program,
+            signatures,
             element,
             &element.name,
             backend,
@@ -13159,7 +13193,8 @@ fn emit_android_native_application(
                 "app root view was not found during Android codegen",
             )
         })?;
-    let lowered_view = flatten_transparent_native_root_view(program, source_view, "Android")?;
+    let lowered_view =
+        flatten_transparent_native_root_view(program, signatures, source_view, "Android")?;
     let view = &lowered_view;
 
     let accessibility_order = ordered_accessibility_elements(view, signatures)?;
@@ -27764,7 +27799,8 @@ fn emit_linux_gtk_application(
                 "app root view was not found during codegen",
             )
         })?;
-    let lowered_view = flatten_transparent_native_root_view(program, source_view, "Linux")?;
+    let lowered_view =
+        flatten_transparent_native_root_view(program, signatures, source_view, "Linux")?;
     let view = &lowered_view;
     let _ = view_layout_transition_duration(view, signatures)?;
     let mut development_callbacks = linux_ui_zero_arg_callback_functions(view);

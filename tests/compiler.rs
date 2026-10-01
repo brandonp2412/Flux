@@ -81275,13 +81275,15 @@ app App
 }
 
 #[test]
-fn native_composed_view_lowering_rejects_observable_parameter_arguments() {
+fn lowers_observable_composed_view_parameter_arguments_once_per_instance() {
     let source = r#"
+type Flag = bool
+
 fn invert(value: bool) -> bool {
     return value == false
 }
 
-view Badge(selectable: bool) {
+view Badge(selectable: Flag) {
     grid columns: 1fr
     grid rows: 1fr
     Text title at 1,1
@@ -81291,9 +81293,11 @@ view Badge(selectable: bool) {
 
 view App {
     state selected: bool = true
-    grid columns: 1fr
+    grid columns: 1fr 1fr
     grid rows: 1fr
-    Badge badge at 1,1
+    Badge left at 1,1
+        selectable: invert(selected)
+    Badge right at 1,2
         selectable: invert(selected)
 }
 
@@ -81301,13 +81305,24 @@ app App
 "#;
 
     check_source(source).expect("observable composed-view argument fixture should typecheck");
-    let error = compile_to_c(source)
-        .expect_err("observable parameter arguments need a single-evaluation binding environment");
-    assert!(
-        error
-            .message
-            .contains("requires a reusable pure scalar expression")
-    );
+    let linux = compile_to_c(source)
+        .expect("observable scalar component arguments should lower through Linux");
+    assert!(linux.contains("flux__ui_derived___component_left__param_selectable"));
+    assert!(linux.contains("flux__ui_derived___component_right__param_selectable"));
+    assert!(linux.contains("left__title"));
+    assert!(linux.contains("right__title"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("observable scalar component arguments should analyze for Android");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("observable scalar component arguments should lower through Android");
+    assert!(android.contains("flux__ui_derived___component_left__param_selectable"));
+    assert!(android.contains("flux__ui_derived___component_right__param_selectable"));
 }
 
 #[test]
