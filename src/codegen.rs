@@ -16809,6 +16809,74 @@ fn emit_windows_native_application(
             }
         }
         for element in &secondary_view.elements {
+            if element.kind == "Text" {
+                let selectable = match view_property(element, "selectable") {
+                    Some(property) => {
+                        let Some(selectable) = static_expr_bool(&property.value, signatures) else {
+                            return Err(diag(
+                                property.value.span,
+                                "bootstrap Windows Text.selectable must be a compile-time bool value",
+                            ));
+                        };
+                        selectable
+                    }
+                    None => false,
+                };
+                if selectable {
+                    if let Some(property) = view_property(element, "letter_spacing") {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Windows selectable Text does not yet support letterSpacing",
+                        ));
+                    }
+                    if let Some(property) = view_property(element, "wrap_mode") {
+                        match static_expr_str(&property.value, signatures).as_deref() {
+                            Some("word") => {}
+                            Some("char" | "wordChar" | "word_char") => {
+                                return Err(diag(
+                                    property.value.span,
+                                    "bootstrap Windows selectable Text currently supports only wrapMode: 'word'",
+                                ));
+                            }
+                            Some(_) => {
+                                return Err(diag(
+                                    property.value.span,
+                                    "Text.wrapMode must be one of 'word', 'char', or 'wordChar'",
+                                ));
+                            }
+                            None => {
+                                return Err(diag(
+                                    property.value.span,
+                                    "bootstrap Windows selectable Text does not yet support state-driven wrapMode",
+                                ));
+                            }
+                        }
+                    }
+                    if let Some(property) = view_property(element, "ellipsize") {
+                        match static_expr_str(&property.value, signatures).as_deref() {
+                            Some("none") => {}
+                            Some("start" | "middle" | "end") => {
+                                return Err(diag(
+                                    property.value.span,
+                                    "bootstrap Windows selectable Text does not yet support ellipsizing",
+                                ));
+                            }
+                            Some(_) => {
+                                return Err(diag(
+                                    property.value.span,
+                                    "Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'",
+                                ));
+                            }
+                            None => {
+                                return Err(diag(
+                                    property.value.span,
+                                    "bootstrap Windows selectable Text does not yet support state-driven ellipsize",
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
             let action_name = match element.kind.as_str() {
                 "Text" | "TextInput" | "Image" | "Nav" | "Chart" | "Card" | "Header"
                 | "Content" => None,
@@ -16826,7 +16894,10 @@ fn emit_windows_native_application(
             for property in &element.properties {
                 let data_property = match element.kind.as_str() {
                     "Text" | "Button" | "Header" => {
-                        matches!(property.name.as_str(), "text" | "visible" | "enabled")
+                        matches!(
+                            property.name.as_str(),
+                            "text" | "selectable" | "visible" | "enabled"
+                        )
                     }
                     "Nav" | "Chart" | "Content" => {
                         matches!(property.name.as_str(), "label" | "visible" | "enabled")
@@ -17099,7 +17170,7 @@ fn emit_windows_native_application(
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,
-                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/shortcut/shortcutScope/dragText/dragTranslate/pinchScale/backgroundColor/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.padding/Toggle.padding/Radio.padding/TextInput.padding/Nav.padding/Chart.padding/Card.padding/Header.padding/Content.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/clip/borderColor/borderTopColor/borderEndColor/borderBottomColor/borderStartColor/borderWidth/borderTopWidth/borderEndWidth/borderBottomWidth/borderStartWidth/borderStyle/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/focus/blur/drag/swipe/scale/drop/context-menu actions",
+                        "Windows distinct secondary window elements currently support text/label/title/source/fit/alt/tooltip/shortcut/shortcutScope/dragText/dragTranslate/pinchScale/backgroundColor/Text.selectable/Text.color/Text.textAlign/Text.wrap/Text.wrapMode/Text.ellipsize/Text.variant/Text.size/Text.fontFamily/Text.bold/Text.italic/Text.underline/Text.strikethrough/Text.letterSpacing/Text.lineHeightPercent/Text.maxWidthChars/Text.maxLines/Text.padding/Button.padding/Toggle.padding/Radio.padding/TextInput.padding/Nav.padding/Chart.padding/Card.padding/Header.padding/Content.padding/minWidth/minHeight/maxWidth/maxHeight/margin/marginTop/marginBottom/marginStart/marginEnd/translateX/translateY/alignX/alignY/scalePercent/scaleXPercent/scaleYPercent/transformOriginXPercent/transformOriginYPercent/radius/radiusTopLeft/radiusTopRight/radiusBottomRight/radiusBottomLeft/clip/borderColor/borderTopColor/borderEndColor/borderBottomColor/borderStartColor/borderWidth/borderTopWidth/borderEndWidth/borderBottomWidth/borderStartWidth/borderStyle/Button.primary/Button.size/accessibilityLabel/accessibilityDescription/accessibilityValue/accessibilityRole/accessibilityHidden/accessibilityOrder/accessibilityActionLabel/accessibilityLongPressLabel/accessibilityActions, placeholder/readOnly/keyboardType/validationState/validationMessage, contextMenuLabel/contextMenuItems, checked/selected, visible, enabled, focusable, autofocus, focusScope, and their supported activation/change/key/tap/double-tap/long-press/hover/focus/blur/drag/swipe/scale/drop/context-menu actions",
                     ));
                 }
                 if data_property {
@@ -17797,18 +17868,26 @@ fn emit_windows_native_application(
             view_property(element, "align_x").is_some()
                 || view_property(element, "align_y").is_some()
         });
-    let uses_richedit_text = view.elements.iter().any(|element| {
-        if element.kind != "Text" {
-            return false;
-        }
-        if view_property(element, "rich_text").is_some() {
-            return true;
-        }
-        view_property(element, "selectable")
-            .and_then(|property| static_expr_bool(&property.value, signatures))
-            == Some(true)
-            && view_property(element, "line_height_percent").is_some()
-    });
+    let uses_richedit_text = view
+        .elements
+        .iter()
+        .chain(
+            secondary_window_views
+                .iter()
+                .flat_map(|(_, secondary_view)| secondary_view.elements.iter()),
+        )
+        .any(|element| {
+            if element.kind != "Text" {
+                return false;
+            }
+            if view_property(element, "rich_text").is_some() {
+                return true;
+            }
+            view_property(element, "selectable")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                == Some(true)
+                && view_property(element, "line_height_percent").is_some()
+        });
     if uses_input_scopes {
         for element in view
             .elements
@@ -20562,6 +20641,16 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
             && view_property(element, "rich_text").is_none()
             && view_property(element, "wrap")
                 .is_some_and(|property| static_expr_bool(&property.value, signatures).is_none())
+    }) || secondary_window_views.iter().any(|(_, secondary_view)| {
+        secondary_view.elements.iter().any(|element| {
+            element.kind == "Text"
+                && view_property(element, "selectable")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    == Some(true)
+                && view_property(element, "rich_text").is_none()
+                && view_property(element, "wrap")
+                    .is_some_and(|property| static_expr_bool(&property.value, signatures).is_none())
+        })
     }) {
         out.push_str("static void flux__win_set_selectable_text_wrap(HWND control, bool wrap) { if (control == NULL) return; LONG_PTR style = GetWindowLongPtrW(control, GWL_STYLE); if (wrap) style &= ~((LONG_PTR)ES_AUTOHSCROLL); else style |= ES_AUTOHSCROLL; SetWindowLongPtrW(control, GWL_STYLE, style); SetWindowPos(control, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED); InvalidateRect(control, NULL, TRUE); }\n");
     }
@@ -23075,6 +23164,28 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             } else {
                 String::new()
             };
+            let secondary_selectable_text_format_rect = if element.kind == "Text"
+                && windows_text_has_padding(element)
+                && view_property(element, "selectable")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    == Some(true)
+            {
+                let padding_top = secondary_text_padding_value("padding_top")?;
+                let padding_bottom = secondary_text_padding_value("padding_bottom")?;
+                let padding_start = secondary_text_padding_value("padding_start")?;
+                let padding_end = secondary_text_padding_value("padding_end")?;
+                let (padding_left, padding_right) = if layout_direction == "rtl" {
+                    (padding_end, padding_start)
+                } else {
+                    (padding_start, padding_end)
+                };
+                format!(
+                    r#"int64_t requested_selectable_text_padding_left_{view_identity}_{index} = {padding_left}; int64_t requested_selectable_text_padding_top_{view_identity}_{index} = {padding_top}; int64_t requested_selectable_text_padding_right_{view_identity}_{index} = {padding_right}; int64_t requested_selectable_text_padding_bottom_{view_identity}_{index} = {padding_bottom}; if (requested_selectable_text_padding_left_{view_identity}_{index} < 0 || requested_selectable_text_padding_left_{view_identity}_{index} > INT32_MAX || requested_selectable_text_padding_top_{view_identity}_{index} < 0 || requested_selectable_text_padding_top_{view_identity}_{index} > INT32_MAX || requested_selectable_text_padding_right_{view_identity}_{index} < 0 || requested_selectable_text_padding_right_{view_identity}_{index} > INT32_MAX || requested_selectable_text_padding_bottom_{view_identity}_{index} < 0 || requested_selectable_text_padding_bottom_{view_identity}_{index} > INT32_MAX) {{ fputs("Flux runtime error: Text padding must be non-negative and fit within a 32-bit signed integer
+", stderr); abort(); }} int flux__win_view_{view_identity}_selectable_text_padding_left_{index} = flux__win_scale(requested_selectable_text_padding_left_{view_identity}_{index}); int flux__win_view_{view_identity}_selectable_text_padding_right_{index} = flux__win_scale(requested_selectable_text_padding_right_{view_identity}_{index}); int flux__win_view_{view_identity}_selectable_text_padding_top_{index} = flux__win_scale(requested_selectable_text_padding_top_{view_identity}_{index}); int flux__win_view_{view_identity}_selectable_text_padding_bottom_{index} = flux__win_scale(requested_selectable_text_padding_bottom_{view_identity}_{index}); RECT flux__win_view_{view_identity}_selectable_text_format_rect_{index} = {{ flux__win_view_{view_identity}_selectable_text_padding_left_{index}, flux__win_view_{view_identity}_selectable_text_padding_top_{index}, control_width - flux__win_view_{view_identity}_selectable_text_padding_right_{index}, control_height - flux__win_view_{view_identity}_selectable_text_padding_bottom_{index} }}; if (flux__win_view_{view_identity}_selectable_text_format_rect_{index}.right < flux__win_view_{view_identity}_selectable_text_format_rect_{index}.left) flux__win_view_{view_identity}_selectable_text_format_rect_{index}.right = flux__win_view_{view_identity}_selectable_text_format_rect_{index}.left; if (flux__win_view_{view_identity}_selectable_text_format_rect_{index}.bottom < flux__win_view_{view_identity}_selectable_text_format_rect_{index}.top) flux__win_view_{view_identity}_selectable_text_format_rect_{index}.bottom = flux__win_view_{view_identity}_selectable_text_format_rect_{index}.top; SendMessageW(control_{index}, EM_SETRECTNP, 0, (LPARAM)&flux__win_view_{view_identity}_selectable_text_format_rect_{index}); "#
+                )
+            } else {
+                String::new()
+            };
             let (secondary_preferred_horizontal_padding, secondary_preferred_vertical_padding) =
                 if windows_text_layout_surface(element) && windows_text_has_padding(element) {
                     let padding_start = secondary_text_padding_value("padding_start")?;
@@ -23196,7 +23307,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             } else {
                 String::new()
             };
-            out.push_str(&format!("HWND control_{index} = context->control_windows[{index}]; if (control_{index} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height{secondary_scroll_offset}; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; if (control_width < 1) control_width = 1; if (control_height < 1) control_height = 1; int64_t requested_margin_top = {secondary_margin_top_value}; int64_t requested_margin_bottom = {secondary_margin_bottom_value}; int64_t requested_margin_start = {secondary_margin_start_value}; int64_t requested_margin_end = {secondary_margin_end_value}; int64_t requested_translate_x = {secondary_translate_x_value}; int64_t requested_translate_y = {secondary_translate_y_value}; if (requested_translate_x < INT32_MIN || requested_translate_x > INT32_MAX) {{ fputs(\"Flux runtime error: translateX must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_translate_y < INT32_MIN || requested_translate_y > INT32_MAX) {{ fputs(\"Flux runtime error: translateY must fit within a 32-bit signed integer\\n\", stderr); abort(); }} int physical_margin_top = flux__win_scale(requested_margin_top); int physical_margin_bottom = flux__win_scale(requested_margin_bottom); int physical_margin_start = flux__win_scale(requested_margin_start); int physical_margin_end = flux__win_scale(requested_margin_end); int physical_translate_x = flux__win_scale(requested_translate_x); int physical_translate_y = flux__win_scale(requested_translate_y); int64_t adjusted_x = (int64_t)x + physical_margin_start + physical_translate_x; int64_t adjusted_y = (int64_t)y + physical_margin_top + physical_translate_y; x = adjusted_x < INT32_MIN ? INT32_MIN : (adjusted_x > INT32_MAX ? INT32_MAX : (int)adjusted_x); y = adjusted_y < INT32_MIN ? INT32_MIN : (adjusted_y > INT32_MAX ? INT32_MAX : (int)adjusted_y); int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end; int64_t margin_height = (int64_t)control_height - physical_margin_top - physical_margin_bottom; control_width = margin_width < 1 ? 1 : (margin_width > INT32_MAX ? INT32_MAX : (int)margin_width); control_height = margin_height < 1 ? 1 : (margin_height > INT32_MAX ? INT32_MAX : (int)margin_height); int available_width = control_width; int available_height = control_height; {secondary_radius_setup}{secondary_alignment_setup}int64_t requested_min_width = {secondary_min_width_value}; int64_t requested_min_height = {secondary_min_height_value}; int64_t requested_max_width = {secondary_max_width_value}; int64_t requested_max_height = {secondary_max_height_value}; {secondary_width_relationship}{secondary_height_relationship}{secondary_preferred_size}{secondary_text_width_limit}{secondary_text_height_limit}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} {secondary_alignment_position}{secondary_scale_transform}MoveWindow(control_{index}, x, y, control_width, control_height, TRUE); {secondary_button_text_margin}{secondary_text_input_horizontal_margin}{secondary_text_input_format_rect}{secondary_apply_clip}{secondary_apply_radius}}}\n"));
+            out.push_str(&format!("HWND control_{index} = context->control_windows[{index}]; if (control_{index} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height{secondary_scroll_offset}; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; if (control_width < 1) control_width = 1; if (control_height < 1) control_height = 1; int64_t requested_margin_top = {secondary_margin_top_value}; int64_t requested_margin_bottom = {secondary_margin_bottom_value}; int64_t requested_margin_start = {secondary_margin_start_value}; int64_t requested_margin_end = {secondary_margin_end_value}; int64_t requested_translate_x = {secondary_translate_x_value}; int64_t requested_translate_y = {secondary_translate_y_value}; if (requested_translate_x < INT32_MIN || requested_translate_x > INT32_MAX) {{ fputs(\"Flux runtime error: translateX must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_translate_y < INT32_MIN || requested_translate_y > INT32_MAX) {{ fputs(\"Flux runtime error: translateY must fit within a 32-bit signed integer\\n\", stderr); abort(); }} int physical_margin_top = flux__win_scale(requested_margin_top); int physical_margin_bottom = flux__win_scale(requested_margin_bottom); int physical_margin_start = flux__win_scale(requested_margin_start); int physical_margin_end = flux__win_scale(requested_margin_end); int physical_translate_x = flux__win_scale(requested_translate_x); int physical_translate_y = flux__win_scale(requested_translate_y); int64_t adjusted_x = (int64_t)x + physical_margin_start + physical_translate_x; int64_t adjusted_y = (int64_t)y + physical_margin_top + physical_translate_y; x = adjusted_x < INT32_MIN ? INT32_MIN : (adjusted_x > INT32_MAX ? INT32_MAX : (int)adjusted_x); y = adjusted_y < INT32_MIN ? INT32_MIN : (adjusted_y > INT32_MAX ? INT32_MAX : (int)adjusted_y); int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end; int64_t margin_height = (int64_t)control_height - physical_margin_top - physical_margin_bottom; control_width = margin_width < 1 ? 1 : (margin_width > INT32_MAX ? INT32_MAX : (int)margin_width); control_height = margin_height < 1 ? 1 : (margin_height > INT32_MAX ? INT32_MAX : (int)margin_height); int available_width = control_width; int available_height = control_height; {secondary_radius_setup}{secondary_alignment_setup}int64_t requested_min_width = {secondary_min_width_value}; int64_t requested_min_height = {secondary_min_height_value}; int64_t requested_max_width = {secondary_max_width_value}; int64_t requested_max_height = {secondary_max_height_value}; {secondary_width_relationship}{secondary_height_relationship}{secondary_preferred_size}{secondary_text_width_limit}{secondary_text_height_limit}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} {secondary_alignment_position}{secondary_scale_transform}MoveWindow(control_{index}, x, y, control_width, control_height, TRUE); {secondary_button_text_margin}{secondary_text_input_horizontal_margin}{secondary_text_input_format_rect}{secondary_selectable_text_format_rect}{secondary_apply_clip}{secondary_apply_radius}}}\n"));
         }
         out.push_str("}\n");
         secondary_layout_dispatch.push_str(&format!(" case UINT32_C({view_identity}): flux__win_layout_view_{view_identity}(flux__windows_active_context, width, height); return;"));
@@ -24081,10 +24192,18 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     signatures,
                     Some(*view_identity),
                 )?;
-                out.push_str(&format!(
-                    "flux__win_set_text_alignment(context->control_windows[{index}], {value});
-"
-                ));
+                if view_property(element, "selectable")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    == Some(true)
+                {
+                    out.push_str(&format!(
+                        "flux__win_set_selectable_text_alignment(context->control_windows[{index}], {value});\n"
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "flux__win_set_text_alignment(context->control_windows[{index}], {value});\n"
+                    ));
+                }
             }
             if element.kind == "Text" {
                 let (default_size, default_bold, _, _) =
@@ -24159,6 +24278,21 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 out.push_str(&format!(
                     "if (context->text_fonts != NULL && context->text_font_families != NULL && context->text_font_sizes != NULL && context->text_font_bold != NULL && context->text_font_italic != NULL && context->text_font_underline != NULL && context->text_font_strikethrough != NULL && context->text_font_dpis != NULL && context->text_font_initialized != NULL && context->text_font_count > {text_font_slot}) flux__win_apply_font(context->control_windows[{index}], &context->text_fonts[{text_font_slot}], &context->text_font_families[{text_font_slot}], &context->text_font_sizes[{text_font_slot}], &context->text_font_bold[{text_font_slot}], &context->text_font_italic[{text_font_slot}], &context->text_font_underline[{text_font_slot}], &context->text_font_strikethrough[{text_font_slot}], &context->text_font_dpis[{text_font_slot}], &context->text_font_initialized[{text_font_slot}], {font_family}, {size}, {bold}, {italic}, {underline}, {strikethrough});\n"
                 ));
+                if view_property(element, "selectable")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    == Some(true)
+                    && let Some(property) = view_property(element, "line_height_percent")
+                {
+                    let line_height = ui_expr_c_for_view_identity(
+                        &property.value,
+                        secondary_view,
+                        signatures,
+                        Some(*view_identity),
+                    )?;
+                    out.push_str(&format!(
+                        "flux__win_apply_rich_text_line_height(context->control_windows[{index}], {line_height});\n"
+                    ));
+                }
             }
             if windows_element_uses_custom_text_layout(element, signatures) {
                 let dynamic_letter_spacing = view_property(element, "letter_spacing")
@@ -24223,8 +24357,19 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                             signatures,
                             Some(*view_identity),
                         )?;
+                        let apply_line_height = if element.kind == "Text"
+                            && view_property(element, "selectable")
+                                .and_then(|property| static_expr_bool(&property.value, signatures))
+                                == Some(true)
+                        {
+                            format!(
+                                " flux__win_apply_rich_text_line_height(context->control_windows[{index}], flux__win_view_{view_identity}_next_line_height_{index});"
+                            )
+                        } else {
+                            String::new()
+                        };
                         out.push_str(&format!(
-                            "int64_t flux__win_view_{view_identity}_next_line_height_{index} = {value}; if (flux__win_view_{view_identity}_next_line_height_{index} <= 0 || flux__win_view_{view_identity}_next_line_height_{index} > INT32_MAX) {{ fputs(\"Flux runtime error: Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (flux__win_view_{view_identity}_text_layout_{index} != NULL && flux__win_view_{view_identity}_text_layout_{index}->line_height_percent != flux__win_view_{view_identity}_next_line_height_{index}) {{ flux__win_view_{view_identity}_text_layout_{index}->line_height_percent = flux__win_view_{view_identity}_next_line_height_{index}; InvalidateRect(context->control_windows[{index}], NULL, TRUE); }}\n"
+                            "int64_t flux__win_view_{view_identity}_next_line_height_{index} = {value}; if (flux__win_view_{view_identity}_next_line_height_{index} <= 0 || flux__win_view_{view_identity}_next_line_height_{index} > INT32_MAX) {{ fputs(\"Flux runtime error: Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (flux__win_view_{view_identity}_text_layout_{index} != NULL && flux__win_view_{view_identity}_text_layout_{index}->line_height_percent != flux__win_view_{view_identity}_next_line_height_{index}) {{ flux__win_view_{view_identity}_text_layout_{index}->line_height_percent = flux__win_view_{view_identity}_next_line_height_{index};{apply_line_height} InvalidateRect(context->control_windows[{index}], NULL, TRUE); }}\n"
                         ));
                     }
                     if dynamic_padding {
@@ -24271,8 +24416,19 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                             signatures,
                             Some(*view_identity),
                         )?;
+                        let apply_wrap = if element.kind == "Text"
+                            && view_property(element, "selectable")
+                                .and_then(|property| static_expr_bool(&property.value, signatures))
+                                == Some(true)
+                        {
+                            format!(
+                                " flux__win_set_selectable_text_wrap(context->control_windows[{index}], flux__win_view_{view_identity}_next_wrap_{index});"
+                            )
+                        } else {
+                            String::new()
+                        };
                         out.push_str(&format!(
-                            "bool flux__win_view_{view_identity}_next_wrap_{index} = {value}; if (flux__win_view_{view_identity}_text_layout_{index} != NULL && flux__win_view_{view_identity}_text_layout_{index}->wrap != flux__win_view_{view_identity}_next_wrap_{index}) {{ flux__win_view_{view_identity}_text_layout_{index}->wrap = flux__win_view_{view_identity}_next_wrap_{index}; InvalidateRect(context->control_windows[{index}], NULL, TRUE); }}\n"
+                            "bool flux__win_view_{view_identity}_next_wrap_{index} = {value}; if (flux__win_view_{view_identity}_text_layout_{index} != NULL && flux__win_view_{view_identity}_text_layout_{index}->wrap != flux__win_view_{view_identity}_next_wrap_{index}) {{ flux__win_view_{view_identity}_text_layout_{index}->wrap = flux__win_view_{view_identity}_next_wrap_{index};{apply_wrap} InvalidateRect(context->control_windows[{index}], NULL, TRUE); }}\n"
                         ));
                     }
                     if dynamic_wrap_mode {
@@ -26378,22 +26534,82 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                             .unwrap_or_else(|| "left".to_string()),
                         None => "left".to_string(),
                     };
+                    let selectable = view_property(element, "selectable")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        .unwrap_or(false);
                     let nowrap = view_property(element, "wrap")
                         .and_then(|property| static_expr_bool(&property.value, signatures))
                         == Some(false);
-                    let style = match alignment.as_str() {
-                        "left" if nowrap => "WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP",
-                        "left" => "WS_CHILD | WS_VISIBLE | SS_LEFT",
-                        "center" => "WS_CHILD | WS_VISIBLE | SS_CENTER",
-                        "right" => "WS_CHILD | WS_VISIBLE | SS_RIGHT",
-                        "fill" if nowrap => {
-                            "WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_NOPREFIX"
-                        }
-                        "fill" => "WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX",
-                        _ => unreachable!("secondary Text.textAlign was validated before emission"),
+                    let selectable_line_height =
+                        selectable && view_property(element, "line_height_percent").is_some();
+                    let (class, style) = if selectable_line_height {
+                        let style = match alignment.as_str() {
+                            "left" | "fill" if nowrap => {
+                                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                            }
+                            "left" | "fill" => {
+                                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY"
+                            }
+                            "center" if nowrap => {
+                                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_CENTER | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                            }
+                            "center" => {
+                                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_CENTER | ES_MULTILINE | ES_READONLY"
+                            }
+                            "right" if nowrap => {
+                                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                            }
+                            "right" => {
+                                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_MULTILINE | ES_READONLY"
+                            }
+                            _ => unreachable!(
+                                "secondary Text.textAlign was validated before emission"
+                            ),
+                        };
+                        ("RICHEDIT50W", style)
+                    } else if selectable {
+                        let style = match alignment.as_str() {
+                            "left" | "fill" if nowrap => {
+                                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                            }
+                            "left" | "fill" => {
+                                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY"
+                            }
+                            "center" if nowrap => {
+                                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_CENTER | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                            }
+                            "center" => {
+                                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_CENTER | ES_MULTILINE | ES_READONLY"
+                            }
+                            "right" if nowrap => {
+                                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                            }
+                            "right" => {
+                                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_MULTILINE | ES_READONLY"
+                            }
+                            _ => unreachable!(
+                                "secondary Text.textAlign was validated before emission"
+                            ),
+                        };
+                        ("EDIT", style)
+                    } else {
+                        let style = match alignment.as_str() {
+                            "left" if nowrap => "WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP",
+                            "left" => "WS_CHILD | WS_VISIBLE | SS_LEFT",
+                            "center" => "WS_CHILD | WS_VISIBLE | SS_CENTER",
+                            "right" => "WS_CHILD | WS_VISIBLE | SS_RIGHT",
+                            "fill" if nowrap => {
+                                "WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_NOPREFIX"
+                            }
+                            "fill" => "WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX",
+                            _ => unreachable!(
+                                "secondary Text.textAlign was validated before emission"
+                            ),
+                        };
+                        ("STATIC", style)
                     };
                     (
-                        "STATIC",
+                        class,
                         style,
                         if view_property(element, "on_tap").is_some() {
                             (1000 + index).to_string()
@@ -26589,7 +26805,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     border_slot + 1
                 ));
             }
-            if windows_element_uses_custom_text_layout(element, signatures) {
+            let uses_secondary_static_text_layout_subclass =
+                windows_element_uses_custom_text_layout(element, signatures)
+                    && (element.kind != "Text"
+                        || view_property(element, "selectable")
+                            .and_then(|property| static_expr_bool(&property.value, signatures))
+                            != Some(true));
+            if uses_secondary_static_text_layout_subclass {
                 let text_layout_slot = secondary_text_layout_elements
                     .iter()
                     .position(|(element_index, _)| *element_index == index)
