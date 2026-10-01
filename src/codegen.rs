@@ -35181,6 +35181,126 @@ fn ui_expr_c_for_view_identity(
                 ConstantValue::Str(value) => Ok(c_string(value)),
             }
         }
+        ExprKind::Index {
+            base,
+            index,
+            optional: false,
+        } => {
+            if let ExprKind::List(items) = &base.kind
+                && items
+                    .iter()
+                    .all(transparent_native_component_argument_is_reusable)
+                && let Some(ConstantValue::I64(index)) = fold_ui_primitive_expr(index, signatures)?
+            {
+                let resolved = if index < 0 {
+                    i64::try_from(items.len())
+                        .ok()
+                        .and_then(|len| index.checked_add(len))
+                } else {
+                    Some(index)
+                };
+                if let Some(item) = resolved
+                    .and_then(|index| usize::try_from(index).ok())
+                    .and_then(|index| items.get(index))
+                {
+                    return ui_expr_c_for_view_identity(item, view, signatures, view_identity);
+                }
+            }
+            Err(diag(
+                expr.span,
+                "bootstrap dynamic UI expression currently supports primitive literals, view environment/state/constants, primitive operators, conditional expressions, and reusable static aggregate projections",
+            ))
+        }
+        ExprKind::Field {
+            base,
+            name,
+            optional: false,
+            ..
+        } => {
+            match &base.kind {
+                ExprKind::RecordLiteral { fields }
+                    if fields.iter().all(|field| {
+                        transparent_native_component_argument_is_reusable(&field.value)
+                    }) =>
+                {
+                    if let Some(field) = fields
+                        .iter()
+                        .find(|field| field.name.as_deref() == Some(name.as_str()))
+                    {
+                        return ui_expr_c_for_view_identity(
+                            &field.value,
+                            view,
+                            signatures,
+                            view_identity,
+                        );
+                    }
+                }
+                ExprKind::StructLiteral {
+                    base: None, fields, ..
+                } if fields.iter().all(|field| {
+                    transparent_native_component_argument_is_reusable(&field.value)
+                }) =>
+                {
+                    if let Some(field) = fields.iter().find(|field| field.name == *name) {
+                        return ui_expr_c_for_view_identity(
+                            &field.value,
+                            view,
+                            signatures,
+                            view_identity,
+                        );
+                    }
+                }
+                ExprKind::List(items)
+                    if items
+                        .iter()
+                        .all(transparent_native_component_argument_is_reusable) =>
+                {
+                    match crate::builtin_names::list_member_impl(name) {
+                        "length" => return Ok(format!("INT64_C({})", items.len())),
+                        "isEmpty" => {
+                            return Ok(if items.is_empty() { "true" } else { "false" }.to_string());
+                        }
+                        "isNotEmpty" => {
+                            return Ok(if items.is_empty() { "false" } else { "true" }.to_string());
+                        }
+                        "first" => {
+                            if let Some(item) = items.first() {
+                                return ui_expr_c_for_view_identity(
+                                    item,
+                                    view,
+                                    signatures,
+                                    view_identity,
+                                );
+                            }
+                        }
+                        "last" => {
+                            if let Some(item) = items.last() {
+                                return ui_expr_c_for_view_identity(
+                                    item,
+                                    view,
+                                    signatures,
+                                    view_identity,
+                                );
+                            }
+                        }
+                        "single" if items.len() == 1 => {
+                            return ui_expr_c_for_view_identity(
+                                &items[0],
+                                view,
+                                signatures,
+                                view_identity,
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+            Err(diag(
+                expr.span,
+                "bootstrap dynamic UI expression currently supports primitive literals, view environment/state/constants, primitive operators, conditional expressions, and reusable static aggregate projections",
+            ))
+        }
         ExprKind::Unary { op, expr: inner } => {
             if matches!(op, UnaryOp::Not) {
                 if let ExprKind::Unary {

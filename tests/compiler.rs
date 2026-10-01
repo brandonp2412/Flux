@@ -81682,6 +81682,69 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_reusable_dynamic_scalar_projections_on_all_native_backends() {
+    let source = r#"
+struct Flags {
+    enabled: bool
+}
+
+view Badge(listVisible: bool, recordVisible: bool, structVisible: bool, propertyVisible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: listVisible && recordVisible && structVisible && propertyVisible
+}
+
+view Wrapper(enabled: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        listVisible: [false, enabled][1]
+        recordVisible: (enabled: enabled).enabled
+        structVisible: (Flags { enabled: enabled }).enabled
+        propertyVisible: [false, enabled].last
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        enabled: windowIsCompact
+}
+
+app App
+"#;
+
+    check_source(source).expect("dynamic pure projection component arguments should typecheck");
+    let linux = compile_to_c(source)
+        .expect("dynamic pure projection component arguments should lower through Linux");
+    assert!(linux.contains("wrapper__badge__title"));
+    assert!(linux.contains("flux__ui_window_width < INT64_C(600)"));
+    assert!(!linux.contains("flux__ui_derived___component_wrapper__badge__param_"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic pure projection component argument fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic pure projection component arguments should lower through Android");
+    assert!(android.contains("flux__ui_window_width < INT64_C(600)"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("dynamic pure projection component arguments should lower through Windows");
+    assert!(windows.contains("flux__ui_window_width < INT64_C(600)"));
+}
+
+#[test]
 fn lowers_composed_view_reusable_optional_projection_arguments_on_all_native_backends() {
     let source = r#"
 struct Flags {
