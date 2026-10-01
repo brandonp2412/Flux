@@ -81140,7 +81140,49 @@ app App
 }
 
 #[test]
-fn lowers_matching_transparent_composed_subgrids_on_linux_and_android() {
+fn lowers_transparent_stateless_composed_views_on_windows() {
+    let source = r#"
+view Badge(label: str) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: label
+}
+
+view BadgeShell(label: str) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        label: label
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    BadgeShell card at 1,1
+        label: "Flux"
+}
+
+app App
+"#;
+
+    check_source(source).expect("Windows transparent composed-view fixture should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("Windows transparent composed-view fixture should analyze");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("transparent composed views should lower through the Windows native backend");
+    assert!(windows.contains("card__badge__title"));
+    assert!(windows.contains("Flux"));
+    assert!(windows.contains("CreateWindowExW"));
+}
+
+#[test]
+fn lowers_matching_transparent_composed_subgrids_on_all_native_backends() {
     let source = r#"
 view Pair(left: str, right: str) {
     grid columns: 1fr 1fr
@@ -81172,7 +81214,7 @@ app App
     assert!(linux.contains("gtk_grid_attach"));
 
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
-        .expect("matching transparent subgrid should analyze for Android");
+        .expect("matching transparent subgrid should analyze for native targets");
     let android = fluxc::codegen::emit_c_for_target_with_source_paths(
         database.program(),
         database.signatures(),
@@ -81182,6 +81224,18 @@ app App
     .expect("matching transparent subgrid should lower through Android");
     assert!(android.contains("One"));
     assert!(android.contains("Two"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("matching transparent subgrid should lower through Windows");
+    assert!(windows.contains("pair__first"));
+    assert!(windows.contains("pair__second"));
+    assert!(windows.contains("One"));
+    assert!(windows.contains("Two"));
 }
 
 #[test]
@@ -81262,7 +81316,7 @@ app App
     assert!(linux.contains("right__title"));
 
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
-        .expect("observable component-derived values should analyze for Android");
+        .expect("observable component-derived values should analyze for native targets");
     let android = fluxc::codegen::emit_c_for_target_with_source_paths(
         database.program(),
         database.signatures(),
@@ -81272,6 +81326,16 @@ app App
     .expect("observable component-derived values should lower through Android");
     assert!(android.contains("flux__ui_derived___component_left__visible"));
     assert!(android.contains("flux__ui_derived___component_right__visible"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("observable component-derived values should lower through Windows");
+    assert!(windows.contains("flux__ui_derived___component_left__visible"));
+    assert!(windows.contains("flux__ui_derived___component_right__visible"));
 }
 
 #[test]
@@ -81283,12 +81347,12 @@ fn invert(value: bool) -> bool {
     return value == false
 }
 
-view Badge(selectable: Flag) {
+view Badge(visible: Flag) {
     grid columns: 1fr
     grid rows: 1fr
     Text title at 1,1
         text: "Flux"
-        selectable: selectable
+        visible: visible
 }
 
 view App {
@@ -81296,9 +81360,9 @@ view App {
     grid columns: 1fr 1fr
     grid rows: 1fr
     Badge left at 1,1
-        selectable: invert(selected)
+        visible: invert(selected)
     Badge right at 1,2
-        selectable: invert(selected)
+        visible: invert(selected)
 }
 
 app App
@@ -81307,13 +81371,13 @@ app App
     check_source(source).expect("observable composed-view argument fixture should typecheck");
     let linux = compile_to_c(source)
         .expect("observable scalar component arguments should lower through Linux");
-    assert!(linux.contains("flux__ui_derived___component_left__param_selectable"));
-    assert!(linux.contains("flux__ui_derived___component_right__param_selectable"));
+    assert!(linux.contains("flux__ui_derived___component_left__param_visible"));
+    assert!(linux.contains("flux__ui_derived___component_right__param_visible"));
     assert!(linux.contains("left__title"));
     assert!(linux.contains("right__title"));
 
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
-        .expect("observable scalar component arguments should analyze for Android");
+        .expect("observable scalar component arguments should analyze for native targets");
     let android = fluxc::codegen::emit_c_for_target_with_source_paths(
         database.program(),
         database.signatures(),
@@ -81321,8 +81385,18 @@ app App
         fluxc::codegen::NativeTarget::Android,
     )
     .expect("observable scalar component arguments should lower through Android");
-    assert!(android.contains("flux__ui_derived___component_left__param_selectable"));
-    assert!(android.contains("flux__ui_derived___component_right__param_selectable"));
+    assert!(android.contains("flux__ui_derived___component_left__param_visible"));
+    assert!(android.contains("flux__ui_derived___component_right__param_visible"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("observable scalar component arguments should lower through Windows");
+    assert!(windows.contains("flux__ui_derived___component_left__param_visible"));
+    assert!(windows.contains("flux__ui_derived___component_right__param_visible"));
 }
 
 #[test]
@@ -81369,6 +81443,18 @@ app App
     .expect("component-owned state should flatten into independent Android root state");
     assert!(android.contains("flux__ui_state___component_left__selected"));
     assert!(android.contains("flux__ui_state___component_right__selected"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("component-owned state should flatten into independent Windows root state");
+    assert!(windows.contains("flux__ui_state___component_left__selected"));
+    assert!(windows.contains("flux__ui_state___component_right__selected"));
+    assert!(windows.contains("left__toggle"));
+    assert!(windows.contains("right__toggle"));
 }
 
 #[test]

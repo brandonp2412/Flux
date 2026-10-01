@@ -17233,7 +17233,7 @@ fn emit_windows_native_application(
         .application
         .as_ref()
         .expect("application lowering requires app declaration");
-    let view = program
+    let source_view = program
         .views
         .iter()
         .find(|view| view.name == application.view_name)
@@ -17243,6 +17243,9 @@ fn emit_windows_native_application(
                 "app root view was not found during codegen",
             )
         })?;
+    let lowered_view =
+        flatten_transparent_native_root_view(program, signatures, source_view, "Windows")?;
+    let view = &lowered_view;
     let root_view_identity = program
         .views
         .iter()
