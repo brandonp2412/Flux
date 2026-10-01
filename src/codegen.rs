@@ -34360,6 +34360,87 @@ fn static_ui_slice_bound(len: i64, value: Option<i64>, end: bool, step: i64) -> 
     resolved
 }
 
+fn fold_ui_primitive_expr_with_binding(
+    expr: &Expr,
+    binding_name: &str,
+    binding_value: &ConstantValue,
+    signatures: &Signatures,
+) -> Result<Option<ConstantValue>, Diagnostic> {
+    match &expr.kind {
+        ExprKind::Var(name) if name == binding_name => Ok(Some(binding_value.clone())),
+        ExprKind::Unary { op, expr: inner } => {
+            let Some(inner) = fold_ui_primitive_expr_with_binding(
+                inner,
+                binding_name,
+                binding_value,
+                signatures,
+            )?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(match (op, inner) {
+                (UnaryOp::Neg, ConstantValue::I64(value)) => {
+                    ConstantValue::I64(value.checked_neg().ok_or_else(|| {
+                        diag(expr.span, "constant integer negation overflows i64")
+                    })?)
+                }
+                (UnaryOp::Not, ConstantValue::Bool(value)) => ConstantValue::Bool(!value),
+                _ => return Ok(None),
+            }))
+        }
+        ExprKind::Binary { left, op, right } => {
+            let Some(left) =
+                fold_ui_primitive_expr_with_binding(left, binding_name, binding_value, signatures)?
+            else {
+                return Ok(None);
+            };
+            if matches!(op, BinOp::And) && left == ConstantValue::Bool(false) {
+                return Ok(Some(ConstantValue::Bool(false)));
+            }
+            if matches!(op, BinOp::Or) && left == ConstantValue::Bool(true) {
+                return Ok(Some(ConstantValue::Bool(true)));
+            }
+            let Some(right) = fold_ui_primitive_expr_with_binding(
+                right,
+                binding_name,
+                binding_value,
+                signatures,
+            )?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(fold_primitive_binary(expr.span, *op, left, right)?))
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            let Some(condition) =
+                fold_ui_primitive_expr_with_binding(cond, binding_name, binding_value, signatures)?
+            else {
+                return Ok(None);
+            };
+            match condition {
+                ConstantValue::Bool(true) => fold_ui_primitive_expr_with_binding(
+                    then_expr,
+                    binding_name,
+                    binding_value,
+                    signatures,
+                ),
+                ConstantValue::Bool(false) => fold_ui_primitive_expr_with_binding(
+                    else_expr,
+                    binding_name,
+                    binding_value,
+                    signatures,
+                ),
+                _ => Ok(None),
+            }
+        }
+        _ => fold_ui_primitive_expr(expr, signatures),
+    }
+}
+
 fn fold_ui_optional_primitive_expr(
     expr: &Expr,
     signatures: &Signatures,
@@ -34485,13 +34566,16 @@ fn fold_ui_primitive_list_expr(
                             return Ok(None);
                         };
                         if let Some(bound) = condition {
-                            let ExprKind::Var(name) = &value.kind else {
+                            let Some(value) = fold_ui_primitive_expr_with_binding(
+                                value,
+                                &binding.name,
+                                &bound,
+                                signatures,
+                            )?
+                            else {
                                 return Ok(None);
                             };
-                            if name != &binding.name {
-                                return Ok(None);
-                            }
-                            folded.push(bound);
+                            folded.push(value);
                         } else if let Some(else_value) = else_value {
                             let Some(value) = fold_ui_primitive_expr(else_value, signatures)?
                             else {

@@ -81771,15 +81771,15 @@ view Wrapper(maybe: bool?, fallback: bool) {
     grid columns: 1fr
     grid rows: 1fr
     Badge badge at 1,1
-        flags: [if let value = maybe: value else: fallback, true]
+        flags: [if let value = maybe: !value && fallback else: fallback, true]
 }
 
 view App {
     grid columns: 1fr
     grid rows: 1fr 1fr
     Wrapper present at 1,1
-        maybe: true
-        fallback: false
+        maybe: false
+        fallback: true
     Wrapper absent at 2,1
         maybe: none
         fallback: true
