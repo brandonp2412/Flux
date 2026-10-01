@@ -35106,6 +35106,176 @@ fn effectful_copy_ui_list_property_c(
     )))
 }
 
+fn effectful_copy_ui_static_slice_property_c(
+    expr: &Expr,
+    name: &str,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+    view_identity: Option<usize>,
+) -> Result<Option<String>, Diagnostic> {
+    let ExprKind::Slice {
+        base,
+        start,
+        end,
+        step,
+        optional: false,
+    } = &expr.kind
+    else {
+        return Ok(None);
+    };
+    let ExprKind::List(items) = &base.kind else {
+        return Ok(None);
+    };
+    let Some(first_item) = items.first() else {
+        return Ok(None);
+    };
+    if items
+        .iter()
+        .all(transparent_native_component_argument_is_reusable)
+    {
+        return Ok(None);
+    }
+
+    let Some(element_ty) = ui_scalar_expr_type(first_item, view, signatures) else {
+        return Ok(None);
+    };
+    let element_ty = signatures.canonical_type(&element_ty);
+    if !matches!(&element_ty, Type::Bool | Type::I64 | Type::Str)
+        || !items.iter().all(|item| {
+            ui_scalar_expr_type(item, view, signatures)
+                .is_some_and(|ty| signatures.canonical_type(&ty) == element_ty)
+        })
+    {
+        return Ok(None);
+    }
+
+    let static_bound = |bound: &Option<Box<Expr>>| -> Result<Option<Option<i64>>, Diagnostic> {
+        let Some(bound) = bound else {
+            return Ok(Some(None));
+        };
+        Ok(match fold_ui_primitive_expr(bound, signatures)? {
+            Some(ConstantValue::I64(value)) => Some(Some(value)),
+            _ => None,
+        })
+    };
+    let Some(start) = static_bound(start)? else {
+        return Ok(None);
+    };
+    let Some(end) = static_bound(end)? else {
+        return Ok(None);
+    };
+    let step = if let Some(step) = step {
+        let Some(ConstantValue::I64(step)) = fold_ui_primitive_expr(step, signatures)? else {
+            return Ok(None);
+        };
+        step
+    } else {
+        1
+    };
+    if step == 0 {
+        return Ok(None);
+    }
+
+    let Ok(len) = i64::try_from(items.len()) else {
+        return Ok(None);
+    };
+    let first = static_ui_slice_bound(len, start, false, step);
+    let last = static_ui_slice_bound(len, end, true, step);
+    let mut selected_indices = Vec::new();
+    let mut index = first;
+    if step > 0 {
+        while index < last {
+            let Ok(position) = usize::try_from(index) else {
+                return Ok(None);
+            };
+            selected_indices.push(position);
+            let Some(next) = index.checked_add(step) else {
+                break;
+            };
+            index = next;
+        }
+    } else {
+        while index > last {
+            let Ok(position) = usize::try_from(index) else {
+                return Ok(None);
+            };
+            selected_indices.push(position);
+            let Some(next) = index.checked_add(step) else {
+                break;
+            };
+            index = next;
+        }
+    }
+
+    let list_member = crate::builtin_names::list_member_impl(name);
+    if !matches!(
+        list_member,
+        "length" | "isEmpty" | "isNotEmpty" | "first" | "last" | "single"
+    ) {
+        return Ok(None);
+    }
+
+    let element_c = c_type(&element_ty, signatures);
+    let mut declarations = String::new();
+    let mut value_names = Vec::with_capacity(items.len());
+    for (position, item) in items.iter().enumerate() {
+        let value = ui_expr_c_for_view_identity(item, view, signatures, view_identity)?;
+        let value_name = format!(
+            "flux__ui_slice_property_item_{}_{}_{}",
+            expr.span.line, expr.span.column, position
+        );
+        declarations.push_str(&format!("{element_c} {value_name} = ({value}); "));
+        value_names.push(value_name);
+    }
+
+    let fallback = value_names[0].clone();
+    let value = match list_member {
+        "length" => format!("INT64_C({})", selected_indices.len()),
+        "isEmpty" => {
+            if selected_indices.is_empty() {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
+        "isNotEmpty" => {
+            if selected_indices.is_empty() {
+                "false".to_string()
+            } else {
+                "true".to_string()
+            }
+        }
+        "first" => selected_indices
+            .first()
+            .map(|position| value_names[*position].clone())
+            .unwrap_or_else(|| {
+                format!(
+                    r#"fputs("Flux runtime error: list index out of range
+", stderr); abort(); {fallback}"#
+                )
+            }),
+        "last" => selected_indices
+            .last()
+            .map(|position| value_names[*position].clone())
+            .unwrap_or_else(|| {
+                format!(
+                    r#"fputs("Flux runtime error: list index out of range
+", stderr); abort(); {fallback}"#
+                )
+            }),
+        "single" if selected_indices.len() == 1 => value_names[selected_indices[0]].clone(),
+        "single" => format!(
+            r#"fputs("Flux runtime error: list.single requires exactly one element
+", stderr); abort(); {fallback}"#
+        ),
+        _ => unreachable!(),
+    };
+
+    Ok(Some(format!(
+        "__extension__ ({{ {declarations}{value}; }})"
+    )))
+}
+
 fn effectful_copy_ui_field_projection_c(
     base: &Expr,
     name: &str,
@@ -36726,6 +36896,15 @@ fn ui_expr_c_for_view_identity(
             if let Some(property) =
                 effectful_copy_ui_list_property_c(base, name, view, signatures, view_identity)?
             {
+                return Ok(property);
+            }
+            if let Some(property) = effectful_copy_ui_static_slice_property_c(
+                base,
+                name,
+                view,
+                signatures,
+                view_identity,
+            )? {
                 return Ok(property);
             }
             if let Some(items) = reusable_ui_list_projection_items(base, signatures)? {

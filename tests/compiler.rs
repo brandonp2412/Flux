@@ -84262,13 +84262,33 @@ app Badge
 "#;
 
     check_source(source).expect("effectful sliced list fixture should typecheck");
-    let error = compile_to_c(source)
-        .expect_err("constant list slice folding must not discard unselected effects");
-    assert!(
-        error
-            .message
-            .contains("bootstrap dynamic UI expression currently supports")
-    );
+    let assert_target = |generated: &str| {
+        assert!(generated.contains("flux__ui_slice_property_item_"));
+        assert!(
+            generated.contains(" = (flux__fn_probe());"),
+            "unselected effectful slice-base items must still be evaluated"
+        );
+    };
+
+    let linux =
+        compile_to_c(source).expect("effectful static slice property should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful static slice fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful static slice property should lower natively");
+        assert_target(&generated);
+    }
 }
 
 #[test]
