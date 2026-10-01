@@ -81540,6 +81540,79 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_parameterized_constant_list_property_on_all_native_backends() {
+    let source = r#"
+view Badge(enabled: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: [false, enabled].last
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        enabled: true
+}
+
+app App
+"#;
+
+    check_source(source).expect("composed-view list property fixture should typecheck");
+    let linux = compile_to_c(source)
+        .expect("parameterized constant list property should lower through Linux");
+    assert!(linux.contains("badge__title"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("composed-view list property fixture should analyze for native targets");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("parameterized constant list property should lower through Android");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("parameterized constant list property should lower through Windows");
+}
+
+#[test]
+fn composed_view_constant_list_property_does_not_drop_effectful_items() {
+    let source = r#"
+fn probe() -> bool {
+    print("probe")
+    return true
+}
+
+view Badge {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: [false, probe()].first
+}
+
+app Badge
+"#;
+
+    check_source(source).expect("effectful list property fixture should typecheck");
+    let error = compile_to_c(source)
+        .expect_err("constant list property folding must not discard unselected effects");
+    assert!(
+        error
+            .message
+            .contains("bootstrap dynamic UI expression currently supports")
+    );
+}
+
+#[test]
 fn composed_view_constant_list_projection_does_not_drop_effectful_items() {
     let source = r#"
 fn probe() -> bool {

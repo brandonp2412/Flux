@@ -34299,6 +34299,33 @@ fn fold_ui_primitive_expr(
             name,
             optional: false,
             ..
+        } if matches!(base.kind, ExprKind::List(_)) => {
+            let ExprKind::List(items) = &base.kind else {
+                unreachable!();
+            };
+            let mut folded = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(value) = fold_ui_primitive_expr(item, signatures)? else {
+                    return Ok(None);
+                };
+                folded.push(value);
+            }
+            match crate::builtin_names::list_member_impl(name) {
+                "length" => Ok(Some(ConstantValue::I64(folded.len() as i64))),
+                "isEmpty" => Ok(Some(ConstantValue::Bool(folded.is_empty()))),
+                "isNotEmpty" => Ok(Some(ConstantValue::Bool(!folded.is_empty()))),
+                "first" => Ok(folded.first().cloned()),
+                "last" => Ok(folded.last().cloned()),
+                "single" if folded.len() == 1 => Ok(folded.into_iter().next()),
+                "single" => Ok(None),
+                _ => Ok(None),
+            }
+        }
+        ExprKind::Field {
+            base,
+            name,
+            optional: false,
+            ..
         } if matches!(base.kind, ExprKind::RecordLiteral { .. }) => {
             let ExprKind::RecordLiteral { fields } = &base.kind else {
                 unreachable!();
