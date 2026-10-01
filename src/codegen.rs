@@ -36189,6 +36189,7 @@ struct DynamicCopyUiRuntimeListCandidate {
 
 fn dynamic_copy_ui_runtime_list_candidates(
     expr: &Expr,
+    view: &crate::ast::ViewDef,
     signatures: &Signatures,
 ) -> Result<Option<(Vec<DynamicCopyUiRuntimeListCandidate>, bool)>, Diagnostic> {
     let ExprKind::List(items) = &expr.kind else {
@@ -36205,7 +36206,7 @@ fn dynamic_copy_ui_runtime_list_candidates(
                 ..
             } => {
                 let Some((nested, nested_dynamic)) =
-                    dynamic_copy_ui_runtime_list_candidates(value, signatures)?
+                    dynamic_copy_ui_runtime_list_candidates(value, view, signatures)?
                 else {
                     return Ok(None);
                 };
@@ -36257,6 +36258,71 @@ fn dynamic_copy_ui_runtime_list_candidates(
                     }
                 }
             },
+            ExprKind::ListIf {
+                condition,
+                binding: Some(binding),
+                value,
+                else_value: None,
+                ..
+            } => {
+                if !transparent_native_component_argument_is_reusable(condition) {
+                    return Ok(None);
+                }
+                let Some(optional_ty) = ui_optional_scalar_type(condition, view, signatures) else {
+                    return Ok(None);
+                };
+                let Some(default_value) =
+                    optional_scalar_default_expr(&optional_ty, condition, signatures)
+                else {
+                    return Ok(None);
+                };
+                let unwrapped = Expr {
+                    line: condition.line,
+                    span: condition.span,
+                    kind: ExprKind::Binary {
+                        left: Box::new(condition.as_ref().clone()),
+                        op: BinOp::Coalesce,
+                        right: Box::new(default_value),
+                    },
+                };
+                let mut selected = value.as_ref().clone();
+                let bindings = HashMap::from([(binding.name.clone(), unwrapped)]);
+                let parameter_names = HashSet::from([binding.name.as_str()]);
+                substitute_transparent_native_component_parameters(
+                    &mut selected,
+                    &bindings,
+                    &parameter_names,
+                    "native",
+                )?;
+
+                let optional_item = Expr {
+                    line: condition.line,
+                    span: condition.span,
+                    kind: ExprKind::ListOptional {
+                        value: Box::new(condition.as_ref().clone()),
+                        question_span: condition.span,
+                    },
+                };
+                let presence = Expr {
+                    line: condition.line,
+                    span: condition.span,
+                    kind: ExprKind::Field {
+                        base: Box::new(Expr {
+                            line: condition.line,
+                            span: condition.span,
+                            kind: ExprKind::List(vec![optional_item]),
+                        }),
+                        name: "isNotEmpty".to_string(),
+                        name_span: condition.span,
+                        optional: false,
+                    },
+                };
+                candidates.push(DynamicCopyUiRuntimeListCandidate {
+                    condition: Some(presence),
+                    value: selected,
+                });
+                has_dynamic_cardinality = true;
+            }
             ExprKind::ListSpread { optional: true, .. }
             | ExprKind::ListOptional { .. }
             | ExprKind::ListIf {
@@ -36286,7 +36352,7 @@ fn dynamic_copy_ui_runtime_list_storage_c(
     view_identity: Option<usize>,
     tag: &str,
 ) -> Result<Option<DynamicCopyUiRuntimeListStorage>, Diagnostic> {
-    let Some((candidates, true)) = dynamic_copy_ui_runtime_list_candidates(expr, signatures)?
+    let Some((candidates, true)) = dynamic_copy_ui_runtime_list_candidates(expr, view, signatures)?
     else {
         return Ok(None);
     };
@@ -38936,7 +39002,7 @@ fn ui_expr_known_type(
                 let element_ty = ui_expr_known_type(&value, view, signatures)?;
                 Type::List(Box::new(signatures.canonical_type(&element_ty)))
             } else if let Some((candidates, true)) =
-                dynamic_copy_ui_runtime_list_candidates(expr, signatures)
+                dynamic_copy_ui_runtime_list_candidates(expr, view, signatures)
                     .ok()
                     .flatten()
             {
