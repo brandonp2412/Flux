@@ -81096,7 +81096,7 @@ view Badge(label: str, selectable: bool = false) {
     grid rows: 1fr
     Text title at 1,1
         text: label
-        selectable: selectable
+        selectable: selectable && true
 }
 
 view BadgeShell(label: str, selectable: bool) {
@@ -81109,11 +81109,12 @@ view BadgeShell(label: str, selectable: bool) {
 
 view App {
     state selected: bool = true
+    state enabled: bool = true
     grid columns: 1fr
     grid rows: 1fr
     BadgeShell card at 1,1
         label: "Flux"
-        selectable: selected
+        selectable: selected && enabled
 }
 
 app App
@@ -81136,6 +81137,42 @@ app App
     .expect("transparent composed views should lower through the Android native backend");
     assert!(android.contains("android/widget/TextView"));
     assert!(android.contains("Flux"));
+}
+
+#[test]
+fn native_composed_view_lowering_rejects_observable_parameter_arguments() {
+    let source = r#"
+fn invert(value: bool) -> bool {
+    return value == false
+}
+
+view Badge(selectable: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        selectable: selectable
+}
+
+view App {
+    state selected: bool = true
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        selectable: invert(selected)
+}
+
+app App
+"#;
+
+    check_source(source).expect("observable composed-view argument fixture should typecheck");
+    let error = compile_to_c(source)
+        .expect_err("observable parameter arguments need a single-evaluation binding environment");
+    assert!(
+        error
+            .message
+            .contains("requires a reusable pure scalar expression")
+    );
 }
 
 #[test]

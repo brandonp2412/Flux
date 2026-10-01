@@ -12651,6 +12651,146 @@ fn stable_android_element_id(view_name: &str, element_name: &str) -> u32 {
     if id == 0 { 1 } else { id }
 }
 
+fn transparent_native_component_argument_is_reusable(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Bool(_)
+        | ExprKind::Int(_)
+        | ExprKind::Str(_)
+        | ExprKind::InterpolatedString(_)
+        | ExprKind::Var(_) => true,
+        ExprKind::Unary { op, expr } => {
+            matches!(op, UnaryOp::Neg | UnaryOp::Not)
+                && transparent_native_component_argument_is_reusable(expr)
+        }
+        ExprKind::Binary { left, op, right } => {
+            matches!(
+                op,
+                BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::Eq
+                    | BinOp::Ne
+                    | BinOp::Lt
+                    | BinOp::Le
+                    | BinOp::Gt
+                    | BinOp::Ge
+                    | BinOp::And
+                    | BinOp::Or
+            ) && transparent_native_component_argument_is_reusable(left)
+                && transparent_native_component_argument_is_reusable(right)
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            transparent_native_component_argument_is_reusable(cond)
+                && transparent_native_component_argument_is_reusable(then_expr)
+                && transparent_native_component_argument_is_reusable(else_expr)
+        }
+        _ => false,
+    }
+}
+
+fn substitute_transparent_native_component_parameters(
+    expr: &mut Expr,
+    bindings: &HashMap<String, Expr>,
+    parameter_names: &HashSet<&str>,
+    backend: &str,
+) -> Result<(), Diagnostic> {
+    if let ExprKind::Var(name) = &expr.kind
+        && let Some(binding) = bindings.get(name)
+    {
+        *expr = binding.clone();
+        return Ok(());
+    }
+
+    match &mut expr.kind {
+        ExprKind::Unary { op, expr: inner } if matches!(op, UnaryOp::Neg | UnaryOp::Not) => {
+            substitute_transparent_native_component_parameters(
+                inner,
+                bindings,
+                parameter_names,
+                backend,
+            )?;
+        }
+        ExprKind::Binary { left, op, right }
+            if matches!(
+                op,
+                BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::Eq
+                    | BinOp::Ne
+                    | BinOp::Lt
+                    | BinOp::Le
+                    | BinOp::Gt
+                    | BinOp::Ge
+                    | BinOp::And
+                    | BinOp::Or
+            ) =>
+        {
+            substitute_transparent_native_component_parameters(
+                left,
+                bindings,
+                parameter_names,
+                backend,
+            )?;
+            substitute_transparent_native_component_parameters(
+                right,
+                bindings,
+                parameter_names,
+                backend,
+            )?;
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            substitute_transparent_native_component_parameters(
+                cond,
+                bindings,
+                parameter_names,
+                backend,
+            )?;
+            substitute_transparent_native_component_parameters(
+                then_expr,
+                bindings,
+                parameter_names,
+                backend,
+            )?;
+            substitute_transparent_native_component_parameters(
+                else_expr,
+                bindings,
+                parameter_names,
+                backend,
+            )?;
+        }
+        _ => {
+            let mut reads = HashSet::new();
+            typecheck::collect_expr_reads(expr, &mut reads);
+            if let Some(parameter) = reads
+                .iter()
+                .find(|name| parameter_names.contains(name.as_str()))
+            {
+                return Err(diag(
+                    expr.span,
+                    &format!(
+                        "{backend} transparent composed-view parameter '{parameter}' is not yet supported in this expression shape"
+                    ),
+                )
+                .with_note(
+                    "native composition can currently substitute parameters through reusable pure scalar expressions; calls, awaits, aggregates, projections, and interpolation bindings need a component binding environment",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn flatten_transparent_native_view_element(
     program: &Program,
     element: &crate::ast::ViewElement,
@@ -12750,21 +12890,16 @@ fn flatten_transparent_native_view_element(
                 ),
             )
         })?;
-        if supplied.is_some()
-            && !matches!(
-                value.kind,
-                ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::Str(_) | ExprKind::Var(_)
-            )
-        {
+        if supplied.is_some() && !transparent_native_component_argument_is_reusable(value) {
             return Err(diag(
                 value.span,
                 &format!(
-                    "{backend} transparent composed-view parameter '{}' currently requires a literal or direct binding",
+                    "{backend} transparent composed-view parameter '{}' currently requires a reusable pure scalar expression",
                     param.name
                 ),
             )
             .with_note(
-                "direct state/derived/constant/function bindings stay reactive after flattening; compound argument expressions need a compiler-owned single-evaluation binding before they can be duplicated safely",
+                "literal, direct binding, interpolation, negation/not, scalar binary, and conditional arguments are reusable; calls, awaits, aggregates, projections, and other observable expressions need a single-evaluation component binding environment",
             ));
         }
         bindings.insert(param.name.clone(), value.clone());
@@ -12777,28 +12912,12 @@ fn flatten_transparent_native_view_element(
         .map(|param| param.name.as_str())
         .collect::<HashSet<_>>();
     for property in &mut child.properties {
-        if let ExprKind::Var(name) = &property.value.kind
-            && let Some(binding) = bindings.get(name)
-        {
-            property.value = binding.clone();
-            continue;
-        }
-        let mut reads = HashSet::new();
-        typecheck::collect_expr_reads(&property.value, &mut reads);
-        if let Some(parameter) = reads
-            .iter()
-            .find(|name| parameter_names.contains(name.as_str()))
-        {
-            return Err(diag(
-                property.value.span,
-                &format!(
-                    "{backend} transparent composed-view parameter '{parameter}' is currently supported only as a direct child-property binding"
-                ),
-            )
-            .with_note(
-                "compound parameter expressions need a native component binding environment so each argument is evaluated once while remaining reactive",
-            ));
-        }
+        substitute_transparent_native_component_parameters(
+            &mut property.value,
+            &bindings,
+            &parameter_names,
+            backend,
+        )?;
     }
 
     stack.push(target.name.clone());
