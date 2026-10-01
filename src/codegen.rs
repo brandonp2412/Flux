@@ -12709,11 +12709,7 @@ fn transparent_native_component_argument_is_reusable(expr: &Expr) -> bool {
                     .as_deref()
                     .is_none_or(transparent_native_component_argument_is_reusable)
         }
-        ExprKind::Index {
-            base,
-            index,
-            optional: false,
-        } => {
+        ExprKind::Index { base, index, .. } => {
             transparent_native_component_argument_is_reusable(base)
                 && transparent_native_component_argument_is_reusable(index)
         }
@@ -12743,11 +12739,7 @@ fn transparent_native_component_argument_is_reusable(expr: &Expr) -> bool {
         } => fields
             .iter()
             .all(|field| transparent_native_component_argument_is_reusable(&field.value)),
-        ExprKind::Field {
-            base,
-            optional: false,
-            ..
-        } => transparent_native_component_argument_is_reusable(base),
+        ExprKind::Field { base, .. } => transparent_native_component_argument_is_reusable(base),
         _ => false,
     }
 }
@@ -34389,6 +34381,89 @@ fn static_ui_slice_bound(len: i64, value: Option<i64>, end: bool, step: i64) -> 
     resolved
 }
 
+fn fold_ui_optional_primitive_expr(
+    expr: &Expr,
+    signatures: &Signatures,
+) -> Result<Option<Option<ConstantValue>>, Diagnostic> {
+    match &expr.kind {
+        ExprKind::None => Ok(Some(None)),
+        ExprKind::Index {
+            base,
+            index,
+            optional: true,
+        } => {
+            if matches!(base.kind, ExprKind::None) {
+                return Ok(Some(None));
+            }
+            let Some(ConstantValue::I64(index)) = fold_ui_primitive_expr(index, signatures)? else {
+                return Ok(None);
+            };
+            let Some(items) = fold_ui_primitive_list_expr(base, signatures)? else {
+                return Ok(None);
+            };
+            let Ok(len) = i64::try_from(items.len()) else {
+                return Ok(None);
+            };
+            let index = if index < 0 {
+                let Some(index) = index.checked_add(len) else {
+                    return Ok(None);
+                };
+                index
+            } else {
+                index
+            };
+            let Ok(index) = usize::try_from(index) else {
+                return Ok(None);
+            };
+            let Some(value) = items.get(index).cloned() else {
+                return Ok(None);
+            };
+            Ok(Some(Some(value)))
+        }
+        ExprKind::Field {
+            base,
+            name,
+            optional: true,
+            ..
+        } => {
+            if matches!(base.kind, ExprKind::None) {
+                return Ok(Some(None));
+            }
+            match &base.kind {
+                ExprKind::RecordLiteral { fields } => {
+                    for field in fields {
+                        if fold_ui_primitive_expr(&field.value, signatures)?.is_none() {
+                            return Ok(None);
+                        }
+                    }
+                    let Some(field) = fields
+                        .iter()
+                        .find(|field| field.name.as_deref() == Some(name.as_str()))
+                    else {
+                        return Ok(None);
+                    };
+                    Ok(fold_ui_primitive_expr(&field.value, signatures)?.map(Some))
+                }
+                ExprKind::StructLiteral {
+                    base: None, fields, ..
+                } => {
+                    for field in fields {
+                        if fold_ui_primitive_expr(&field.value, signatures)?.is_none() {
+                            return Ok(None);
+                        }
+                    }
+                    let Some(field) = fields.iter().find(|field| field.name == *name) else {
+                        return Ok(None);
+                    };
+                    Ok(fold_ui_primitive_expr(&field.value, signatures)?.map(Some))
+                }
+                _ => Ok(None),
+            }
+        }
+        _ => Ok(fold_ui_primitive_expr(expr, signatures)?.map(Some)),
+    }
+}
+
 fn fold_ui_primitive_list_expr(
     expr: &Expr,
     signatures: &Signatures,
@@ -34410,10 +34485,11 @@ fn fold_ui_primitive_list_expr(
                         folded.extend(values);
                     }
                     ExprKind::ListOptional { value, .. } => {
-                        if !matches!(value.kind, ExprKind::None) {
-                            let Some(value) = fold_ui_primitive_expr(value, signatures)? else {
-                                return Ok(None);
-                            };
+                        let Some(value) = fold_ui_optional_primitive_expr(value, signatures)?
+                        else {
+                            return Ok(None);
+                        };
+                        if let Some(value) = value {
                             folded.push(value);
                         }
                     }

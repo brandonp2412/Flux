@@ -81682,6 +81682,125 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_reusable_optional_projection_arguments_on_all_native_backends() {
+    let source = r#"
+struct Flags {
+    enabled: bool
+}
+
+view ScalarBadge(flag: bool?) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Scalar"
+        visible: ([?flag]).isNotEmpty
+}
+
+view IndexWrapper(flags: bool[]?) {
+    grid columns: 1fr
+    grid rows: 1fr
+    ScalarBadge badge at 1,1
+        flag: flags?[0]
+}
+
+view FieldWrapper(flags: Flags?) {
+    grid columns: 1fr
+    grid rows: 1fr
+    ScalarBadge badge at 1,1
+        flag: flags?.enabled
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr 1fr 1fr
+    IndexWrapper indexed at 1,1
+        flags: [true]
+    FieldWrapper fielded at 2,1
+        flags: Flags { enabled: true }
+    IndexWrapper absentIndexed at 3,1
+        flags: none
+    FieldWrapper absentFielded at 4,1
+        flags: none
+}
+
+app App
+"#;
+
+    check_source(source).expect("optional projection component arguments should typecheck");
+    let linux = compile_to_c(source)
+        .expect("optional projection component arguments should lower through Linux");
+    assert!(linux.contains("indexed__badge__title"));
+    assert!(linux.contains("fielded__badge__title"));
+    assert!(linux.contains("absentIndexed__badge__title"));
+    assert!(linux.contains("absentFielded__badge__title"));
+    assert!(!linux.contains("flux__ui_derived___component_indexed__badge__param_"));
+    assert!(!linux.contains("flux__ui_derived___component_fielded__badge__param_"));
+    assert!(!linux.contains("flux__ui_derived___component_absentIndexed__badge__param_"));
+    assert!(!linux.contains("flux__ui_derived___component_absentFielded__badge__param_"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("optional projection component argument fixture should analyze for native targets");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("optional projection component arguments should lower through Android");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("optional projection component arguments should lower through Windows");
+}
+
+#[test]
+fn composed_view_optional_projection_argument_rejects_effectful_index() {
+    let source = r#"
+fn pick() -> i64 {
+    print("pick")
+    return 0
+}
+
+view Badge(flag: bool?) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: ([?flag]).isNotEmpty
+}
+
+view Wrapper(flags: bool[]?) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        flag: flags?[pick()]
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        flags: [true]
+}
+
+app App
+"#;
+
+    check_source(source)
+        .expect("effectful optional projection component argument should typecheck");
+    let error = compile_to_c(source)
+        .expect_err("effectful optional index must not become a reusable component argument");
+    assert!(
+        error
+            .message
+            .contains("needs scalar per-instance storage for this observable argument")
+    );
+}
+
+#[test]
 fn composed_view_projection_argument_preserves_effectful_base_evaluation() {
     let source = r#"
 fn probe() -> bool {
