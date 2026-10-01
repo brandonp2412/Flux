@@ -17033,7 +17033,23 @@ fn emit_windows_native_application(
                     }
                     _ => unreachable!("secondary element kind was validated above"),
                 };
+                let neutral_unsupported_property = matches!(
+                    property.name.as_str(),
+                    "rotate_degrees"
+                        | "rotateDegrees"
+                        | "skew_x_degrees"
+                        | "skewXDegrees"
+                        | "skew_y_degrees"
+                        | "skewYDegrees"
+                        | "transition_ms"
+                        | "transitionMs"
+                        | "transition_delay_ms"
+                        | "transitionDelayMs"
+                        | "layout_transition_ms"
+                        | "layoutTransitionMs"
+                );
                 let data_property = data_property
+                    || neutral_unsupported_property
                     || property.name == "tooltip"
                     || matches!(
                         property.name.as_str(),
@@ -17252,6 +17268,26 @@ fn emit_windows_native_application(
                             | "on_context_menu_item_select"
                             | "onContextMenuItemSelect"
                     );
+                if neutral_unsupported_property {
+                    if static_expr_i64(&property.value, signatures) == Some(0) {
+                        continue;
+                    }
+                    let source_name = match property.name.as_str() {
+                        "rotate_degrees" | "rotateDegrees" => "rotateDegrees",
+                        "skew_x_degrees" | "skewXDegrees" => "skewXDegrees",
+                        "skew_y_degrees" | "skewYDegrees" => "skewYDegrees",
+                        "transition_ms" | "transitionMs" => "transitionMs",
+                        "transition_delay_ms" | "transitionDelayMs" => "transitionDelayMs",
+                        "layout_transition_ms" | "layoutTransitionMs" => "layoutTransitionMs",
+                        _ => unreachable!("neutral unsupported property was matched above"),
+                    };
+                    return Err(diag(
+                        property.value.span,
+                        &format!(
+                            "bootstrap Windows {source_name} is not yet supported by the native Win32 backend"
+                        ),
+                    ));
+                }
                 if !data_property && !action_property {
                     return Err(diag(
                         property.name_span,

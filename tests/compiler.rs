@@ -76065,6 +76065,75 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_accept_neutral_unsupported_transform_and_transition_values() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Neutral"
+        rotateDegrees: 0
+        skewXDegrees: 0
+        skewYDegrees: 0
+        transitionMs: 0
+        transitionDelayMs: 0
+        layoutTransitionMs: 0
+}
+
+route detail = Detail
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("neutral secondary Windows styles should typecheck");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("provably neutral unsupported secondary Windows styles should lower as no-ops");
+
+    let dynamic = source
+        .replace("view Detail {", "view Detail {\n    state angle: i64 = 0")
+        .replace("rotateDegrees: 0", "rotateDegrees: angle");
+    let dynamic_database = fluxc::semantic::SemanticDatabase::analyze(&dynamic, SourceId::UNKNOWN)
+        .expect("dynamic secondary Windows style should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        dynamic_database.program(),
+        dynamic_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("dynamic secondary rotation must remain explicit until Windows rotation exists");
+    assert!(error.message.contains("rotateDegrees is not yet supported"));
+
+    let non_neutral = source.replace("transitionMs: 0", "transitionMs: 1");
+    let non_neutral_database =
+        fluxc::semantic::SemanticDatabase::analyze(&non_neutral, SourceId::UNKNOWN)
+            .expect("non-neutral secondary Windows style should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        non_neutral_database.program(),
+        non_neutral_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("non-zero secondary transition must remain explicit until implemented");
+    assert!(error.message.contains("transitionMs is not yet supported"));
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_rich_text() {
     let source = r#"
 fn openSecondary() -> void {
