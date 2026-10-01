@@ -37998,6 +37998,14 @@ fn ui_expr_c_for_view_identity(
                                     signatures.canonical_type(inner),
                                     Type::Bool | Type::I64 | Type::Str
                                 )
+                        )
+                        || matches!(&field_ty, Type::Record(_))
+                            && signatures.is_copy_type(&field_ty)
+                        || matches!(
+                            &field_ty,
+                            Type::Named(name)
+                                if signatures.struct_type(name).is_some()
+                                    && signatures.is_copy_type(&field_ty)
                         );
                     if supported
                         && matches!(&base_ty, Type::Named(_) | Type::Record(_))

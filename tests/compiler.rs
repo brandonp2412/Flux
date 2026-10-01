@@ -83545,6 +83545,91 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_effectful_copy_nested_field_on_all_native_backends() {
+    let source = r#"
+struct InnerFlags {
+    enabled: bool
+}
+
+struct OuterFlags {
+    inner: InnerFlags
+    marker: i64
+}
+
+type InnerRecord = (enabled: bool)
+type OuterRecord = (inner: InnerRecord, marker: i64)
+
+fn makeStruct(value: bool) -> OuterFlags {
+    print("makeStruct")
+    return OuterFlags { inner: InnerFlags { enabled: value }, marker: 7 }
+}
+
+fn makeRecord(value: bool) -> OuterRecord {
+    print("makeRecord")
+    return (inner: (enabled: value), marker: 9)
+}
+
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr
+    Badge structBadge at 1,1
+        visible: makeStruct(windowIsLandscape).inner.enabled
+    Badge recordBadge at 2,1
+        visible: makeRecord(windowIsLandscape).inner.enabled
+}
+
+app App
+"#;
+
+    check_source(source).expect("effectful nested Copy field fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.contains("= (flux__fn_makeStruct("),
+            "nested struct projection should evaluate its aggregate producer"
+        );
+        assert!(
+            generated.contains("= (flux__fn_makeRecord("),
+            "nested record projection should evaluate its aggregate producer"
+        );
+        assert!(
+            generated.matches("flux__ui_field_base_").count() >= 4,
+            "each aggregate projection stage should use a typed single-evaluation temporary"
+        );
+        assert!(generated.contains(".flux__field_inner"));
+        assert!(generated.contains(".flux__field_enabled"));
+    };
+
+    let linux =
+        compile_to_c(source).expect("effectful nested Copy fields should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful nested Copy field fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful nested Copy fields should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn lowers_composed_view_runtime_optional_struct_field_on_all_native_backends() {
     let source = r#"
 struct Flags {
