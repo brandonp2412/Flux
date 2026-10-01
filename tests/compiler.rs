@@ -83589,6 +83589,11 @@ fn probe() -> bool {
     return true
 }
 
+fn choose() -> i64 {
+    print("choose")
+    return 1
+}
+
 view Badge(visible: bool) {
     grid columns: 1fr
     grid rows: 1fr
@@ -83601,20 +83606,55 @@ view App {
     grid columns: 1fr
     grid rows: 1fr
     Badge badge at 1,1
-        visible: [probe(), true][1]
+        visible: [probe(), true][choose()]
 }
 
 app App
 "#;
 
     check_source(source).expect("effectful projection component argument should typecheck");
-    let error = compile_to_c(source)
-        .expect_err("effectful projection component arguments must remain explicit");
+    let linux =
+        compile_to_c(source).expect("effectful scalar-list projection should lower through Linux");
+    assert!(linux.contains("flux__ui_list_item_"));
+    assert!(linux.contains("int64_t flux__ui_list_index_"));
+    let probe = linux
+        .find(" = (flux__fn_probe());")
+        .expect("effectful list item should be evaluated into a temporary");
     assert!(
-        error
-            .message
-            .contains("bootstrap dynamic UI expression currently supports")
+        linux.contains(" = (flux__fn_choose());"),
+        "effectful list index should be evaluated into the index temporary"
     );
+    let index = linux
+        .find("int64_t flux__ui_list_index_")
+        .expect("list index should be evaluated after list items");
+    assert!(probe < index);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful scalar-list projection fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful scalar-list projection should lower natively");
+        assert!(generated.contains("flux__ui_list_item_"));
+        let probe = generated
+            .find(" = (flux__fn_probe());")
+            .expect("effectful list item should be evaluated into a temporary");
+        assert!(
+            generated.contains(" = (flux__fn_choose());"),
+            "effectful list index should be evaluated into the index temporary"
+        );
+        let index = generated
+            .find("int64_t flux__ui_list_index_")
+            .expect("list index should be evaluated after list items");
+        assert!(probe < index);
+    }
 }
 
 #[test]
@@ -84189,13 +84229,33 @@ app App
 "#;
 
     check_source(source).expect("effectful list projection fixture should typecheck");
-    let error = compile_to_c(source)
-        .expect_err("constant list projection folding must not discard unselected effects");
+    let linux = compile_to_c(source)
+        .expect("constant list projection should preserve unselected effects on Linux");
+    assert!(linux.contains("flux__ui_list_item_"));
     assert!(
-        error
-            .message
-            .contains("bootstrap dynamic UI expression currently supports")
+        linux.contains(" = (flux__fn_probe());"),
+        "unselected effectful list item must still be evaluated"
     );
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful constant list projection fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("constant list projection should preserve unselected effects natively");
+        assert!(generated.contains("flux__ui_list_item_"));
+        assert!(
+            generated.contains(" = (flux__fn_probe());"),
+            "unselected effectful list item must still be evaluated"
+        );
+    }
 }
 
 #[test]

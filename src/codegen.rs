@@ -34971,6 +34971,68 @@ fn reusable_ui_runtime_list_edge_expr(
     Ok(Some(result))
 }
 
+fn effectful_copy_ui_list_index_c(
+    expr: &Expr,
+    index: &Expr,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+    view_identity: Option<usize>,
+) -> Result<Option<String>, Diagnostic> {
+    let ExprKind::List(items) = &expr.kind else {
+        return Ok(None);
+    };
+    let Some(first) = items.first() else {
+        return Ok(None);
+    };
+    let Some(element_ty) = ui_scalar_expr_type(first, view, signatures) else {
+        return Ok(None);
+    };
+    let element_ty = signatures.canonical_type(&element_ty);
+    if !matches!(&element_ty, Type::Bool | Type::I64 | Type::Str)
+        || !items.iter().all(|item| {
+            ui_scalar_expr_type(item, view, signatures)
+                .is_some_and(|ty| signatures.canonical_type(&ty) == element_ty)
+        })
+    {
+        return Ok(None);
+    }
+    let Ok(len) = i64::try_from(items.len()) else {
+        return Ok(None);
+    };
+
+    let element_c = c_type(&element_ty, signatures);
+    let mut declarations = String::new();
+    let mut value_names = Vec::with_capacity(items.len());
+    for (position, item) in items.iter().enumerate() {
+        let value = ui_expr_c_for_view_identity(item, view, signatures, view_identity)?;
+        let value_name = format!(
+            "flux__ui_list_item_{}_{}_{}",
+            expr.span.line, expr.span.column, position
+        );
+        declarations.push_str(&format!("{element_c} {value_name} = ({value}); "));
+        value_names.push(value_name);
+    }
+
+    let index_code = ui_expr_c_for_view_identity(index, view, signatures, view_identity)?;
+    let index_name = format!(
+        "flux__ui_list_index_{}_{}",
+        expr.span.line, expr.span.column
+    );
+    let mut selection = value_names.last().expect("non-empty list").clone();
+    for (position, value_name) in value_names[..value_names.len() - 1]
+        .iter()
+        .enumerate()
+        .rev()
+    {
+        selection = format!("({index_name} == INT64_C({position}) ? {value_name} : {selection})");
+    }
+
+    Ok(Some(format!(
+        r#"__extension__ ({{ {declarations}int64_t {index_name} = ({index_code}); if ({index_name} < INT64_C(0)) {index_name} += INT64_C({len}); if ({index_name} < INT64_C(0) || {index_name} >= INT64_C({len})) {{ fputs("Flux runtime error: list index out of range
+", stderr); abort(); }} {selection}; }})"#
+    )))
+}
+
 fn reusable_ui_runtime_list_index_c(
     expr: &Expr,
     index: &Expr,
@@ -36379,6 +36441,11 @@ fn ui_expr_c_for_view_identity(
                         r#"__extension__ ({{ int64_t {index_name} = {index_code}; if ({index_name} < INT64_C(0)) {index_name} += INT64_C({len}); if ({index_name} < INT64_C(0) || {index_name} >= INT64_C({len})) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {selection}; }})"#
                     ));
                 }
+            }
+            if let Some(indexed) =
+                effectful_copy_ui_list_index_c(base, index, view, signatures, view_identity)?
+            {
+                return Ok(indexed);
             }
             if let Some(indexed) =
                 reusable_ui_runtime_list_index_c(base, index, view, signatures, view_identity)?
