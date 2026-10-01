@@ -12830,7 +12830,7 @@ fn flatten_transparent_native_view_element(
             ),
         ));
     }
-    if !target.states.is_empty() || !target.derived.is_empty() {
+    if !target.states.is_empty() {
         return Err(diag(
             element.kind_span,
             &format!(
@@ -12838,7 +12838,7 @@ fn flatten_transparent_native_view_element(
             ),
         )
         .with_note(format!(
-            "view '{}' declares component-owned state or derived values; parameter forwarding is supported, but owned component state still needs native instance storage",
+            "view '{}' declares component-owned state; parameter forwarding and reusable derived values are supported, but mutable component state still needs native instance storage",
             target.name
         )));
     }
@@ -12926,11 +12926,34 @@ fn flatten_transparent_native_view_element(
         bindings.insert(param.name.clone(), value.clone());
     }
 
-    let parameter_names = target
+    let mut binding_names = target
         .params
         .iter()
         .map(|param| param.name.as_str())
         .collect::<HashSet<_>>();
+    for derived in &target.derived {
+        let mut value = derived.value.clone();
+        if !transparent_native_component_argument_is_reusable(&value) {
+            return Err(diag(
+                derived.value.span,
+                &format!(
+                    "{backend} transparent composed-view derived value '{}' must be a reusable pure scalar expression",
+                    derived.name
+                ),
+            )
+            .with_note(
+                "derived component values are inlined during transparent native composition; calls, awaits, aggregates, projections, and other observable expressions require per-instance derived storage",
+            ));
+        }
+        substitute_transparent_native_component_parameters(
+            &mut value,
+            &bindings,
+            &binding_names,
+            backend,
+        )?;
+        bindings.insert(derived.name.clone(), value);
+        binding_names.insert(derived.name.as_str());
+    }
     stack.push(target.name.clone());
     let mut lowered_elements = Vec::new();
     for source_child in &target.elements {
@@ -12939,7 +12962,7 @@ fn flatten_transparent_native_view_element(
             substitute_transparent_native_component_parameters(
                 &mut property.value,
                 &bindings,
-                &parameter_names,
+                &binding_names,
                 backend,
             )?;
         }

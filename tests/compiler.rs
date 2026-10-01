@@ -81185,6 +81185,85 @@ app App
 }
 
 #[test]
+fn lowers_reusable_composed_view_derived_values_on_linux_and_android() {
+    let source = r#"
+view Badge(enabled: bool) {
+    derived visible: bool = enabled && true
+    derived selectable: bool = visible && true
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+        selectable: selectable
+}
+
+view App {
+    state enabled: bool = true
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        enabled: enabled
+}
+
+app App
+"#;
+
+    check_source(source).expect("reusable composed-view derived values should typecheck");
+    let linux = compile_to_c(source)
+        .expect("reusable composed-view derived values should lower through Linux");
+    assert!(linux.contains("badge__title"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("reusable composed-view derived values should analyze for Android");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("reusable composed-view derived values should lower through Android");
+}
+
+#[test]
+fn native_composed_view_lowering_rejects_observable_derived_values() {
+    let source = r#"
+fn invert(value: bool) -> bool {
+    return value == false
+}
+
+view Badge(enabled: bool) {
+    derived visible: bool = invert(enabled)
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        enabled: true
+}
+
+app App
+"#;
+
+    check_source(source).expect("observable derived-value fixture should typecheck");
+    let error = compile_to_c(source)
+        .expect_err("observable component-derived values need per-instance storage");
+    assert!(
+        error
+            .message
+            .contains("derived value 'visible' must be a reusable pure scalar expression"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
 fn native_composed_view_lowering_rejects_observable_parameter_arguments() {
     let source = r#"
 fn invert(value: bool) -> bool {
