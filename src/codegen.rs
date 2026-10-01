@@ -12840,6 +12840,20 @@ fn substitute_transparent_native_component_parameters(
                 }
             }
         }
+        ExprKind::Index { base, index, .. } => {
+            substitute_transparent_native_component_parameters(
+                base,
+                bindings,
+                parameter_names,
+                backend,
+            )?;
+            substitute_transparent_native_component_parameters(
+                index,
+                bindings,
+                parameter_names,
+                backend,
+            )?;
+        }
         _ => {
             let mut reads = HashSet::new();
             typecheck::collect_expr_reads(expr, &mut reads);
@@ -34209,6 +34223,25 @@ fn fold_ui_primitive_expr(
                 ConstantValue::Bool(false) => fold_ui_primitive_expr(else_expr, signatures),
                 _ => Ok(None),
             }
+        }
+        ExprKind::Index {
+            base,
+            index,
+            optional: false,
+        } => {
+            let Some(ConstantValue::I64(index)) = fold_ui_primitive_expr(index, signatures)? else {
+                return Ok(None);
+            };
+            let ExprKind::List(items) = &base.kind else {
+                return Ok(None);
+            };
+            let Ok(index) = usize::try_from(index) else {
+                return Ok(None);
+            };
+            let Some(item) = items.get(index) else {
+                return Ok(None);
+            };
+            fold_ui_primitive_expr(item, signatures)
         }
         _ => fold_primitive_expr(expr, &HashMap::new(), signatures),
     }
