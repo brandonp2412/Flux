@@ -2289,16 +2289,29 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                 ));
                 continue;
             }
-            if !matches!(expected, Type::Bool | Type::I64 | Type::Str) {
+            let supported_state = matches!(expected, Type::Bool | Type::I64 | Type::Str)
+                || matches!(
+                    &expected,
+                    Type::Optional(inner)
+                        if matches!(
+                            signatures.canonical_type(inner),
+                            Type::Bool | Type::I64 | Type::Str
+                        )
+                );
+            if !supported_state {
                 diagnostics.push(
                     diag(
                         state.type_span,
-                        "bootstrap view state currently supports only copyable bool, i64, and borrowed str values",
+                        "bootstrap view state currently supports only copyable bool, i64, str, and optional scalar values",
                     )
                     .with_note(
-                        "owned aggregates, optionals, resources, and other state require explicit ownership/lifetime storage rules before they can persist in a native view",
+                        "owned aggregates, resources, and other state require explicit ownership/lifetime storage rules before they can persist in a native view",
                     ),
                 );
+                continue;
+            }
+            if matches!(expected, Type::Optional(_)) && matches!(state.initial.kind, ExprKind::None)
+            {
                 continue;
             }
             match evaluate_default_expr(&state.initial, signatures) {
@@ -2876,6 +2889,13 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                         ));
                         continue;
                     };
+                    if text_value_event && signatures.canonical_type(&state.ty) != Type::Str {
+                        diagnostics.push(diag(
+                            transition.state_span,
+                            "TextInput event-value transitions require str view state",
+                        ));
+                        continue;
+                    }
                     let mut transition_env = property_env.clone();
                     if let Some(event_value) = &transition.event_value {
                         if transition_env.contains_key(event_value) {

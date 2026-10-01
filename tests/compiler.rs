@@ -69216,27 +69216,59 @@ app Screen
     check_source(supported_alias).expect("primitive aliases should remain valid view state");
     compile_to_c(supported_alias).expect("validated primitive state should lower natively");
 
-    let unsupported_optional = r#"
+    let supported_optional = r#"
 view Screen {
     grid columns: 1fr
-    grid rows: auto
+    grid rows: auto auto auto auto auto
     state selected: i64? = none
+    state backup: i64? = 7
+    state active: bool? = true
+    state label: str? = "ready"
     Text title at 1,1
         text: "Optional"
+        visible: active ?? false
+    Button select at 2,1
+        text: "Select"
+        on_press: selected => 42
+    Button clear at 3,1
+        text: "Clear"
+        on_press: selected => none
+    Button relabel at 4,1
+        text: "Relabel"
+        on_press: label => "next"
+    Button coalesce at 5,1
+        text: "Coalesce"
+        on_press: selected => selected ?? backup
 }
 app Screen
 "#;
-    let errors = check_source_all(unsupported_optional)
-        .expect_err("optional state needs an ownership/storage contract before native lowering");
-    assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("view state currently supports only copyable bool, i64, and borrowed str")
-            && error
-                .notes
-                .iter()
-                .any(|note| note.contains("ownership/lifetime storage rules"))
-    }));
+    check_source(supported_optional).expect("optional scalar state should typecheck");
+    let linux =
+        compile_to_c(supported_optional).expect("optional scalar state should lower through Linux");
+    assert!(linux.contains("flux__ui_state_selected"));
+    assert!(linux.contains(".has_value = false"));
+    assert!(linux.contains("flux__ui_state_active"));
+    assert!(linux.contains(".has_value = true"));
+
+    let database =
+        fluxc::semantic::SemanticDatabase::analyze(supported_optional, SourceId::UNKNOWN)
+            .expect("optional scalar state fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("optional scalar state should lower on every native backend");
+        assert!(generated.contains("flux__ui_state_selected"));
+        assert!(generated.contains(".has_value = false"));
+        assert!(generated.contains("flux__ui_state_active"));
+        assert!(generated.contains(".has_value = true"));
+    }
 
     let unsupported_error = r#"
 view Screen {
@@ -69251,9 +69283,9 @@ app Screen
     let errors = check_source_all(unsupported_error)
         .expect_err("error handles must not silently gain persistent view-state storage");
     assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("view state currently supports only copyable bool, i64, and borrowed str")
+        error.message.contains(
+            "view state currently supports only copyable bool, i64, str, and optional scalar",
+        )
     }));
 }
 
@@ -69309,6 +69341,25 @@ app Screen
         error
             .message
             .contains("assignment is a statement, not a value-producing expression")
+    }));
+
+    let optional_text_input = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    state draft: str? = none
+    TextInput editor at 1,1
+        value: draft ?? ""
+        on_change: draft, value => value
+}
+app Screen
+"#;
+    let errors = check_source_all(optional_text_input)
+        .expect_err("TextInput event values need owned non-optional str state storage");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("TextInput event-value transitions require str view state")
     }));
 }
 
@@ -72002,6 +72053,100 @@ app Screen
 
     assert!(windows.contains("static bool flux__ui_view_2_state___component_card__shown = true;"));
     assert!(windows.contains("Detail"));
+}
+
+#[test]
+fn windows_distinct_route_windows_preserve_optional_scalar_state() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    state selected: i64? = none
+    Text title at 1,1
+        text: "Detail"
+    Button select at 2,1
+        text: "Select"
+        onPress: selected => 7
+    Button clear at 3,1
+        text: "Clear"
+        onPress: selected => none
+}
+
+route detail = Detail
+app Screen
+"#;
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary optional scalar state should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary optional scalar state should lower through Windows");
+
+    assert!(windows.contains("flux__ui_view_1_state_selected"));
+    assert!(windows.contains("FluxWindowsView1ScalarState"));
+    assert!(windows.contains("scalar_state->value_0 = flux__ui_view_1_state_selected;"));
+    assert!(
+        windows.contains(
+            "flux__ui_view_1_state_selected = scalar_state != NULL ? scalar_state->value_0"
+        )
+    );
+    assert!(windows.contains(".has_value = false"));
+    assert!(windows.contains(".has_value = true"));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-secondary-optional-state-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)
+            .expect("secondary optional-state syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, &windows)
+            .expect("secondary optional-state Windows C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate secondary optional-state Win32 C");
+        assert!(
+            result.status.success(),
+            "secondary optional-state Windows C failed syntax validation:
+{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 }
 
 #[test]

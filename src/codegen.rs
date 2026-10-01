@@ -13413,54 +13413,25 @@ fn emit_android_native_application(
     }
     for state in &view.states {
         let state_name = ui_state_c_name(&state.name);
-        match signatures.canonical_type(&state.ty) {
-            Type::Bool => {
-                let Some(initial) = static_expr_bool(&state.initial, signatures) else {
-                    return Err(diag(
-                        state.initial.span,
-                        "bootstrap Android bool state requires a compile-time bool initial value",
-                    ));
-                };
-                out.push_str(&format!(
-                    "static bool {state_name} = {};\n",
-                    if initial { "true" } else { "false" }
-                ));
-            }
-            Type::I64 => {
-                let Some(initial) = static_expr_i64(&state.initial, signatures) else {
-                    return Err(diag(
-                        state.initial.span,
-                        "bootstrap Android i64 state requires a compile-time integer initial value",
-                    ));
-                };
-                out.push_str(&format!(
-                    "static int64_t {state_name} = INT64_C({initial});\n"
-                ));
-            }
-            Type::Str => {
-                let Some(initial) = static_expr_str(&state.initial, signatures) else {
-                    return Err(diag(
-                        state.initial.span,
-                        "bootstrap Android str state requires a compile-time string initial value",
-                    ));
-                };
-                out.push_str(&format!(
-                    "static const char *{state_name} = {};\n",
-                    c_string(&initial)
-                ));
-                if view_state_accepts_text_input_value(view, &state.name) {
-                    out.push_str(&format!(
-                        "static char *{} = NULL;\n",
-                        ui_owned_state_c_name(&state.name)
-                    ));
-                }
-            }
-            _ => {
-                return Err(diag(
-                    state.type_span,
-                    "bootstrap Android view state currently supports bool, i64, and borrowed str; owned aggregate state remains pending",
-                ));
-            }
+        let Some(initial) = native_ui_state_initial_c(&state.initial, &state.ty, signatures) else {
+            return Err(diag(
+                state.initial.span,
+                "bootstrap Android view state requires a compile-time bool, i64, str, or optional scalar initial value",
+            ));
+        };
+        out.push_str(&native_ui_state_declaration_c(
+            &state_name,
+            &state.ty,
+            &initial,
+            signatures,
+        ));
+        if signatures.canonical_type(&state.ty) == Type::Str
+            && view_state_accepts_text_input_value(view, &state.name)
+        {
+            out.push_str(&format!(
+                "static char *{} = NULL;\n",
+                ui_owned_state_c_name(&state.name)
+            ));
         }
     }
     for state in &view.states {
@@ -16525,7 +16496,13 @@ fn emit_android_native_application(
         };
         let element_id = stable_android_element_id(&view.name, &element.name);
         if let Some(transition) = &action.transition {
-            let next = ui_expr_c(&action.value, view, signatures)?;
+            let next = ui_state_transition_value_c(
+                &action.value,
+                &transition.state,
+                view,
+                signatures,
+                None,
+            )?;
             let state_index = ui_state_index(view, &transition.state);
             out.push_str(&format!(
                 "        case {element_id}: {} = {next}; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, {state_index}); break;\n",
@@ -16563,7 +16540,13 @@ fn emit_android_native_application(
             ""
         };
         if let Some(transition) = &action.transition {
-            let next = ui_expr_c(&action.value, view, signatures)?;
+            let next = ui_state_transition_value_c(
+                &action.value,
+                &transition.state,
+                view,
+                signatures,
+                None,
+            )?;
             let state_index = ui_state_index(view, &transition.state);
             out.push_str(&format!(
                 "        case {element_id}: {radio_guard}{} = {next}; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, {state_index}); break;\n",
@@ -16637,7 +16620,13 @@ fn emit_android_native_application(
                     ));
                     continue;
                 }
-                let next = ui_expr_c(&action.value, view, signatures)?;
+                let next = ui_state_transition_value_c(
+                    &action.value,
+                    &transition.state,
+                    view,
+                    signatures,
+                    None,
+                )?;
                 let state_index = ui_state_index(view, &transition.state);
                 out.push_str(&format!(
                     "        case {element_id}: {} = {next}; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, {state_index}); break;\n",
@@ -17483,21 +17472,10 @@ fn emit_windows_native_application(
             )?;
         }
         for state in &secondary_view.states {
-            let valid_initial = match signatures.canonical_type(&state.ty) {
-                Type::Bool => static_expr_bool(&state.initial, signatures).is_some(),
-                Type::I64 => static_expr_i64(&state.initial, signatures).is_some(),
-                Type::Str => static_expr_str(&state.initial, signatures).is_some(),
-                _ => {
-                    return Err(diag(
-                        state.type_span,
-                        "Windows distinct secondary window state currently supports bool, i64, and str",
-                    ));
-                }
-            };
-            if !valid_initial {
+            if native_ui_state_initial_c(&state.initial, &state.ty, signatures).is_none() {
                 return Err(diag(
                     state.initial.span,
-                    "Windows distinct secondary window state requires a compile-time initial value",
+                    "Windows distinct secondary window state requires a compile-time bool, i64, str, or optional scalar initial value",
                 ));
             }
         }
@@ -18353,9 +18331,10 @@ fn emit_windows_native_application(
             if let Some(action_name) = action_name
                 && let Some(property) = view_property(element, action_name)
             {
-                if property.transition.is_some() {
-                    ui_expr_c_for_view_identity(
+                if let Some(transition) = &property.transition {
+                    ui_state_transition_value_c(
                         &property.value,
+                        &transition.state,
                         secondary_view,
                         signatures,
                         Some(*view_identity),
@@ -18370,9 +18349,10 @@ fn emit_windows_native_application(
             if element.kind != "TextInput"
                 && let Some(property) = view_property(element, "on_tap")
             {
-                if property.transition.is_some() {
-                    ui_expr_c_for_view_identity(
+                if let Some(transition) = &property.transition {
+                    ui_state_transition_value_c(
                         &property.value,
+                        &transition.state,
                         secondary_view,
                         signatures,
                         Some(*view_identity),
@@ -18394,9 +18374,10 @@ fn emit_windows_native_application(
                 let Some(property) = view_property(element, property_name) else {
                     continue;
                 };
-                if property.transition.is_some() {
-                    ui_expr_c_for_view_identity(
+                if let Some(transition) = &property.transition {
+                    ui_state_transition_value_c(
                         &property.value,
+                        &transition.state,
                         secondary_view,
                         signatures,
                         Some(*view_identity),
@@ -18456,9 +18437,10 @@ fn emit_windows_native_application(
                 }
             }
             if let Some(property) = view_property(element, "on_long_press") {
-                if property.transition.is_some() {
-                    ui_expr_c_for_view_identity(
+                if let Some(transition) = &property.transition {
+                    ui_state_transition_value_c(
                         &property.value,
+                        &transition.state,
                         secondary_view,
                         signatures,
                         Some(*view_identity),
@@ -18477,9 +18459,10 @@ fn emit_windows_native_application(
                 let Some(property) = view_property(element, property_name) else {
                     continue;
                 };
-                if property.transition.is_some() {
-                    ui_expr_c_for_view_identity(
+                if let Some(transition) = &property.transition {
+                    ui_state_transition_value_c(
                         &property.value,
+                        &transition.state,
                         secondary_view,
                         signatures,
                         Some(*view_identity),
@@ -20179,54 +20162,25 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
     }
     for state in &view.states {
         let state_name = ui_state_c_name(&state.name);
-        match signatures.canonical_type(&state.ty) {
-            Type::Bool => {
-                let Some(initial) = static_expr_bool(&state.initial, signatures) else {
-                    return Err(diag(
-                        state.initial.span,
-                        "bootstrap Windows bool state requires a compile-time bool initial value",
-                    ));
-                };
-                out.push_str(&format!(
-                    "static bool {state_name} = {};\n",
-                    if initial { "true" } else { "false" }
-                ));
-            }
-            Type::I64 => {
-                let Some(initial) = static_expr_i64(&state.initial, signatures) else {
-                    return Err(diag(
-                        state.initial.span,
-                        "bootstrap Windows i64 state requires a compile-time integer initial value",
-                    ));
-                };
-                out.push_str(&format!(
-                    "static int64_t {state_name} = INT64_C({initial});\n"
-                ));
-            }
-            Type::Str => {
-                let Some(initial) = static_expr_str(&state.initial, signatures) else {
-                    return Err(diag(
-                        state.initial.span,
-                        "bootstrap Windows str state requires a compile-time string initial value",
-                    ));
-                };
-                out.push_str(&format!(
-                    "static const char *{state_name} = {};\n",
-                    c_string(&initial)
-                ));
-                if view_state_accepts_text_input_value(view, &state.name) {
-                    out.push_str(&format!(
-                        "static char *{} = NULL;\n",
-                        ui_owned_state_c_name(&state.name)
-                    ));
-                }
-            }
-            _ => {
-                return Err(diag(
-                    state.type_span,
-                    "bootstrap Windows view state currently supports bool, i64, and borrowed str; owned aggregate state remains pending",
-                ));
-            }
+        let Some(initial) = native_ui_state_initial_c(&state.initial, &state.ty, signatures) else {
+            return Err(diag(
+                state.initial.span,
+                "bootstrap Windows view state requires a compile-time bool, i64, str, or optional scalar initial value",
+            ));
+        };
+        out.push_str(&native_ui_state_declaration_c(
+            &state_name,
+            &state.ty,
+            &initial,
+            signatures,
+        ));
+        if signatures.canonical_type(&state.ty) == Type::Str
+            && view_state_accepts_text_input_value(view, &state.name)
+        {
+            out.push_str(&format!(
+                "static char *{} = NULL;\n",
+                ui_owned_state_c_name(&state.name)
+            ));
         }
     }
     for (view_identity, secondary_view) in &secondary_window_views {
@@ -20245,32 +20199,14 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
         }
         for state in &secondary_view.states {
             let state_name = ui_state_c_name_for_view_identity(&state.name, Some(*view_identity));
-            match signatures.canonical_type(&state.ty) {
-                Type::Bool => {
-                    let initial = static_expr_bool(&state.initial, signatures)
-                        .expect("secondary Windows bool state initial was validated above");
-                    out.push_str(&format!(
-                        "static bool {state_name} = {};\n",
-                        if initial { "true" } else { "false" }
-                    ));
-                }
-                Type::I64 => {
-                    let initial = static_expr_i64(&state.initial, signatures)
-                        .expect("secondary Windows i64 state initial was validated above");
-                    out.push_str(&format!(
-                        "static int64_t {state_name} = INT64_C({initial});\n"
-                    ));
-                }
-                Type::Str => {
-                    let initial = static_expr_str(&state.initial, signatures)
-                        .expect("secondary Windows str state initial was validated above");
-                    out.push_str(&format!(
-                        "static const char *{state_name} = {};\n",
-                        c_string(&initial)
-                    ));
-                }
-                _ => unreachable!("secondary Windows state type was validated above"),
-            }
+            let initial = native_ui_state_initial_c(&state.initial, &state.ty, signatures)
+                .expect("secondary Windows state initial was validated above");
+            out.push_str(&native_ui_state_declaration_c(
+                &state_name,
+                &state.ty,
+                &initial,
+                signatures,
+            ));
         }
         let secondary_string_states = secondary_view
             .states
@@ -20348,18 +20284,17 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
     let scalar_states = view
         .states
         .iter()
-        .filter(|state| matches!(signatures.canonical_type(&state.ty), Type::Bool | Type::I64))
+        .filter(|state| {
+            let ty = signatures.canonical_type(&state.ty);
+            ty != Type::Str && native_ui_stored_scalar_type_supported(&ty, signatures)
+        })
         .collect::<Vec<_>>();
     if scalar_states.is_empty() {
         out.push_str("static void flux__windows_save_scalar_view_state(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_restore_scalar_view_state(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_release_scalar_view_state(FluxWindowsWindowContext *context) { (void)context; }\n");
     } else {
         out.push_str("typedef struct {");
         for (index, state) in scalar_states.iter().enumerate() {
-            let field_type = match signatures.canonical_type(&state.ty) {
-                Type::Bool => "bool",
-                Type::I64 => "int64_t",
-                _ => unreachable!(),
-            };
+            let field_type = c_type(&state.ty, signatures);
             out.push_str(&format!(" {field_type} value_{index};"));
         }
         out.push_str(" } FluxWindowsScalarViewState;\n");
@@ -20373,23 +20308,8 @@ static LRESULT CALLBACK flux__win_rich_text_nonselectable_proc(
         out.push_str(" }\n");
         out.push_str("static void flux__windows_restore_scalar_view_state(FluxWindowsWindowContext *context) { FluxWindowsScalarViewState *state = context != NULL ? (FluxWindowsScalarViewState *)context->scalar_view_state : NULL;");
         for (index, state) in scalar_states.iter().enumerate() {
-            let initial = match signatures.canonical_type(&state.ty) {
-                Type::Bool => {
-                    let value = static_expr_bool(&state.initial, signatures)
-                        .expect("Windows bool state initial was validated above");
-                    if value {
-                        "true".to_owned()
-                    } else {
-                        "false".to_owned()
-                    }
-                }
-                Type::I64 => {
-                    let value = static_expr_i64(&state.initial, signatures)
-                        .expect("Windows i64 state initial was validated above");
-                    format!("INT64_C({value})")
-                }
-                _ => unreachable!(),
-            };
+            let initial = native_ui_state_initial_c(&state.initial, &state.ty, signatures)
+                .expect("Windows scalar state initial was validated above");
             out.push_str(&format!(
                 " {} = state != NULL ? state->value_{index} : {initial};",
                 ui_state_c_name(&state.name)
@@ -21593,7 +21513,13 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
             String::new()
         };
         if let Some(transition) = &action.transition {
-            let next = ui_expr_c(&action.value, view, signatures)?;
+            let next = ui_state_transition_value_c(
+                &action.value,
+                &transition.state,
+                view,
+                signatures,
+                None,
+            )?;
             out.push_str(&format!(
                 "static void flux__win_click_{index}(void) {{ {active_guard}{} = {next}; flux__win_refresh(); }}\n",
                 ui_state_c_name(&transition.state)
@@ -21616,7 +21542,13 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
             continue;
         };
         if let Some(transition) = &action.transition {
-            let next = ui_expr_c(&action.value, view, signatures)?;
+            let next = ui_state_transition_value_c(
+                &action.value,
+                &transition.state,
+                view,
+                signatures,
+                None,
+            )?;
             out.push_str(&format!(
                 "static void flux__win_tap_{index}(void) {{ {} = {next}; flux__win_refresh(); }}\n",
                 ui_state_c_name(&transition.state)
@@ -21643,8 +21575,9 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
                 continue;
             };
             let event_body = if let Some(transition) = &action.transition {
-                let next = ui_expr_c_for_view_identity(
+                let next = ui_state_transition_value_c(
                     &action.value,
+                    &transition.state,
                     secondary_view,
                     signatures,
                     Some(*view_identity),
@@ -21674,7 +21607,13 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
         }
         let request_body = if let Some(action) = view_property(element, "on_context_menu") {
             if let Some(transition) = &action.transition {
-                let next = ui_expr_c(&action.value, view, signatures)?;
+                let next = ui_state_transition_value_c(
+                    &action.value,
+                    &transition.state,
+                    view,
+                    signatures,
+                    None,
+                )?;
                 format!(
                     "{} = {next}; flux__win_refresh(); ",
                     ui_state_c_name(&transition.state)
@@ -21731,7 +21670,13 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
             let action = view_property(element, "on_context_menu_select")
                 .expect("validated context menu selection callback");
             let select_body = if let Some(transition) = &action.transition {
-                let next = ui_expr_c(&action.value, view, signatures)?;
+                let next = ui_state_transition_value_c(
+                    &action.value,
+                    &transition.state,
+                    view,
+                    signatures,
+                    None,
+                )?;
                 format!(
                     "{} = {next}; flux__win_refresh();",
                     ui_state_c_name(&transition.state)
@@ -21812,7 +21757,13 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
         }
         let event_body = |action: &crate::ast::ViewProperty| -> Result<String, Diagnostic> {
             if let Some(transition) = &action.transition {
-                let next = ui_expr_c(&action.value, view, signatures)?;
+                let next = ui_state_transition_value_c(
+                    &action.value,
+                    &transition.state,
+                    view,
+                    signatures,
+                    None,
+                )?;
                 return Ok(format!(
                     "{} = {next}; flux__win_refresh();",
                     ui_state_c_name(&transition.state)
@@ -21847,7 +21798,13 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
         }
         let event_body = |action: &crate::ast::ViewProperty| -> Result<String, Diagnostic> {
             if let Some(transition) = &action.transition {
-                let next = ui_expr_c(&action.value, view, signatures)?;
+                let next = ui_state_transition_value_c(
+                    &action.value,
+                    &transition.state,
+                    view,
+                    signatures,
+                    None,
+                )?;
                 return Ok(format!(
                     "{} = {next}; flux__win_refresh();",
                     ui_state_c_name(&transition.state)
@@ -21879,7 +21836,13 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
             continue;
         };
         let event_body = if let Some(transition) = &action.transition {
-            let next = ui_expr_c(&action.value, view, signatures)?;
+            let next = ui_state_transition_value_c(
+                &action.value,
+                &transition.state,
+                view,
+                signatures,
+                None,
+            )?;
             format!(
                 "{} = {next}; flux__win_refresh();",
                 ui_state_c_name(&transition.state)
@@ -21900,7 +21863,13 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
             continue;
         };
         let event_body = if let Some(transition) = &action.transition {
-            let next = ui_expr_c(&action.value, view, signatures)?;
+            let next = ui_state_transition_value_c(
+                &action.value,
+                &transition.state,
+                view,
+                signatures,
+                None,
+            )?;
             format!(
                 "{} = {next}; flux__win_refresh();",
                 ui_state_c_name(&transition.state)
@@ -22366,7 +22335,10 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         let secondary_scalar_states = secondary_view
             .states
             .iter()
-            .filter(|state| matches!(signatures.canonical_type(&state.ty), Type::Bool | Type::I64))
+            .filter(|state| {
+                let ty = signatures.canonical_type(&state.ty);
+                ty != Type::Str && native_ui_stored_scalar_type_supported(&ty, signatures)
+            })
             .collect::<Vec<_>>();
         let secondary_string_states = secondary_view
             .states
@@ -22717,11 +22689,7 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         if !secondary_scalar_states.is_empty() {
             out.push_str("typedef struct {");
             for (index, state) in secondary_scalar_states.iter().enumerate() {
-                let field_type = match signatures.canonical_type(&state.ty) {
-                    Type::Bool => "bool",
-                    Type::I64 => "int64_t",
-                    _ => unreachable!(),
-                };
+                let field_type = c_type(&state.ty, signatures);
                 out.push_str(&format!(" {field_type} value_{index};"));
             }
             out.push_str(&format!(" }} {scalar_type};\n"));
@@ -22770,23 +22738,8 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             for (index, state) in secondary_scalar_states.iter().enumerate() {
                 let state_name =
                     ui_state_c_name_for_view_identity(&state.name, Some(*view_identity));
-                let initial = match signatures.canonical_type(&state.ty) {
-                    Type::Bool => {
-                        if static_expr_bool(&state.initial, signatures)
-                            .expect("secondary Windows bool state initial was validated above")
-                        {
-                            "true".to_owned()
-                        } else {
-                            "false".to_owned()
-                        }
-                    }
-                    Type::I64 => format!(
-                        "INT64_C({})",
-                        static_expr_i64(&state.initial, signatures)
-                            .expect("secondary Windows i64 state initial was validated above")
-                    ),
-                    _ => unreachable!(),
-                };
+                let initial = native_ui_state_initial_c(&state.initial, &state.ty, signatures)
+                    .expect("secondary Windows scalar state initial was validated above");
                 out.push_str(&format!(
                     " {state_name} = scalar_state != NULL ? scalar_state->value_{index} : {initial};"
                 ));
@@ -25944,8 +25897,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             let focus_handler = {
                 let event_body = |action: &crate::ast::ViewProperty| -> Result<String, Diagnostic> {
                     if let Some(transition) = &action.transition {
-                        let next = ui_expr_c_for_view_identity(
+                        let next = ui_state_transition_value_c(
                             &action.value,
+                            &transition.state,
                             secondary_view,
                             signatures,
                             Some(*view_identity),
@@ -26141,8 +26095,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     let event_body =
                         |action: &crate::ast::ViewProperty| -> Result<String, Diagnostic> {
                             if let Some(transition) = &action.transition {
-                                let next = ui_expr_c_for_view_identity(
+                                let next = ui_state_transition_value_c(
                                     &action.value,
+                                    &transition.state,
                                     secondary_view,
                                     signatures,
                                     Some(*view_identity),
@@ -26186,8 +26141,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     view_property(element, "on_double_tap")
                 {
                     let event_body = if let Some(transition) = &action.transition {
-                        let next = ui_expr_c_for_view_identity(
+                        let next = ui_state_transition_value_c(
                             &action.value,
+                            &transition.state,
                             secondary_view,
                             signatures,
                             Some(*view_identity),
@@ -26229,8 +26185,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     view_property(element, "on_long_press")
                 {
                     let event_body = if let Some(transition) = &action.transition {
-                        let next = ui_expr_c_for_view_identity(
+                        let next = ui_state_transition_value_c(
                             &action.value,
+                            &transition.state,
                             secondary_view,
                             signatures,
                             Some(*view_identity),
@@ -26275,8 +26232,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             let hover_handler = {
                 let event_body = |action: &crate::ast::ViewProperty| -> Result<String, Diagnostic> {
                     if let Some(transition) = &action.transition {
-                        let next = ui_expr_c_for_view_identity(
+                        let next = ui_state_transition_value_c(
                             &action.value,
+                            &transition.state,
                             secondary_view,
                             signatures,
                             Some(*view_identity),
@@ -26318,8 +26276,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             };
             let double_tap_handler = if let Some(action) = view_property(element, "on_double_tap") {
                 let event_body = if let Some(transition) = &action.transition {
-                    let next = ui_expr_c_for_view_identity(
+                    let next = ui_state_transition_value_c(
                         &action.value,
+                        &transition.state,
                         secondary_view,
                         signatures,
                         Some(*view_identity),
@@ -26354,8 +26313,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             };
             let long_press_handler = if let Some(action) = view_property(element, "on_long_press") {
                 let event_body = if let Some(transition) = &action.transition {
-                    let next = ui_expr_c_for_view_identity(
+                    let next = ui_state_transition_value_c(
                         &action.value,
+                        &transition.state,
                         secondary_view,
                         signatures,
                         Some(*view_identity),
@@ -26478,8 +26438,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 String::new()
             };
             if let Some(transition) = &action.transition {
-                let next = ui_expr_c_for_view_identity(
+                let next = ui_state_transition_value_c(
                     &action.value,
+                    &transition.state,
                     secondary_view,
                     signatures,
                     Some(*view_identity),
@@ -26511,8 +26472,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 }
                 let request_body = if let Some(action) = view_property(element, "on_context_menu") {
                     if let Some(transition) = &action.transition {
-                        let next = ui_expr_c_for_view_identity(
+                        let next = ui_state_transition_value_c(
                             &action.value,
+                            &transition.state,
                             secondary_view,
                             signatures,
                             Some(*view_identity),
@@ -26574,8 +26536,9 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                     let action = view_property(element, "on_context_menu_select")
                         .expect("validated context menu selection callback");
                     let select_body = if let Some(transition) = &action.transition {
-                        let next = ui_expr_c_for_view_identity(
+                        let next = ui_state_transition_value_c(
                             &action.value,
+                            &transition.state,
                             secondary_view,
                             signatures,
                             Some(*view_identity),
@@ -28228,54 +28191,25 @@ fn emit_linux_gtk_application(
     }
     for state in &view.states {
         let state_name = ui_state_c_name(&state.name);
-        match signatures.canonical_type(&state.ty) {
-            Type::Bool => {
-                let Some(initial) = static_expr_bool(&state.initial, signatures) else {
-                    return Err(diag(
-                        state.initial.span,
-                        "bootstrap Linux bool state requires a compile-time bool initial value",
-                    ));
-                };
-                out.push_str(&format!(
-                    "static bool {state_name} = {};\n",
-                    if initial { "true" } else { "false" }
-                ));
-            }
-            Type::I64 => {
-                let Some(initial) = static_expr_i64(&state.initial, signatures) else {
-                    return Err(diag(
-                        state.initial.span,
-                        "bootstrap Linux i64 state requires a compile-time integer initial value",
-                    ));
-                };
-                out.push_str(&format!(
-                    "static int64_t {state_name} = INT64_C({initial});\n"
-                ));
-            }
-            Type::Str => {
-                let Some(initial) = static_expr_str(&state.initial, signatures) else {
-                    return Err(diag(
-                        state.initial.span,
-                        "bootstrap Linux str state requires a compile-time string initial value",
-                    ));
-                };
-                out.push_str(&format!(
-                    "static const char *{state_name} = {};\n",
-                    c_string(&initial)
-                ));
-                if view_state_accepts_text_input_value(view, &state.name) {
-                    out.push_str(&format!(
-                        "static char *{} = NULL;\n",
-                        ui_owned_state_c_name(&state.name)
-                    ));
-                }
-            }
-            _ => {
-                return Err(diag(
-                    state.type_span,
-                    "bootstrap Linux view state currently supports bool, i64, and borrowed str; owned aggregate state remains pending",
-                ));
-            }
+        let Some(initial) = native_ui_state_initial_c(&state.initial, &state.ty, signatures) else {
+            return Err(diag(
+                state.initial.span,
+                "bootstrap Linux view state requires a compile-time bool, i64, str, or optional scalar initial value",
+            ));
+        };
+        out.push_str(&native_ui_state_declaration_c(
+            &state_name,
+            &state.ty,
+            &initial,
+            signatures,
+        ));
+        if signatures.canonical_type(&state.ty) == Type::Str
+            && view_state_accepts_text_input_value(view, &state.name)
+        {
+            out.push_str(&format!(
+                "static char *{} = NULL;\n",
+                ui_owned_state_c_name(&state.name)
+            ));
         }
     }
     for state in &view.states {
@@ -28310,6 +28244,12 @@ fn emit_linux_gtk_application(
             Type::Bool => out.push_str(&format!(" unsigned char type = 'b'; unsigned char value = {state_name} ? 1 : 0; if (fwrite(&type, 1, 1, file) != 1 || fwrite(&value, 1, 1, file) != 1) {{ fclose(file); remove(temporary); return; }} }}")),
             Type::I64 => out.push_str(&format!(" unsigned char type = 'i'; if (fwrite(&type, 1, 1, file) != 1 || fwrite(&{state_name}, sizeof({state_name}), 1, file) != 1) {{ fclose(file); remove(temporary); return; }} }}")),
             Type::Str => out.push_str(&format!(" unsigned char type = 's'; const char *value = {state_name} == NULL ? \"\" : {state_name}; size_t length = 0; if (!flux__ui_bounded_length(value, (size_t)16 * 1024 * 1024, &length)) {{ fclose(file); remove(temporary); return; }} if (fwrite(&type, 1, 1, file) != 1 || fwrite(&length, sizeof(length), 1, file) != 1 || (length != 0 && fwrite(value, 1, length, file) != length)) {{ fclose(file); remove(temporary); return; }} }}")),
+            Type::Optional(inner) => match signatures.canonical_type(&inner) {
+                Type::Bool => out.push_str(&format!(" unsigned char type = 'B'; unsigned char present = {state_name}.has_value ? 1 : 0; unsigned char value = {state_name}.has_value && {state_name}.value ? 1 : 0; if (fwrite(&type, 1, 1, file) != 1 || fwrite(&present, 1, 1, file) != 1 || (present != 0 && fwrite(&value, 1, 1, file) != 1)) {{ fclose(file); remove(temporary); return; }} }}")),
+                Type::I64 => out.push_str(&format!(" unsigned char type = 'I'; unsigned char present = {state_name}.has_value ? 1 : 0; if (fwrite(&type, 1, 1, file) != 1 || fwrite(&present, 1, 1, file) != 1 || (present != 0 && fwrite(&{state_name}.value, sizeof({state_name}.value), 1, file) != 1)) {{ fclose(file); remove(temporary); return; }} }}")),
+                Type::Str => out.push_str(&format!(" unsigned char type = 'S'; unsigned char present = {state_name}.has_value ? 1 : 0; const char *value = present != 0 && {state_name}.value != NULL ? {state_name}.value : \"\"; size_t length = 0; if (present != 0 && !flux__ui_bounded_length(value, (size_t)16 * 1024 * 1024, &length)) {{ fclose(file); remove(temporary); return; }} if (fwrite(&type, 1, 1, file) != 1 || fwrite(&present, 1, 1, file) != 1 || (present != 0 && (fwrite(&length, sizeof(length), 1, file) != 1 || (length != 0 && fwrite(value, 1, length, file) != length)))) {{ fclose(file); remove(temporary); return; }} }}")),
+                _ => unreachable!("Linux optional state inner types are validated before lowering"),
+            },
             _ => unreachable!("Linux state types are validated before lowering"),
         }
     }
@@ -28358,7 +28298,46 @@ fn emit_linux_gtk_application(
             out.push('}');
         }
     }
-    out.push_str(" if (!adopted) free(value); } else { free(name); fclose(file); remove(path); return; } free(name); } fclose(file); remove(path); }\n#endif\n");
+    out.push_str(" if (!adopted) free(value); } else if (type == 'B') { unsigned char present = 0; unsigned char value = 0; if (fread(&present, 1, 1, file) != 1 || (present != 0 && fread(&value, 1, 1, file) != 1)) { free(name); fclose(file); remove(path); return; }");
+    for state in &view.states {
+        if matches!(
+            signatures.canonical_type(&state.ty),
+            Type::Optional(ref inner) if signatures.canonical_type(inner) == Type::Bool
+        ) {
+            let state_name = ui_state_c_name(&state.name);
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && shape == 0) {{ {state_name}.has_value = present != 0; {state_name}.value = value != 0; }}",
+                c_string(&state.name)
+            ));
+        }
+    }
+    out.push_str(" } else if (type == 'I') { unsigned char present = 0; int64_t value = 0; if (fread(&present, 1, 1, file) != 1 || (present != 0 && fread(&value, sizeof(value), 1, file) != 1)) { free(name); fclose(file); remove(path); return; }");
+    for state in &view.states {
+        if matches!(
+            signatures.canonical_type(&state.ty),
+            Type::Optional(ref inner) if signatures.canonical_type(inner) == Type::I64
+        ) {
+            let state_name = ui_state_c_name(&state.name);
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && shape == 0) {{ {state_name}.has_value = present != 0; {state_name}.value = value; }}",
+                c_string(&state.name)
+            ));
+        }
+    }
+    out.push_str(" } else if (type == 'S') { unsigned char present = 0; if (fread(&present, 1, 1, file) != 1) { free(name); fclose(file); remove(path); return; } char *value = NULL; bool adopted = false; if (present != 0) { size_t length = 0; if (fread(&length, sizeof(length), 1, file) != 1 || length > (size_t)16 * 1024 * 1024) { free(name); fclose(file); remove(path); return; } value = malloc(length + 1); if (value == NULL || (length != 0 && fread(value, 1, length, file) != length)) { free(value); free(name); fclose(file); remove(path); return; } value[length] = '\0'; }");
+    for state in &view.states {
+        if matches!(
+            signatures.canonical_type(&state.ty),
+            Type::Optional(ref inner) if signatures.canonical_type(inner) == Type::Str
+        ) {
+            let state_name = ui_state_c_name(&state.name);
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && shape == 0) {{ {state_name}.has_value = present != 0; {state_name}.value = present != 0 ? value : NULL; adopted = present != 0; }}",
+                c_string(&state.name)
+            ));
+        }
+    }
+    out.push_str(" if (present != 0 && !adopted) free(value); } else { free(name); fclose(file); remove(path); return; } free(name); } fclose(file); remove(path); }\n#endif\n");
     if on_save_state.is_some() || on_restore_state.is_some() {
         out.push_str("#include <sys/stat.h>\n");
         out.push_str(&format!(
@@ -30127,7 +30106,13 @@ fn emit_linux_gtk_application(
             String::new()
         };
         if let Some(transition) = &action.transition {
-            let next = ui_expr_c(&action.value, view, signatures)?;
+            let next = ui_state_transition_value_c(
+                &action.value,
+                &transition.state,
+                view,
+                signatures,
+                None,
+            )?;
             let active_guard = if element.kind == "Radio" {
                 " if (!gtk_check_button_get_active(GTK_CHECK_BUTTON(widget))) return;"
             } else {
@@ -33888,7 +33873,8 @@ fn android_ui_zero_arg_event_body(
 ) -> Result<String, Diagnostic> {
     let refresh = "if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz);";
     if let Some(transition) = &action.transition {
-        let next = ui_expr_c(&action.value, view, signatures)?;
+        let next =
+            ui_state_transition_value_c(&action.value, &transition.state, view, signatures, None)?;
         let state_index = ui_state_index(view, &transition.state);
         return Ok(format!(
             "{} = {next}; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, {state_index});",
@@ -34016,7 +34002,8 @@ fn ui_zero_arg_event_body(
     signatures: &Signatures,
 ) -> Result<String, Diagnostic> {
     if let Some(transition) = &action.transition {
-        let next = ui_expr_c(&action.value, view, signatures)?;
+        let next =
+            ui_state_transition_value_c(&action.value, &transition.state, view, signatures, None)?;
         let state_index = ui_state_index(view, &transition.state);
         return Ok(format!(
             "{} = {next}; flux__ui_refresh_changed({state_index});",
@@ -35897,6 +35884,72 @@ fn native_ui_dynamic_call_result_supported(ty: &Type, signatures: &Signatures) -
     matches!(inner, Type::Named(_) | Type::Record(_)) && signatures.is_copy_type(&inner)
 }
 
+fn native_ui_state_declaration_c(
+    state_name: &str,
+    ty: &Type,
+    initial: &str,
+    signatures: &Signatures,
+) -> String {
+    if signatures.canonical_type(ty) == Type::Str {
+        format!("static const char *{state_name} = {initial};\n")
+    } else {
+        format!(
+            "static {} {state_name} = {initial};\n",
+            c_type(ty, signatures)
+        )
+    }
+}
+
+fn native_ui_state_initial_c(expr: &Expr, ty: &Type, signatures: &Signatures) -> Option<String> {
+    let canonical = signatures.canonical_type(ty);
+    match &canonical {
+        Type::Bool => static_expr_bool(expr, signatures).map(|value| {
+            if value {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }),
+        Type::I64 => static_expr_i64(expr, signatures).map(|value| format!("INT64_C({value})")),
+        Type::Str => static_expr_str(expr, signatures).map(|value| c_string(&value)),
+        Type::Optional(inner)
+            if matches!(
+                signatures.canonical_type(inner),
+                Type::Bool | Type::I64 | Type::Str
+            ) =>
+        {
+            let optional_c = c_type(&canonical, signatures);
+            match fold_ui_optional_primitive_expr(expr, signatures)
+                .ok()
+                .flatten()?
+            {
+                None => Some(format!("({optional_c}){{ .has_value = false }}")),
+                Some(value) => {
+                    let inner = signatures.canonical_type(inner);
+                    if signatures.canonical_type(&value.ty()) != inner {
+                        return None;
+                    }
+                    let value = match value {
+                        ConstantValue::Bool(value) => {
+                            if value {
+                                "true".to_string()
+                            } else {
+                                "false".to_string()
+                            }
+                        }
+                        ConstantValue::I64(value) => format!("INT64_C({value})"),
+                        ConstantValue::Str(value) => c_string(&value),
+                    };
+                    Some(format!(
+                        "({optional_c}){{ .has_value = true, .value = {value} }}"
+                    ))
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
 fn native_ui_derived_initial_c(ty: &Type, signatures: &Signatures) -> Option<String> {
     match signatures.canonical_type(ty) {
         Type::I64 => Some("INT64_C(0)".to_string()),
@@ -35989,6 +36042,42 @@ fn ui_expr_known_type(
             }
             then_ty
         }
+        ExprKind::Unary { op, expr } => match op {
+            UnaryOp::Neg => Type::I64,
+            UnaryOp::Not => Type::Bool,
+            UnaryOp::Borrow => ui_expr_known_type(expr, view, signatures)?,
+        },
+        ExprKind::Binary { left, op, right } => match op {
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => Type::I64,
+            BinOp::Eq
+            | BinOp::Ne
+            | BinOp::Lt
+            | BinOp::Le
+            | BinOp::Gt
+            | BinOp::Ge
+            | BinOp::And
+            | BinOp::Or => Type::Bool,
+            BinOp::Coalesce => {
+                let left_ty =
+                    signatures.canonical_type(&ui_expr_known_type(left, view, signatures)?);
+                let right_ty =
+                    signatures.canonical_type(&ui_expr_known_type(right, view, signatures)?);
+                let Type::Optional(inner) = left_ty else {
+                    return None;
+                };
+                if *inner == Type::Void {
+                    right_ty
+                } else if right_ty == *inner {
+                    *inner
+                } else if right_ty == Type::Optional(inner.clone())
+                    || matches!(right_ty, Type::Optional(ref right) if **right == Type::Void)
+                {
+                    Type::Optional(inner)
+                } else {
+                    return None;
+                }
+            }
+        },
         ExprKind::Field {
             base,
             name,
@@ -36092,6 +36181,43 @@ fn ui_expr_c(
     signatures: &Signatures,
 ) -> Result<String, Diagnostic> {
     ui_expr_c_for_view_identity(expr, view, signatures, None)
+}
+
+fn ui_state_transition_value_c(
+    expr: &Expr,
+    state_name: &str,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+    view_identity: Option<usize>,
+) -> Result<String, Diagnostic> {
+    let state = view
+        .states
+        .iter()
+        .find(|state| state.name == state_name)
+        .expect("validated UI transition state exists in its declaring view");
+    let expected = signatures.canonical_type(&state.ty);
+    let Type::Optional(inner) = &expected else {
+        return ui_expr_c_for_view_identity(expr, view, signatures, view_identity);
+    };
+    if !matches!(
+        signatures.canonical_type(inner),
+        Type::Bool | Type::I64 | Type::Str
+    ) {
+        return ui_expr_c_for_view_identity(expr, view, signatures, view_identity);
+    }
+    let expected_c = c_type(&expected, signatures);
+    if matches!(expr.kind, ExprKind::None) {
+        return Ok(format!("({expected_c}){{ .has_value = false }}"));
+    }
+    let value = ui_expr_c_for_view_identity(expr, view, signatures, view_identity)?;
+    if ui_expr_known_type(expr, view, signatures)
+        .is_some_and(|actual| signatures.canonical_type(&actual) == expected)
+    {
+        return Ok(value);
+    }
+    Ok(format!(
+        "({expected_c}){{ .has_value = true, .value = {value} }}"
+    ))
 }
 
 fn ui_expr_c_for_view_identity(
