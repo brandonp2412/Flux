@@ -36407,6 +36407,48 @@ fn effectful_copy_ui_static_slice_property_c(
         )));
     }
 
+    if let Some((element_ty, condition, value)) =
+        dynamic_single_optional_copy_ui_list_value_c(base, view, signatures, view_identity)?
+    {
+        let Some(selected_indices) = static_ui_slice_indices(1, start, end, step, signatures)?
+        else {
+            return Ok(None);
+        };
+        let selects_item = if selected_indices.is_empty() {
+            "false"
+        } else {
+            "true"
+        };
+        let base_present_name = format!(
+            "flux__ui_slice_optional_base_present_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let selected_present_name = format!(
+            "flux__ui_slice_optional_present_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let item_name = format!(
+            "flux__ui_slice_optional_item_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let selected = match list_member {
+            "length" => format!("({selected_present_name} ? INT64_C(1) : INT64_C(0))"),
+            "isEmpty" => format!("(!{selected_present_name})"),
+            "isNotEmpty" => selected_present_name.clone(),
+            "first" | "last" => format!(
+                r#"if (!{selected_present_name}) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {item_name}"#
+            ),
+            "single" => format!(
+                r#"if (!{selected_present_name}) {{ fputs("Flux runtime error: list.single requires exactly one element\n", stderr); abort(); }} {item_name}"#
+            ),
+            _ => unreachable!(),
+        };
+        return Ok(Some(format!(
+            "__extension__ ({{ bool {base_present_name} = ({condition}); {} {item_name}; if ({base_present_name}) {item_name} = ({value}); bool {selected_present_name} = {base_present_name} && {selects_item}; {selected}; }})",
+            c_type(&element_ty, signatures)
+        )));
+    }
+
     let Some(items) = statically_selected_ui_list_items(base, signatures)? else {
         return Ok(None);
     };
@@ -36575,6 +36617,41 @@ fn effectful_copy_ui_static_slice_index_c(
         }
         return Ok(Some(format!(
             r#"__extension__ ({{ {declarations}int64_t {index_name} = ({index_code}); if ({index_name} < INT64_C(0)) {index_name} += INT64_C({slice_len}); if ({index_name} < INT64_C(0) || {index_name} >= INT64_C({slice_len})) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {selection}; }})"#
+        )));
+    }
+
+    if let Some((element_ty, condition, value)) =
+        dynamic_single_optional_copy_ui_list_value_c(base, view, signatures, view_identity)?
+    {
+        let Some(selected_indices) = static_ui_slice_indices(1, start, end, step, signatures)?
+        else {
+            return Ok(None);
+        };
+        let selects_item = if selected_indices.is_empty() {
+            "false"
+        } else {
+            "true"
+        };
+        let base_present_name = format!(
+            "flux__ui_slice_optional_base_present_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let selected_present_name = format!(
+            "flux__ui_slice_optional_present_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let item_name = format!(
+            "flux__ui_slice_optional_item_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let index_name = format!(
+            "flux__ui_slice_index_{}_{}",
+            expr.span.line, expr.span.column
+        );
+        let index_code = ui_expr_c_for_view_identity(index_expr, view, signatures, view_identity)?;
+        return Ok(Some(format!(
+            r#"__extension__ ({{ bool {base_present_name} = ({condition}); {} {item_name}; if ({base_present_name}) {item_name} = ({value}); bool {selected_present_name} = {base_present_name} && {selects_item}; int64_t {index_name} = ({index_code}); int64_t flux__ui_slice_optional_length = {selected_present_name} ? INT64_C(1) : INT64_C(0); if ({index_name} < INT64_C(0)) {index_name} += flux__ui_slice_optional_length; if ({index_name} < INT64_C(0) || {index_name} >= flux__ui_slice_optional_length) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {item_name}; }})"#,
+            c_type(&element_ty, signatures)
         )));
     }
 

@@ -83869,6 +83869,108 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_effectful_copy_dynamic_optional_aggregate_static_slices_on_all_native_backends()
+ {
+    let source = r#"
+struct Flags {
+    enabled: bool
+    marker: i64
+}
+
+fn mark(value: i64) -> i64 {
+    print("mark")
+    return value
+}
+
+fn choose(value: bool) -> bool {
+    print("choose")
+    return value
+}
+
+fn pickIndex() -> i64 {
+    print("pickIndex")
+    return 0
+}
+
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr 1fr
+    Badge firstBadge at 1,1
+        visible: ([if choose(windowIsLandscape): Flags { enabled: true, marker: mark(1) }][0:1]).first.enabled
+    Badge indexedBadge at 2,1
+        visible: ([if choose(windowIsLandscape): (enabled: true, marker: mark(2))][0:1][pickIndex()]).enabled
+    Badge emptyBadge at 3,1
+        visible: ([if choose(windowIsLandscape): Flags { enabled: true, marker: mark(3) }][0:0]).empty
+}
+
+app App
+"#;
+
+    check_source(source)
+        .expect("dynamic optional Copy aggregate static slice fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__fn_choose(").count() >= 3,
+            "each optional aggregate slice should preserve its base presence producer"
+        );
+        assert!(
+            generated.matches("flux__fn_mark(").count() >= 3,
+            "base aggregate construction must remain observable even when a slice discards it"
+        );
+        assert!(
+            generated
+                .matches("flux__ui_slice_optional_base_present_")
+                .count()
+                >= 3,
+            "slice lowering should store base presence before aggregate construction"
+        );
+        assert!(
+            generated
+                .matches("flux__ui_slice_optional_present_")
+                .count()
+                >= 3,
+            "slice lowering should derive sliced presence from the stored base presence"
+        );
+        assert!(
+            generated.matches("flux__ui_slice_optional_item_").count() >= 3,
+            "slice lowering should materialize present Copy aggregates exactly once"
+        );
+        assert!(generated.contains("flux__fn_pickIndex()"));
+        assert!(generated.contains("Flux runtime error: list index out of range"));
+        assert!(generated.contains(".flux__field_enabled"));
+    };
+
+    let linux = compile_to_c(source)
+        .expect("dynamic optional Copy aggregate static slices should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic optional Copy aggregate static slice fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("dynamic optional Copy aggregate static slices should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn lowers_composed_view_effectful_copy_dynamic_single_control_aggregate_index_on_all_native_backends()
  {
     let source = r#"
