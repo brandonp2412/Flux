@@ -83172,7 +83172,7 @@ app App
 }
 
 #[test]
-fn composed_view_optional_binding_list_control_rejects_effectful_condition() {
+fn composed_view_effectful_optional_binding_condition_uses_scalar_storage() {
     let source = r#"
 fn maybe() -> bool? {
     print("maybe")
@@ -83191,7 +83191,7 @@ view App {
     grid columns: 1fr
     grid rows: 1fr
     Badge badge at 1,1
-        flags: [if let value = maybe(): value else: false]
+        flags: [if let value = maybe(): !value else: false]
 }
 
 app App
@@ -83199,13 +83199,97 @@ app App
 
     check_source(source)
         .expect("effectful optional-binding component list control should typecheck");
-    let error = compile_to_c(source)
-        .expect_err("effectful optional-binding component list control must stay explicit");
-    assert!(
-        error
-            .message
-            .contains("needs scalar per-instance storage for this observable argument")
-    );
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.contains("__component_badge__param_flags__item_0__condition"),
+            "effectful optional-binding condition should use deterministic per-instance storage"
+        );
+        assert!(
+            generated.contains("flux__fn_maybe()"),
+            "effectful optional-binding condition must be evaluated exactly through stored scalar state"
+        );
+    };
+
+    let linux = compile_to_c(source)
+        .expect("effectful optional-binding component list control should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful optional-binding component list control should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful optional-binding component list control should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
+fn composed_view_effectful_nonbinding_list_condition_uses_scalar_storage() {
+    let source = r#"
+fn choose() -> bool {
+    print("choose")
+    return true
+}
+
+view Badge(flags: bool[]) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: flags.first
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        flags: [if choose(): true else: false]
+}
+
+app App
+"#;
+
+    check_source(source).expect("effectful list-condition component argument should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.contains("__component_badge__param_flags__item_0__condition"),
+            "effectful list condition should use deterministic per-instance storage"
+        );
+        assert!(
+            generated.contains("flux__fn_choose()"),
+            "effectful list condition must be evaluated into that storage"
+        );
+    };
+
+    let linux = compile_to_c(source)
+        .expect("effectful list-condition component argument should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful list-condition component argument should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful list-condition component argument should lower natively");
+        assert_target(&generated);
+    }
 }
 
 #[test]

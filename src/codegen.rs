@@ -13086,6 +13086,50 @@ fn component_argument_scalar_derived(
     })
 }
 
+fn synchronous_optional_scalar_call_type(value: &Expr, signatures: &Signatures) -> Option<Type> {
+    let ExprKind::Call { name, .. } = &value.kind else {
+        return None;
+    };
+    let signature = signatures.get(name)?;
+    if signature.asynchronous {
+        return None;
+    }
+    let [return_ty] = signature.returns.as_slice() else {
+        return None;
+    };
+    let Type::Optional(inner) = signatures.canonical_type(return_ty) else {
+        return None;
+    };
+    if !matches!(
+        signatures.canonical_type(&inner),
+        Type::I64 | Type::Bool | Type::Str
+    ) {
+        return None;
+    }
+    Some(return_ty.clone())
+}
+
+fn optional_scalar_default_expr(
+    optional_ty: &Type,
+    template: &Expr,
+    signatures: &Signatures,
+) -> Option<Expr> {
+    let Type::Optional(inner) = signatures.canonical_type(optional_ty) else {
+        return None;
+    };
+    let kind = match signatures.canonical_type(&inner) {
+        Type::I64 => ExprKind::Int(0),
+        Type::Bool => ExprKind::Bool(false),
+        Type::Str => ExprKind::Str(String::new()),
+        _ => return None,
+    };
+    Some(Expr {
+        line: template.line,
+        span: template.span,
+        kind,
+    })
+}
+
 fn scalarize_observable_component_argument(
     value: &Expr,
     ty: &Type,
@@ -13120,19 +13164,116 @@ fn scalarize_observable_component_argument(
             ExprKind::List(items) => {
                 let mut lowered_items = Vec::with_capacity(items.len());
                 for (index, item) in items.iter().enumerate() {
-                    if matches!(
-                        item.kind,
-                        ExprKind::ListSpread { .. }
-                            | ExprKind::ListOptional { .. }
-                            | ExprKind::ListIf { .. }
-                    ) {
-                        return None;
-                    }
                     let item_path = if path.is_empty() {
                         format!("item_{index}")
                     } else {
                         format!("{path}__item_{index}")
                     };
+                    if let ExprKind::ListIf {
+                        condition,
+                        binding,
+                        value: branch_value,
+                        else_value,
+                        ..
+                    } = &item.kind
+                    {
+                        if !transparent_native_component_argument_is_reusable(branch_value)
+                            || !else_value
+                                .as_deref()
+                                .is_none_or(transparent_native_component_argument_is_reusable)
+                        {
+                            return None;
+                        }
+                        let condition_ty = if binding.is_some() {
+                            synchronous_optional_scalar_call_type(condition, signatures)?
+                        } else {
+                            Type::Bool
+                        };
+                        let condition_path = format!("{item_path}__condition");
+                        let lowered_condition = scalarize_observable_component_argument(
+                            condition,
+                            &condition_ty,
+                            base_name,
+                            &condition_path,
+                            name_span,
+                            type_span,
+                            signatures,
+                            staged_derived,
+                            used_derived_names,
+                        )?;
+                        if let Some(binding) = binding {
+                            let else_value = else_value.as_deref()?;
+                            let default_value =
+                                optional_scalar_default_expr(&condition_ty, condition, signatures)?;
+                            let unwrapped = Expr {
+                                line: condition.line,
+                                span: condition.span,
+                                kind: ExprKind::Binary {
+                                    left: Box::new(lowered_condition.clone()),
+                                    op: BinOp::Coalesce,
+                                    right: Box::new(default_value),
+                                },
+                            };
+                            let mut selected = branch_value.as_ref().clone();
+                            let bindings = HashMap::from([(binding.name.clone(), unwrapped)]);
+                            let parameter_names = HashSet::from([binding.name.as_str()]);
+                            substitute_transparent_native_component_parameters(
+                                &mut selected,
+                                &bindings,
+                                &parameter_names,
+                                "native",
+                            )
+                            .ok()?;
+                            if !transparent_native_component_argument_is_reusable(&selected) {
+                                return None;
+                            }
+                            let optional_item = Expr {
+                                line: condition.line,
+                                span: condition.span,
+                                kind: ExprKind::ListOptional {
+                                    value: Box::new(lowered_condition),
+                                    question_span: condition.span,
+                                },
+                            };
+                            let presence = Expr {
+                                line: condition.line,
+                                span: condition.span,
+                                kind: ExprKind::Field {
+                                    base: Box::new(Expr {
+                                        line: condition.line,
+                                        span: condition.span,
+                                        kind: ExprKind::List(vec![optional_item]),
+                                    }),
+                                    name: "isNotEmpty".to_string(),
+                                    name_span: condition.span,
+                                    optional: false,
+                                },
+                            };
+                            lowered_items.push(Expr {
+                                line: item.line,
+                                span: item.span,
+                                kind: ExprKind::Conditional {
+                                    then_expr: Box::new(selected),
+                                    cond: Box::new(presence),
+                                    else_expr: Box::new(else_value.clone()),
+                                },
+                            });
+                        } else {
+                            let mut lowered_item = item.clone();
+                            let ExprKind::ListIf { condition, .. } = &mut lowered_item.kind else {
+                                unreachable!("cloned list-if item keeps its expression kind");
+                            };
+                            *condition = Box::new(lowered_condition);
+                            lowered_items.push(lowered_item);
+                        }
+                        continue;
+                    }
+                    if matches!(
+                        item.kind,
+                        ExprKind::ListSpread { .. } | ExprKind::ListOptional { .. }
+                    ) {
+                        return None;
+                    }
                     lowered_items.push(scalarize_observable_component_argument(
                         item,
                         &element_ty,
