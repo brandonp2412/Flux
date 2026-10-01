@@ -34596,7 +34596,21 @@ fn reusable_ui_runtime_list_candidates(
             kind: ExprKind::List(vec![item.clone()]),
         };
         if let Some(projected) = reusable_ui_list_projection_items(&singleton, signatures)? {
-            candidates.extend(projected.into_iter().map(|value| (None, value)));
+            if projected.is_empty()
+                && let ExprKind::ListIf {
+                    condition,
+                    binding: None,
+                    value,
+                    else_value: None,
+                    ..
+                } = &item.kind
+                && transparent_native_component_argument_is_reusable(condition)
+                && transparent_native_component_argument_is_reusable(value)
+            {
+                candidates.push((Some(condition.as_ref().clone()), value.as_ref().clone()));
+            } else {
+                candidates.extend(projected.into_iter().map(|value| (None, value)));
+            }
             continue;
         }
 

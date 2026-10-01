@@ -82040,6 +82040,73 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_statically_empty_runtime_list_projections_on_all_native_backends() {
+    let source = r#"
+view Badge(indexed: bool, firstVisible: bool, lastVisible: bool, singleVisible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: indexed && firstVisible && lastVisible && singleVisible
+}
+
+view Wrapper(index: i64) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        indexed: ([if false: true])[index]
+        firstVisible: ([if false: true]).first
+        lastVisible: ([if false: true]).last
+        singleVisible: ([if false: true]).single
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        index: windowWidth - windowWidth
+}
+
+app App
+"#;
+
+    check_source(source).expect("statically empty runtime list projections should typecheck");
+    let linux = compile_to_c(source)
+        .expect("statically empty runtime list projections should lower through Linux");
+    assert!(linux.contains("wrapper__badge__title"));
+    assert!(linux.contains("flux__ui_component_present_"));
+    assert!(linux.contains("flux__ui_component_length"));
+    assert!(linux.contains("Flux runtime error: list index out of range\\n"));
+    assert!(linux.contains("Flux runtime error: list.single requires exactly one element\\n"));
+    assert!(!linux.contains("flux__ui_derived___component_wrapper__badge__param_indexed"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN).expect(
+        "statically empty runtime list projection fixture should analyze for native targets",
+    );
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("statically empty runtime list projections should lower through Android");
+    assert!(android.contains("flux__ui_component_present_"));
+    assert!(android.contains("Flux runtime error: list index out of range\\n"));
+    assert!(android.contains("Flux runtime error: list.single requires exactly one element\\n"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("statically empty runtime list projections should lower through Windows");
+    assert!(windows.contains("flux__ui_component_present_"));
+    assert!(windows.contains("Flux runtime error: list index out of range\\n"));
+    assert!(windows.contains("Flux runtime error: list.single requires exactly one element\\n"));
+}
+
+#[test]
 fn lowers_composed_view_reusable_static_slice_projections_on_all_native_backends() {
     let source = r#"
 view Badge(indexed: bool, firstVisible: bool, lastVisible: bool) {
