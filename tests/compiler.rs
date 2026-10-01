@@ -81847,6 +81847,59 @@ app App
 }
 
 #[test]
+fn lowers_nested_composed_view_static_list_control_arguments_on_all_native_backends() {
+    let source = r#"
+view Badge(flags: bool[]) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: flags.length == 5 && flags.last
+}
+
+view Wrapper(enabled: bool, maybe: bool?, maybeFlags: bool[]?) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        flags: [...[true], if enabled: true else: false, ?maybe, ...?maybeFlags]
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        enabled: true
+        maybe: true
+        maybeFlags: [true, true]
+}
+
+app App
+"#;
+
+    check_source(source).expect("nested component list-control argument fixture should typecheck");
+    let linux = compile_to_c(source)
+        .expect("nested static list-control component arguments should lower through Linux");
+    assert!(linux.contains("wrapper__badge__title"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("nested component list-control argument fixture should analyze for native targets");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("nested static list-control component arguments should lower through Android");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("nested static list-control component arguments should lower through Windows");
+}
+
+#[test]
 fn composed_view_static_list_if_preserves_selected_effect_semantics() {
     let skipped = r#"
 fn probe() -> bool {

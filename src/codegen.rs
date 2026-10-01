@@ -12693,6 +12693,22 @@ fn transparent_native_component_argument_is_reusable(expr: &Expr) -> bool {
         ExprKind::List(items) => items
             .iter()
             .all(transparent_native_component_argument_is_reusable),
+        ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
+            transparent_native_component_argument_is_reusable(value)
+        }
+        ExprKind::ListIf {
+            condition,
+            binding: None,
+            value,
+            else_value,
+            ..
+        } => {
+            transparent_native_component_argument_is_reusable(condition)
+                && transparent_native_component_argument_is_reusable(value)
+                && else_value
+                    .as_deref()
+                    .is_none_or(transparent_native_component_argument_is_reusable)
+        }
         ExprKind::RecordLiteral { fields } => fields
             .iter()
             .all(|field| transparent_native_component_argument_is_reusable(&field.value)),
