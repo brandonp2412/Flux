@@ -83753,7 +83753,6 @@ app App
             "cardinality queries should materialize the selected aggregate before returning metadata"
         );
         assert!(generated.contains("INT64_C(1)"));
-        assert!(generated.contains("(void)flux__ui_list_property_item_"));
     };
 
     let linux = compile_to_c(source).expect(
@@ -83950,6 +83949,92 @@ app App
             target,
         )
         .expect("effectful dynamic single-control aggregate slices should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
+fn lowers_composed_view_effectful_copy_dynamic_fixed_aggregate_lists_on_all_native_backends() {
+    let source = r#"
+struct Flags {
+    enabled: bool
+    marker: i64
+}
+
+fn mark(value: i64) -> i64 {
+    print("mark")
+    return value
+}
+
+fn choose() -> i64 {
+    print("choose")
+    return 1
+}
+
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr 1fr
+    Badge structBadge at 1,1
+        visible: ([Flags { enabled: false, marker: mark(1) }, ...[if windowIsLandscape: Flags { enabled: true, marker: mark(2) } else: Flags { enabled: false, marker: mark(3) }]]).last.enabled
+    Badge recordBadge at 2,1
+        visible: ([(enabled: false, marker: mark(4)), if windowIsLandscape: (enabled: true, marker: mark(5)) else: (enabled: false, marker: mark(6))][choose()]).enabled
+    Badge sliceBadge at 3,1
+        visible: ([(enabled: false, marker: mark(7)), if windowIsLandscape: (enabled: true, marker: mark(8)) else: (enabled: false, marker: mark(9))][1:2]).single.enabled
+}
+
+app App
+"#;
+
+    check_source(source)
+        .expect("dynamic fixed-cardinality Copy aggregate list fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__fn_mark(").count() >= 9,
+            "fixed-cardinality aggregate lists should retain all ordinary and lazy branch producers"
+        );
+        assert!(
+            generated.matches("flux__ui_list_property_item_").count() >= 2,
+            "dynamic aggregate list properties should materialize every fixed-cardinality item"
+        );
+        assert!(
+            generated.matches("flux__ui_list_item_").count() >= 2,
+            "dynamic aggregate list indexing should materialize every fixed-cardinality item"
+        );
+        assert!(
+            generated.matches("flux__ui_slice_property_item_").count() >= 2,
+            "dynamic aggregate slice properties should materialize every base item before slicing"
+        );
+        assert!(generated.contains("flux__fn_choose()"));
+        assert!(generated.contains("flux__ui_list_index_"));
+        assert!(generated.contains(".flux__field_enabled"));
+    };
+
+    let linux = compile_to_c(source)
+        .expect("dynamic fixed-cardinality Copy aggregate lists should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic fixed-cardinality Copy aggregate list fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("dynamic fixed-cardinality Copy aggregate lists should lower natively");
         assert_target(&generated);
     }
 }
