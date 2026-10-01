@@ -36084,6 +36084,7 @@ fn dynamic_single_optional_ui_list_value(
 
 fn fixed_cardinality_ui_list_values(
     expr: &Expr,
+    view: &crate::ast::ViewDef,
     signatures: &Signatures,
 ) -> Result<Option<(Vec<Expr>, bool)>, Diagnostic> {
     let ExprKind::List(items) = &expr.kind else {
@@ -36100,7 +36101,7 @@ fn fixed_cardinality_ui_list_values(
                 ..
             } => {
                 let Some((spread, spread_dynamic)) =
-                    fixed_cardinality_ui_list_values(value, signatures)?
+                    fixed_cardinality_ui_list_values(value, view, signatures)?
                 else {
                     return Ok(None);
                 };
@@ -36137,6 +36138,76 @@ fn fixed_cardinality_ui_list_values(
                     has_dynamic_control = true;
                 }
             },
+            ExprKind::ListIf {
+                condition,
+                binding: Some(binding),
+                value,
+                else_value: Some(else_value),
+                ..
+            } => {
+                if !transparent_native_component_argument_is_reusable(condition) {
+                    return Ok(None);
+                }
+                let Some(optional_ty) = ui_optional_scalar_type(condition, view, signatures) else {
+                    return Ok(None);
+                };
+                let Some(default_value) =
+                    optional_scalar_default_expr(&optional_ty, condition, signatures)
+                else {
+                    return Ok(None);
+                };
+                let unwrapped = Expr {
+                    line: condition.line,
+                    span: condition.span,
+                    kind: ExprKind::Binary {
+                        left: Box::new(condition.as_ref().clone()),
+                        op: BinOp::Coalesce,
+                        right: Box::new(default_value),
+                    },
+                };
+                let mut selected = value.as_ref().clone();
+                let bindings = HashMap::from([(binding.name.clone(), unwrapped)]);
+                let parameter_names = HashSet::from([binding.name.as_str()]);
+                substitute_transparent_native_component_parameters(
+                    &mut selected,
+                    &bindings,
+                    &parameter_names,
+                    "native",
+                )?;
+
+                let optional_item = Expr {
+                    line: condition.line,
+                    span: condition.span,
+                    kind: ExprKind::ListOptional {
+                        value: Box::new(condition.as_ref().clone()),
+                        question_span: condition.span,
+                    },
+                };
+                let presence = Expr {
+                    line: condition.line,
+                    span: condition.span,
+                    kind: ExprKind::Field {
+                        base: Box::new(Expr {
+                            line: condition.line,
+                            span: condition.span,
+                            kind: ExprKind::List(vec![optional_item]),
+                        }),
+                        name: "isNotEmpty".to_string(),
+                        name_span: condition.span,
+                        optional: false,
+                    },
+                };
+                values.push(Expr {
+                    line: item.line,
+                    span: item.span,
+                    kind: ExprKind::Conditional {
+                        then_expr: Box::new(selected),
+                        cond: Box::new(presence),
+                        else_expr: else_value.clone(),
+                    },
+                });
+                has_dynamic_control = true;
+            }
             ExprKind::ListSpread { optional: true, .. }
             | ExprKind::ListOptional { .. }
             | ExprKind::ListIf {
@@ -36155,7 +36226,7 @@ fn dynamic_fixed_copy_ui_list_values_c(
     signatures: &Signatures,
     view_identity: Option<usize>,
 ) -> Result<Option<(Type, Vec<String>)>, Diagnostic> {
-    let Some((values, true)) = fixed_cardinality_ui_list_values(expr, signatures)? else {
+    let Some((values, true)) = fixed_cardinality_ui_list_values(expr, view, signatures)? else {
         return Ok(None);
     };
     let Some(first) = values.first() else {
@@ -39016,9 +39087,10 @@ fn ui_expr_known_type(
                     return None;
                 }
                 Type::List(Box::new(first_ty))
-            } else if let Some((values, true)) = fixed_cardinality_ui_list_values(expr, signatures)
-                .ok()
-                .flatten()
+            } else if let Some((values, true)) =
+                fixed_cardinality_ui_list_values(expr, view, signatures)
+                    .ok()
+                    .flatten()
             {
                 let first = values.first()?;
                 let first_ty = ui_expr_known_type(first, view, signatures)?;

@@ -84063,6 +84063,97 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_effectful_copy_optional_binding_else_aggregate_lists_on_all_native_backends()
+ {
+    let source = r#"
+struct Flags {
+    enabled: bool
+    marker: i64
+}
+
+fn mark(value: i64) -> i64 {
+    print("mark")
+    return value
+}
+
+fn maybe(value: bool) -> bool? {
+    print("maybe")
+    return value
+}
+
+fn pickIndex() -> i64 {
+    print("pickIndex")
+    return 0
+}
+
+view Badge(cardinality: bool, firstVisible: bool, lastVisible: bool, indexedVisible: bool, sliceVisible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: cardinality && firstVisible && lastVisible && indexedVisible && sliceVisible
+}
+
+view Wrapper(maybeValue: bool?, index: i64) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        cardinality: ([if let value = maybeValue: Flags { enabled: value, marker: mark(1) } else: Flags { enabled: false, marker: mark(2) }, Flags { enabled: true, marker: mark(3) }]).length == 2
+        firstVisible: ([if let value = maybeValue: Flags { enabled: value, marker: mark(4) } else: Flags { enabled: true, marker: mark(5) }, Flags { enabled: true, marker: mark(6) }]).first.enabled
+        lastVisible: ([if let value = maybeValue: Flags { enabled: value, marker: mark(7) } else: Flags { enabled: false, marker: mark(8) }, Flags { enabled: true, marker: mark(9) }]).last.enabled
+        indexedVisible: ([if let value = maybeValue: (enabled: value, marker: mark(10)) else: (enabled: false, marker: mark(11)), (enabled: true, marker: mark(12))][index]).enabled
+        sliceVisible: ([if let value = maybeValue: Flags { enabled: value, marker: mark(13) } else: Flags { enabled: true, marker: mark(14) }, Flags { enabled: true, marker: mark(15) }][index:index + 2:1]).first.enabled
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        maybeValue: maybe(windowIsLandscape)
+        index: pickIndex()
+}
+
+app App
+"#;
+
+    check_source(source)
+        .expect("optional-binding else Copy aggregate fixed-cardinality fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__fn_mark(").count() >= 15,
+            "selected and fallback aggregate producers must remain observable"
+        );
+        assert!(generated.contains("flux__fn_maybe("));
+        assert!(generated.contains("flux__fn_pickIndex()"));
+        assert!(generated.contains(".has_value"));
+        assert!(generated.contains(".value"));
+        assert!(generated.contains(".flux__field_enabled"));
+        assert!(generated.contains("Flux runtime error: list index out of range\\n"));
+    };
+
+    let linux = compile_to_c(source)
+        .expect("optional-binding else Copy aggregate lists should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("optional-binding else Copy aggregate fixed-cardinality fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("optional-binding else Copy aggregate lists should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn lowers_composed_view_effectful_copy_multi_optional_aggregate_runtime_slices_on_all_native_backends()
  {
     let source = r#"
