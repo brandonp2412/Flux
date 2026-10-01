@@ -12854,6 +12854,24 @@ fn substitute_transparent_native_component_parameters(
                 backend,
             )?;
         }
+        ExprKind::RecordLiteral { fields } => {
+            for field in fields {
+                substitute_transparent_native_component_parameters(
+                    &mut field.value,
+                    bindings,
+                    parameter_names,
+                    backend,
+                )?;
+            }
+        }
+        ExprKind::Field { base, .. } => {
+            substitute_transparent_native_component_parameters(
+                base,
+                bindings,
+                parameter_names,
+                backend,
+            )?;
+        }
         _ => {
             let mut reads = HashSet::new();
             typecheck::collect_expr_reads(expr, &mut reads);
@@ -34242,6 +34260,23 @@ fn fold_ui_primitive_expr(
                 return Ok(None);
             };
             fold_ui_primitive_expr(item, signatures)
+        }
+        ExprKind::Field {
+            base,
+            name,
+            optional: false,
+            ..
+        } if matches!(base.kind, ExprKind::RecordLiteral { .. }) => {
+            let ExprKind::RecordLiteral { fields } = &base.kind else {
+                unreachable!();
+            };
+            let Some(field) = fields
+                .iter()
+                .find(|field| field.name.as_deref() == Some(name.as_str()))
+            else {
+                return Ok(None);
+            };
+            fold_ui_primitive_expr(&field.value, signatures)
         }
         _ => fold_primitive_expr(expr, &HashMap::new(), signatures),
     }

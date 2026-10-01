@@ -81496,6 +81496,50 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_parameterized_constant_record_field_on_all_native_backends() {
+    let source = r#"
+view Badge(enabled: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: (active: enabled).active
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        enabled: true
+}
+
+app App
+"#;
+
+    check_source(source).expect("composed-view record projection fixture should typecheck");
+    let linux = compile_to_c(source)
+        .expect("parameterized constant record projection should lower through Linux");
+    assert!(linux.contains("badge__title"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("composed-view record projection fixture should analyze for native targets");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("parameterized constant record projection should lower through Android");
+    fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("parameterized constant record projection should lower through Windows");
+}
+
+#[test]
 fn lowers_component_owned_state_with_independent_native_instances() {
     let source = r#"
 view StatefulToggle {
