@@ -34909,6 +34909,24 @@ fn reusable_ui_runtime_slice_args_c(
     Ok(Some((start_present, start, end_present, end, step)))
 }
 
+fn reusable_ui_runtime_slice_length_from_base_c(
+    base_length: &str,
+    start_present: bool,
+    start: &str,
+    end_present: bool,
+    end: &str,
+    step: &str,
+    suffix: &str,
+) -> String {
+    let base_name = format!("flux__ui_component_slice_base_length_{suffix}");
+    let first_name = format!("flux__ui_component_slice_first_{suffix}");
+    let last_name = format!("flux__ui_component_slice_last_{suffix}");
+    let count_name = format!("flux__ui_component_slice_length_{suffix}");
+    format!(
+        r#"__extension__ ({{ int64_t {base_name} = ({base_length}); if (({step}) == INT64_C(0)) {{ fputs("Flux runtime error: list slice step cannot be zero\n", stderr); abort(); }} int64_t {first_name} = flux_slice_bound((size_t){base_name}, {start_present}, ({start}), false, ({step})); int64_t {last_name} = flux_slice_bound((size_t){base_name}, {end_present}, ({end}), true, ({step})); int64_t {count_name} = INT64_C(0); if (({step}) > INT64_C(0) && {first_name} < {last_name}) {{ {count_name} = INT64_C(1) + ({last_name} - INT64_C(1) - {first_name}) / ({step}); }} else if (({step}) < INT64_C(0) && {first_name} > {last_name}) {{ uint64_t flux__ui_component_slice_magnitude = (uint64_t)(-(({step}) + INT64_C(1))) + UINT64_C(1); {count_name} = INT64_C(1) + (int64_t)((uint64_t)({first_name} - INT64_C(1) - {last_name}) / flux__ui_component_slice_magnitude); }} {count_name}; }})"#
+    )
+}
+
 fn ui_constant_expr(value: ConstantValue, template: &Expr) -> Expr {
     Expr {
         line: template.line,
@@ -35472,12 +35490,14 @@ fn reusable_ui_runtime_list_length_c(
             return Ok(None);
         };
         let suffix = format!("{}_{}", expr.span.line, expr.span.column);
-        let base_name = format!("flux__ui_component_slice_base_length_{suffix}");
-        let first_name = format!("flux__ui_component_slice_first_{suffix}");
-        let last_name = format!("flux__ui_component_slice_last_{suffix}");
-        let count_name = format!("flux__ui_component_slice_length_{suffix}");
-        return Ok(Some(format!(
-            r#"__extension__ ({{ int64_t {base_name} = ({base_length}); if (({step}) == INT64_C(0)) {{ fputs("Flux runtime error: list slice step cannot be zero\n", stderr); abort(); }} int64_t {first_name} = flux_slice_bound((size_t){base_name}, {start_present}, ({start}), false, ({step})); int64_t {last_name} = flux_slice_bound((size_t){base_name}, {end_present}, ({end}), true, ({step})); int64_t {count_name} = INT64_C(0); if (({step}) > INT64_C(0) && {first_name} < {last_name}) {{ {count_name} = INT64_C(1) + ({last_name} - INT64_C(1) - {first_name}) / ({step}); }} else if (({step}) < INT64_C(0) && {first_name} > {last_name}) {{ uint64_t flux__ui_component_slice_magnitude = (uint64_t)(-(({step}) + INT64_C(1))) + UINT64_C(1); {count_name} = INT64_C(1) + (int64_t)((uint64_t)({first_name} - INT64_C(1) - {last_name}) / flux__ui_component_slice_magnitude); }} {count_name}; }})"#
+        return Ok(Some(reusable_ui_runtime_slice_length_from_base_c(
+            &base_length,
+            start_present,
+            &start,
+            end_present,
+            &end,
+            &step,
+            &suffix,
         )));
     }
 
@@ -36410,15 +36430,23 @@ fn effectful_copy_ui_static_slice_property_c(
     if let Some((element_ty, condition, value)) =
         dynamic_single_optional_copy_ui_list_value_c(base, view, signatures, view_identity)?
     {
-        let Some(selected_indices) = static_ui_slice_indices(1, start, end, step, signatures)?
-        else {
-            return Ok(None);
-        };
-        let selects_item = if selected_indices.is_empty() {
-            "false"
+        let static_selected_indices = static_ui_slice_indices(1, start, end, step, signatures)?;
+        let runtime_slice = if static_selected_indices.is_none() {
+            reusable_ui_runtime_slice_args_c(
+                start.as_deref(),
+                end.as_deref(),
+                step.as_deref(),
+                view,
+                signatures,
+                view_identity,
+            )?
         } else {
-            "true"
+            None
         };
+        if static_selected_indices.is_none() && runtime_slice.is_none() {
+            return Ok(None);
+        }
+
         let base_present_name = format!(
             "flux__ui_slice_optional_base_present_{}_{}",
             expr.span.line, expr.span.column
@@ -36431,6 +36459,40 @@ fn effectful_copy_ui_static_slice_property_c(
             "flux__ui_slice_optional_item_{}_{}",
             expr.span.line, expr.span.column
         );
+        let (slice_declarations, selected_present) =
+            if let Some(selected_indices) = &static_selected_indices {
+                let selects_item = if selected_indices.is_empty() {
+                    "false"
+                } else {
+                    "true"
+                };
+                (
+                    String::new(),
+                    format!("{base_present_name} && {selects_item}"),
+                )
+            } else {
+                let (start_present, start, end_present, end, step) =
+                    runtime_slice.expect("runtime slice args checked above");
+                let suffix = format!("{}_{}", expr.span.line, expr.span.column);
+                let base_length = format!("({base_present_name} ? INT64_C(1) : INT64_C(0))");
+                let slice_length = reusable_ui_runtime_slice_length_from_base_c(
+                    &base_length,
+                    start_present,
+                    &start,
+                    end_present,
+                    &end,
+                    &step,
+                    &suffix,
+                );
+                let length_name = format!(
+                    "flux__ui_slice_optional_length_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                (
+                    format!("int64_t {length_name} = ({slice_length}); "),
+                    format!("({length_name} != INT64_C(0))"),
+                )
+            };
         let selected = match list_member {
             "length" => format!("({selected_present_name} ? INT64_C(1) : INT64_C(0))"),
             "isEmpty" => format!("(!{selected_present_name})"),
@@ -36444,7 +36506,7 @@ fn effectful_copy_ui_static_slice_property_c(
             _ => unreachable!(),
         };
         return Ok(Some(format!(
-            "__extension__ ({{ bool {base_present_name} = ({condition}); {} {item_name}; if ({base_present_name}) {item_name} = ({value}); bool {selected_present_name} = {base_present_name} && {selects_item}; {selected}; }})",
+            "__extension__ ({{ bool {base_present_name} = ({condition}); {} {item_name}; if ({base_present_name}) {item_name} = ({value}); {slice_declarations}bool {selected_present_name} = ({selected_present}); {selected}; }})",
             c_type(&element_ty, signatures)
         )));
     }
@@ -36623,15 +36685,23 @@ fn effectful_copy_ui_static_slice_index_c(
     if let Some((element_ty, condition, value)) =
         dynamic_single_optional_copy_ui_list_value_c(base, view, signatures, view_identity)?
     {
-        let Some(selected_indices) = static_ui_slice_indices(1, start, end, step, signatures)?
-        else {
-            return Ok(None);
-        };
-        let selects_item = if selected_indices.is_empty() {
-            "false"
+        let static_selected_indices = static_ui_slice_indices(1, start, end, step, signatures)?;
+        let runtime_slice = if static_selected_indices.is_none() {
+            reusable_ui_runtime_slice_args_c(
+                start.as_deref(),
+                end.as_deref(),
+                step.as_deref(),
+                view,
+                signatures,
+                view_identity,
+            )?
         } else {
-            "true"
+            None
         };
+        if static_selected_indices.is_none() && runtime_slice.is_none() {
+            return Ok(None);
+        }
+
         let base_present_name = format!(
             "flux__ui_slice_optional_base_present_{}_{}",
             expr.span.line, expr.span.column
@@ -36648,9 +36718,37 @@ fn effectful_copy_ui_static_slice_index_c(
             "flux__ui_slice_index_{}_{}",
             expr.span.line, expr.span.column
         );
+        let (slice_declarations, slice_length) =
+            if let Some(selected_indices) = &static_selected_indices {
+                let Ok(slice_len) = i64::try_from(selected_indices.len()) else {
+                    return Ok(None);
+                };
+                (String::new(), format!("INT64_C({slice_len})"))
+            } else {
+                let (start_present, start, end_present, end, step) =
+                    runtime_slice.expect("runtime slice args checked above");
+                let suffix = format!("{}_{}", expr.span.line, expr.span.column);
+                let base_length = format!("({base_present_name} ? INT64_C(1) : INT64_C(0))");
+                (
+                    String::new(),
+                    reusable_ui_runtime_slice_length_from_base_c(
+                        &base_length,
+                        start_present,
+                        &start,
+                        end_present,
+                        &end,
+                        &step,
+                        &suffix,
+                    ),
+                )
+            };
+        let slice_length_name = format!(
+            "flux__ui_slice_optional_length_{}_{}",
+            expr.span.line, expr.span.column
+        );
         let index_code = ui_expr_c_for_view_identity(index_expr, view, signatures, view_identity)?;
         return Ok(Some(format!(
-            r#"__extension__ ({{ bool {base_present_name} = ({condition}); {} {item_name}; if ({base_present_name}) {item_name} = ({value}); bool {selected_present_name} = {base_present_name} && {selects_item}; int64_t {index_name} = ({index_code}); int64_t flux__ui_slice_optional_length = {selected_present_name} ? INT64_C(1) : INT64_C(0); if ({index_name} < INT64_C(0)) {index_name} += flux__ui_slice_optional_length; if ({index_name} < INT64_C(0) || {index_name} >= flux__ui_slice_optional_length) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {item_name}; }})"#,
+            r#"__extension__ ({{ bool {base_present_name} = ({condition}); {} {item_name}; if ({base_present_name}) {item_name} = ({value}); {slice_declarations}int64_t {slice_length_name} = ({slice_length}); bool {selected_present_name} = {slice_length_name} != INT64_C(0); int64_t {index_name} = ({index_code}); if ({index_name} < INT64_C(0)) {index_name} += {slice_length_name}; if ({index_name} < INT64_C(0) || {index_name} >= {slice_length_name}) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {item_name}; }})"#,
             c_type(&element_ty, signatures)
         )));
     }

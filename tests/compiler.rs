@@ -83971,6 +83971,99 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_effectful_copy_dynamic_optional_aggregate_runtime_slices_on_all_native_backends()
+ {
+    let source = r#"
+struct Flags {
+    enabled: bool
+    marker: i64
+}
+
+fn mark(value: i64) -> i64 {
+    print("mark")
+    return value
+}
+
+fn choose(value: bool) -> bool {
+    print("choose")
+    return value
+}
+
+view Badge(firstVisible: bool, indexedVisible: bool, lengthMatches: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: firstVisible && indexedVisible && lengthMatches
+}
+
+view Wrapper(start: i64, end: i64, step: i64, index: i64, enabled: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        firstVisible: ([if choose(enabled): Flags { enabled: true, marker: mark(1) }][start:end:step]).first.enabled
+        indexedVisible: ([if choose(enabled): (enabled: true, marker: mark(2))][start:end:step][index]).enabled
+        lengthMatches: ([if choose(enabled): Flags { enabled: true, marker: mark(3) }][start:end:step]).length >= 0
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Wrapper wrapper at 1,1
+        start: 0
+        end: windowWidth
+        step: windowHeight
+        index: 0
+        enabled: windowIsLandscape
+}
+
+app App
+"#;
+
+    check_source(source)
+        .expect("dynamic optional Copy aggregate runtime slice fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__fn_choose(").count() >= 3,
+            "each runtime slice should preserve its base presence producer"
+        );
+        assert!(
+            generated.matches("flux__fn_mark(").count() >= 3,
+            "runtime slicing must preserve present aggregate construction"
+        );
+        assert!(generated.contains("flux_slice_bound("));
+        assert!(generated.contains("flux__ui_component_slice_length_"));
+        assert!(generated.contains("flux__ui_slice_optional_length_"));
+        assert!(generated.contains("flux__ui_slice_optional_base_present_"));
+        assert!(generated.contains("flux__ui_slice_optional_present_"));
+        assert!(generated.contains("Flux runtime error: list slice step cannot be zero\\n"));
+        assert!(generated.contains("Flux runtime error: list index out of range\\n"));
+        assert!(generated.contains(".flux__field_enabled"));
+    };
+
+    let linux = compile_to_c(source)
+        .expect("dynamic optional Copy aggregate runtime slices should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic optional Copy aggregate runtime slice fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("dynamic optional Copy aggregate runtime slices should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn lowers_composed_view_effectful_copy_dynamic_single_control_aggregate_index_on_all_native_backends()
  {
     let source = r#"
