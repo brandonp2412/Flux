@@ -34893,14 +34893,14 @@ fn reusable_ui_runtime_list_index_c(
     view_identity: Option<usize>,
 ) -> Result<Option<String>, Diagnostic> {
     let mut candidate_expr = expr;
-    let raw_index_code = ui_expr_c_for_view_identity(index, view, signatures, view_identity)?;
-    let index_code = if let ExprKind::Slice {
+    let mut index_code = ui_expr_c_for_view_identity(index, view, signatures, view_identity)?;
+    while let ExprKind::Slice {
         base,
         start,
         end,
         step,
         optional: false,
-    } = &expr.kind
+    } = &candidate_expr.kind
     {
         let Some((start, end, step)) = reusable_ui_static_slice_args(
             start.as_deref(),
@@ -34916,23 +34916,24 @@ fn reusable_ui_runtime_list_index_c(
         else {
             return Ok(None);
         };
-        let suffix = format!("{}_{}", expr.span.line, expr.span.column);
+        let suffix = format!(
+            "{}_{}",
+            candidate_expr.span.line, candidate_expr.span.column
+        );
         let base_name = format!("flux__ui_component_slice_index_base_length_{suffix}");
         let first_name = format!("flux__ui_component_slice_index_first_{suffix}");
         let last_name = format!("flux__ui_component_slice_index_last_{suffix}");
         let count_name = format!("flux__ui_component_slice_index_length_{suffix}");
-        let index_name = format!("flux__ui_component_slice_index_{suffix}");
+        let slice_index_name = format!("flux__ui_component_slice_index_{suffix}");
         let start_present = start.is_some();
         let end_present = end.is_some();
         let start = start.unwrap_or(0);
         let end = end.unwrap_or(0);
+        index_code = format!(
+            r#"__extension__ ({{ int64_t {base_name} = ({base_length}); int64_t {first_name} = flux_slice_bound((size_t){base_name}, {start_present}, INT64_C({start}), false, INT64_C({step})); int64_t {last_name} = flux_slice_bound((size_t){base_name}, {end_present}, INT64_C({end}), true, INT64_C({step})); int64_t {count_name} = INT64_C(0); if (INT64_C({step}) > INT64_C(0) && {first_name} < {last_name}) {{ {count_name} = INT64_C(1) + ({last_name} - INT64_C(1) - {first_name}) / INT64_C({step}); }} else if (INT64_C({step}) < INT64_C(0) && {first_name} > {last_name}) {{ uint64_t flux__ui_component_slice_index_magnitude = (uint64_t)(-(INT64_C({step}) + INT64_C(1))) + UINT64_C(1); {count_name} = INT64_C(1) + (int64_t)((uint64_t)({first_name} - INT64_C(1) - {last_name}) / flux__ui_component_slice_index_magnitude); }} int64_t {slice_index_name} = ({index_code}); if ({slice_index_name} < INT64_C(0)) {slice_index_name} += {count_name}; if ({slice_index_name} < INT64_C(0) || {slice_index_name} >= {count_name}) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {first_name} + {slice_index_name} * INT64_C({step}); }})"#
+        );
         candidate_expr = base;
-        format!(
-            r#"__extension__ ({{ int64_t {base_name} = ({base_length}); int64_t {first_name} = flux_slice_bound((size_t){base_name}, {start_present}, INT64_C({start}), false, INT64_C({step})); int64_t {last_name} = flux_slice_bound((size_t){base_name}, {end_present}, INT64_C({end}), true, INT64_C({step})); int64_t {count_name} = INT64_C(0); if (INT64_C({step}) > INT64_C(0) && {first_name} < {last_name}) {{ {count_name} = INT64_C(1) + ({last_name} - INT64_C(1) - {first_name}) / INT64_C({step}); }} else if (INT64_C({step}) < INT64_C(0) && {first_name} > {last_name}) {{ uint64_t flux__ui_component_slice_index_magnitude = (uint64_t)(-(INT64_C({step}) + INT64_C(1))) + UINT64_C(1); {count_name} = INT64_C(1) + (int64_t)((uint64_t)({first_name} - INT64_C(1) - {last_name}) / flux__ui_component_slice_index_magnitude); }} int64_t {index_name} = ({raw_index_code}); if ({index_name} < INT64_C(0)) {index_name} += {count_name}; if ({index_name} < INT64_C(0) || {index_name} >= {count_name}) {{ fputs("Flux runtime error: list index out of range\n", stderr); abort(); }} {first_name} + {index_name} * INT64_C({step}); }})"#
-        )
-    } else {
-        raw_index_code
-    };
+    }
 
     let Some(candidates) = reusable_ui_runtime_list_candidates(candidate_expr, signatures)? else {
         return Ok(None);
