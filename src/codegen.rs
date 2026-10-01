@@ -17256,16 +17256,15 @@ fn emit_windows_native_application(
         .copied()
         .filter(|view_identity| *view_identity != root_view_identity)
         .map(|view_identity| {
-            program
-                .views
-                .get(view_identity)
-                .map(|view| (view_identity, view))
-                .ok_or_else(|| {
-                    diag(
-                        application.view_span,
-                        "window route view identity was not found during codegen",
-                    )
-                })
+            let source_view = program.views.get(view_identity).ok_or_else(|| {
+                diag(
+                    application.view_span,
+                    "window route view identity was not found during codegen",
+                )
+            })?;
+            let lowered_view =
+                flatten_transparent_native_root_view(program, signatures, source_view, "Windows")?;
+            Ok((view_identity, lowered_view))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let uses_windows_images = view.elements.iter().any(|element| element.kind == "Image")

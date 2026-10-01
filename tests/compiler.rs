@@ -71956,6 +71956,55 @@ app Screen
 }
 
 #[test]
+fn windows_distinct_route_windows_lower_transparent_composed_views() {
+    let source = r#"
+fn openSecondary() -> void {
+    window.open(detail)
+}
+
+view Badge(label: str) {
+    state shown: bool = true
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: label
+        visible: shown
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button open at 1,1
+        text: "Open"
+        onPress: openSecondary
+}
+
+view Detail {
+    grid columns: 1fr
+    grid rows: auto
+    Badge card at 1,1
+        label: "Detail"
+}
+
+route detail = Detail
+app Screen
+"#;
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("secondary composed-view route should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("secondary composed-view route should lower through Windows");
+
+    assert!(windows.contains("static bool flux__ui_view_2_state___component_card__shown = true;"));
+    assert!(windows.contains("Detail"));
+}
+
+#[test]
 fn windows_distinct_route_windows_lower_background_and_text_colors() {
     let source = r##"
 fn openSecondary() -> void {
