@@ -35610,13 +35610,22 @@ fn effectful_copy_ui_list_index_c(
     let Some(first) = items.first() else {
         return Ok(None);
     };
-    let Some(element_ty) = ui_scalar_expr_type(first, view, signatures) else {
+    let Some(element_ty) = ui_expr_known_type(first, view, signatures) else {
         return Ok(None);
     };
     let element_ty = signatures.canonical_type(&element_ty);
-    if !matches!(&element_ty, Type::Bool | Type::I64 | Type::Str)
+    let scalar_element = matches!(&element_ty, Type::Bool | Type::I64 | Type::Str);
+    let aggregate_element = matches!(&element_ty, Type::Record(_))
+        && signatures.is_copy_type(&element_ty)
+        || matches!(
+            &element_ty,
+            Type::Named(name)
+                if signatures.struct_type(name).is_some()
+                    && signatures.is_copy_type(&element_ty)
+        );
+    if (!scalar_element && !aggregate_element)
         || !items.iter().all(|item| {
-            ui_scalar_expr_type(item, view, signatures)
+            ui_expr_known_type(item, view, signatures)
                 .is_some_and(|ty| signatures.canonical_type(&ty) == element_ty)
         })
     {
@@ -35630,7 +35639,17 @@ fn effectful_copy_ui_list_index_c(
     let mut declarations = String::new();
     let mut value_names = Vec::with_capacity(items.len());
     for (position, item) in items.iter().enumerate() {
-        let value = ui_expr_c_for_view_identity(item, view, signatures, view_identity)?;
+        let value = if aggregate_element {
+            if let Some(value) =
+                copy_ui_aggregate_literal_c(item, &element_ty, view, signatures, view_identity)?
+            {
+                value
+            } else {
+                ui_expr_c_for_view_identity(item, view, signatures, view_identity)?
+            }
+        } else {
+            ui_expr_c_for_view_identity(item, view, signatures, view_identity)?
+        };
         let value_name = format!(
             "flux__ui_list_item_{}_{}_{}",
             expr.span.line, expr.span.column, position
@@ -37351,6 +37370,29 @@ fn ui_expr_known_type(
         ExprKind::StructLiteral {
             name, base: None, ..
         } => Type::Named(name.clone()),
+        ExprKind::List(items) => {
+            let first = items.first()?;
+            let first_ty = ui_expr_known_type(first, view, signatures)?;
+            let first_ty = signatures.canonical_type(&first_ty);
+            if items.iter().skip(1).any(|item| {
+                ui_expr_known_type(item, view, signatures)
+                    .is_none_or(|ty| signatures.canonical_type(&ty) != first_ty)
+            }) {
+                return None;
+            }
+            Type::List(Box::new(first_ty))
+        }
+        ExprKind::Index {
+            base,
+            optional: false,
+            ..
+        } => {
+            let base_ty = signatures.canonical_type(&ui_expr_known_type(base, view, signatures)?);
+            let Type::List(element) = base_ty else {
+                return None;
+            };
+            *element
+        }
         ExprKind::Conditional {
             then_expr,
             else_expr,

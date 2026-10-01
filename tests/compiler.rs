@@ -83630,6 +83630,86 @@ app App
 }
 
 #[test]
+fn lowers_composed_view_effectful_copy_aggregate_index_on_all_native_backends() {
+    let source = r#"
+struct Flags {
+    enabled: bool
+}
+
+fn makeFlags(value: bool) -> Flags {
+    print("makeFlags")
+    return Flags { enabled: value }
+}
+
+fn choose() -> i64 {
+    print("choose")
+    return 1
+}
+
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        visible: ([makeFlags(false), makeFlags(windowIsLandscape)][choose()]).enabled
+}
+
+app App
+"#;
+
+    check_source(source).expect("effectful Copy aggregate index fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__ui_list_item_").count() >= 2,
+            "Copy aggregate list items should use ordered typed temporaries"
+        );
+        let first_item = generated
+            .find(" = (flux__fn_makeFlags(false));")
+            .expect("first aggregate list item should be evaluated");
+        let second_item = generated
+            .find(" = (flux__fn_makeFlags((flux__ui_window_width > flux__ui_window_height)));")
+            .expect("second aggregate list item should be evaluated");
+        let index = generated
+            .find(" = (flux__fn_choose());")
+            .expect("runtime index should be evaluated once");
+        assert!(
+            first_item < second_item && second_item < index,
+            "aggregate list items must evaluate in source order before the runtime index"
+        );
+        assert!(generated.contains("Flux runtime error: list index out of range"));
+        assert!(generated.contains(".flux__field_enabled"));
+    };
+
+    let linux =
+        compile_to_c(source).expect("effectful Copy aggregate index should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful Copy aggregate index fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful Copy aggregate index should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn lowers_composed_view_runtime_optional_struct_field_on_all_native_backends() {
     let source = r#"
 struct Flags {
