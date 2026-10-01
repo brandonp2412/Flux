@@ -12656,6 +12656,7 @@ fn transparent_native_component_argument_is_reusable(expr: &Expr) -> bool {
         ExprKind::Bool(_)
         | ExprKind::Int(_)
         | ExprKind::Str(_)
+        | ExprKind::None
         | ExprKind::InterpolatedString(_)
         | ExprKind::Var(_) => true,
         ExprKind::Unary { op, expr } => {
@@ -34348,6 +34349,14 @@ fn fold_ui_primitive_list_expr(
                             return Ok(None);
                         };
                         folded.extend(values);
+                    }
+                    ExprKind::ListOptional { value, .. } => {
+                        if !matches!(value.kind, ExprKind::None) {
+                            let Some(value) = fold_ui_primitive_expr(value, signatures)? else {
+                                return Ok(None);
+                            };
+                            folded.push(value);
+                        }
                     }
                     ExprKind::ListIf {
                         condition,
