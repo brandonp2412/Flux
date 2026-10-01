@@ -35033,6 +35033,83 @@ fn effectful_copy_ui_list_index_c(
     )))
 }
 
+fn effectful_copy_ui_field_projection_c(
+    base: &Expr,
+    name: &str,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+    view_identity: Option<usize>,
+) -> Result<Option<String>, Diagnostic> {
+    let (values, selected_index): (Vec<&Expr>, usize) = match &base.kind {
+        ExprKind::RecordLiteral { fields } => {
+            let selected_index = if let Ok(index) = name.parse::<usize>() {
+                if index >= fields.len() {
+                    return Ok(None);
+                }
+                index
+            } else {
+                let Some(index) = fields
+                    .iter()
+                    .position(|field| field.name.as_deref() == Some(name))
+                else {
+                    return Ok(None);
+                };
+                index
+            };
+            (
+                fields.iter().map(|field| &field.value).collect(),
+                selected_index,
+            )
+        }
+        ExprKind::StructLiteral {
+            base: None, fields, ..
+        } => {
+            let Some(selected_index) = fields.iter().position(|field| field.name == name) else {
+                return Ok(None);
+            };
+            (
+                fields.iter().map(|field| &field.value).collect(),
+                selected_index,
+            )
+        }
+        _ => return Ok(None),
+    };
+
+    if values
+        .iter()
+        .all(|value| transparent_native_component_argument_is_reusable(value))
+    {
+        return Ok(None);
+    }
+
+    let mut declarations = String::new();
+    let mut selected = None;
+    for (position, value) in values.into_iter().enumerate() {
+        let Some(ty) = ui_scalar_expr_type(value, view, signatures) else {
+            return Ok(None);
+        };
+        let value_code = ui_expr_c_for_view_identity(value, view, signatures, view_identity)?;
+        let value_name = format!(
+            "flux__ui_aggregate_field_{}_{}_{}",
+            base.span.line, base.span.column, position
+        );
+        declarations.push_str(&format!(
+            "{} {value_name} = ({value_code}); ",
+            c_type(&ty, signatures)
+        ));
+        if position == selected_index {
+            selected = Some(value_name);
+        }
+    }
+
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    Ok(Some(format!(
+        "__extension__ ({{ {declarations}{selected}; }})"
+    )))
+}
+
 fn reusable_ui_runtime_list_index_c(
     expr: &Expr,
     index: &Expr,
@@ -36670,6 +36747,11 @@ fn ui_expr_c_for_view_identity(
                     "isNotEmpty" => return Ok(format!("(({length}) != INT64_C(0))")),
                     _ => unreachable!(),
                 }
+            }
+            if let Some(projected) =
+                effectful_copy_ui_field_projection_c(base, name, view, signatures, view_identity)?
+            {
+                return Ok(projected);
             }
             if let Some(base_ty) = ui_expr_known_type(base, view, signatures) {
                 let base_ty = signatures.canonical_type(&base_ty);

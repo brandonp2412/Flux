@@ -83658,6 +83658,104 @@ app App
 }
 
 #[test]
+fn composed_view_field_projection_preserves_effectful_literal_evaluation_order() {
+    let source = r#"
+fn recordFirst() -> bool {
+    print("record first")
+    return false
+}
+
+fn recordSecond() -> bool {
+    print("record second")
+    return true
+}
+
+fn structFirst() -> bool {
+    print("struct first")
+    return false
+}
+
+fn structSecond() -> bool {
+    print("struct second")
+    return true
+}
+
+struct Flags {
+    first: bool
+    second: bool
+}
+
+view Badge(visible: bool) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: visible
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr 1fr
+    Badge recordBadge at 1,1
+        visible: (first: recordFirst(), second: recordSecond()).second
+    Badge structBadge at 2,1
+        visible: (Flags { first: structFirst(), second: structSecond() }).second
+}
+
+app App
+"#;
+
+    check_source(source).expect("effectful aggregate projection fixture should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.matches("flux__ui_aggregate_field_").count() >= 4,
+            "effectful record/struct fields should be evaluated into ordered temporaries"
+        );
+        let record_first = generated
+            .find(" = (flux__fn_recordFirst());")
+            .expect("first record field should be evaluated");
+        let record_second = generated
+            .find(" = (flux__fn_recordSecond());")
+            .expect("second record field should be evaluated");
+        assert!(
+            record_first < record_second,
+            "record fields must preserve source-order eager evaluation"
+        );
+        let struct_first = generated
+            .find(" = (flux__fn_structFirst());")
+            .expect("first struct field should be evaluated");
+        let struct_second = generated
+            .find(" = (flux__fn_structSecond());")
+            .expect("second struct field should be evaluated");
+        assert!(
+            struct_first < struct_second,
+            "struct fields must preserve source-order eager evaluation"
+        );
+    };
+
+    let linux = compile_to_c(source)
+        .expect("effectful record/struct projections should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful aggregate projection fixture should analyze for native targets");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful record/struct projections should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn composed_view_reusable_list_slice_parameter_rejects_effectful_items() {
     let source = r#"
 fn probe() -> bool {
@@ -84473,12 +84571,12 @@ app App
 "#;
 
     check_source(source).expect("effectful aggregate projection fixture should typecheck");
-    let error = compile_to_c(source)
-        .expect_err("constant projection folding must not discard another field's effects");
+    let generated = compile_to_c(source)
+        .expect("effectful unselected aggregate fields should lower without being discarded");
+    assert!(generated.contains("flux__ui_aggregate_field_"));
     assert!(
-        error
-            .message
-            .contains("bootstrap dynamic UI expression currently supports")
+        generated.contains(" = (flux__fn_probe());"),
+        "unselected effectful aggregate fields must still be evaluated"
     );
 }
 
