@@ -76084,6 +76084,7 @@ view Detail {
     state alignment: str = "right"
     state lineHeight: i64 = 130
     state inset: i64 = 6
+    state tapped: bool = false
     grid columns: 1fr
     grid rows: auto auto
     Text selectableRich at 1,1
@@ -76093,6 +76094,7 @@ view Detail {
         textAlign: alignment
         lineHeightPercent: lineHeight
         padding: inset
+        onTap: tapped => true
     Text displayRich at 2,1
         richText: "<b>Display</b> only"
         textAlign: "center"
@@ -76147,6 +76149,12 @@ app Screen
     assert!(windows.contains(
         "SetWindowSubclass(context->control_windows[1], flux__win_rich_text_nonselectable_proc, (UINT_PTR)10002, 0)"
     ));
+    assert!(windows.contains("static LRESULT CALLBACK flux__win_edit_text_tap_proc_view_1_0"));
+    assert!(windows.contains(
+        "SetWindowSubclass(context->control_windows[0], flux__win_edit_text_tap_proc_view_1_0, (UINT_PTR)20001"
+    ));
+    assert!(windows.contains("if (activate) flux__win_tap_view_1_0();"));
+    assert!(!windows.contains("case 1000: if (HIWORD(wparam) == STN_CLICKED)"));
     assert!(
         !windows
             .contains("SetWindowSubclass(context->control_windows[0], flux__win_text_layout_proc")

@@ -21615,6 +21615,20 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
     } else {
         out.push_str("static void flux__windows_save_control_gestures(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_restore_control_gestures(FluxWindowsWindowContext *context) { (void)context; }\nstatic void flux__windows_release_control_gestures(FluxWindowsWindowContext *context) { (void)context; }\n");
     }
+    let uses_secondary_edit_backed_text_taps =
+        secondary_window_views.iter().any(|(_, secondary_view)| {
+            secondary_view.elements.iter().any(|element| {
+                element.kind == "Text"
+                    && (view_property(element, "rich_text").is_some()
+                        || view_property(element, "selectable")
+                            .and_then(|property| static_expr_bool(&property.value, signatures))
+                            .unwrap_or(false))
+                    && view_property(element, "on_tap").is_some()
+            })
+        });
+    if uses_secondary_edit_backed_text_taps {
+        out.push_str("typedef struct { bool tracking; bool moved; int start_x; int start_y; } FluxWinSecondaryTextTapState;\n");
+    }
     let mut secondary_save_cases = String::new();
     let mut secondary_restore_cases = String::new();
     let mut secondary_release_cases = String::new();
@@ -21837,6 +21851,34 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             out.push_str(&format!(
                 "typedef struct {{ {gesture_fields} }} FluxWindowsView{view_identity}GestureState;
 "
+            ));
+        }
+        for (index, element) in secondary_view.elements.iter().enumerate() {
+            let edit_backed_text_tap = element.kind == "Text"
+                && (view_property(element, "rich_text").is_some()
+                    || view_property(element, "selectable")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        .unwrap_or(false))
+                && view_property(element, "on_tap").is_some();
+            if !edit_backed_text_tap {
+                continue;
+            }
+            let long_press_guard = if view_property(element, "on_long_press").is_some() {
+                format!(
+                    " FluxWindowsView{view_identity}GestureState *gesture_state = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (gesture_state != NULL && gesture_state->consumed[{index}]) {{ gesture_state->consumed[{index}] = false; flux__win_refresh(); return result; }}"
+                )
+            } else {
+                String::new()
+            };
+            let swipe_guard = if view_property(element, "on_swipe").is_some() {
+                format!(
+                    " FluxWindowsView{view_identity}GestureState *swipe_state = context != NULL && context->view_identity == UINT32_C({view_identity}) ? (FluxWindowsView{view_identity}GestureState *)context->control_gesture_state : NULL; if (swipe_state != NULL && swipe_state->swipe_consumed[{index}]) {{ swipe_state->swipe_consumed[{index}] = false; flux__win_refresh(); return result; }}"
+                )
+            } else {
+                String::new()
+            };
+            out.push_str(&format!(
+                "static LRESULT CALLBACK flux__win_edit_text_tap_proc_view_{view_identity}_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR subclass_id, DWORD_PTR reference) {{ FluxWinSecondaryTextTapState *tap = (FluxWinSecondaryTextTapState *)(uintptr_t)reference; if (message == WM_NCDESTROY) {{ RemoveWindowSubclass(hwnd, flux__win_edit_text_tap_proc_view_{view_identity}_{index}, subclass_id); free(tap); return DefSubclassProc(hwnd, message, wparam, lparam); }} if (tap == NULL) return DefSubclassProc(hwnd, message, wparam, lparam); flux__windows_activate_control_context(hwnd); if (message == WM_LBUTTONDOWN) {{ LRESULT result = DefSubclassProc(hwnd, message, wparam, lparam); tap->tracking = true; tap->moved = false; tap->start_x = (int)(short)LOWORD(lparam); tap->start_y = (int)(short)HIWORD(lparam); return result; }} if (message == WM_MOUSEMOVE && tap->tracking && (wparam & MK_LBUTTON) != 0) {{ int dx = (int)(short)LOWORD(lparam) - tap->start_x; int dy = (int)(short)HIWORD(lparam) - tap->start_y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) tap->moved = true; }} if (message == WM_LBUTTONUP) {{ bool activate = tap->tracking && !tap->moved; tap->tracking = false; tap->moved = false; LRESULT result = DefSubclassProc(hwnd, message, wparam, lparam); FluxWindowsWindowContext *context = flux__windows_active_context;{long_press_guard}{swipe_guard} if (activate) flux__win_tap_view_{view_identity}_{index}(); return result; }} if (message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ tap->tracking = false; tap->moved = false; }} return DefSubclassProc(hwnd, message, wparam, lparam); }}\n"
             ));
         }
         let mut secondary_subclass_release = String::new();
@@ -25658,7 +25700,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             };
             let primary_action = action_name.and_then(|name| view_property(element, name));
             if primary_action.is_none() {
-                if view_property(element, "on_tap").is_some() {
+                if view_property(element, "on_tap").is_some()
+                    && !(element.kind == "Text"
+                        && (view_property(element, "rich_text").is_some()
+                            || view_property(element, "selectable")
+                                .and_then(|property| static_expr_bool(&property.value, signatures))
+                                .unwrap_or(false)))
+                {
                     let notification =
                         if matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio") {
                             "BN_CLICKED"
@@ -26985,6 +27033,18 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
                 out.push_str(&format!(
                     "if (!SetWindowSubclass(context->control_windows[{index}], flux__win_secondary_border_proc, (UINT_PTR){}, (DWORD_PTR)(uintptr_t)context)) return flux__win_create_view_window_failure(window, primary);\n",
                     border_slot + 1
+                ));
+            }
+            let secondary_edit_backed_text_tap = element.kind == "Text"
+                && (view_property(element, "rich_text").is_some()
+                    || view_property(element, "selectable")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        .unwrap_or(false))
+                && view_property(element, "on_tap").is_some();
+            if secondary_edit_backed_text_tap {
+                out.push_str(&format!(
+                    "FluxWinSecondaryTextTapState *flux__win_view_{view_identity}_tap_state_{index} = (FluxWinSecondaryTextTapState *)calloc(1, sizeof(FluxWinSecondaryTextTapState)); if (flux__win_view_{view_identity}_tap_state_{index} == NULL) return flux__win_create_view_window_failure(window, primary); if (!SetWindowSubclass(context->control_windows[{index}], flux__win_edit_text_tap_proc_view_{view_identity}_{index}, (UINT_PTR){}, (DWORD_PTR)(uintptr_t)flux__win_view_{view_identity}_tap_state_{index})) {{ free(flux__win_view_{view_identity}_tap_state_{index}); return flux__win_create_view_window_failure(window, primary); }}\n",
+                    index + 20001
                 ));
             }
             let secondary_nonselectable_rich_text = element.kind == "Text"
