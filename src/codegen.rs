@@ -34645,6 +34645,92 @@ fn reusable_ui_runtime_list_length_c(
     Ok(Some(dynamic_terms.join(" + ")))
 }
 
+fn reusable_ui_runtime_list_edge_expr(
+    expr: &Expr,
+    first: bool,
+    signatures: &Signatures,
+) -> Result<Option<Expr>, Diagnostic> {
+    let ExprKind::List(items) = &expr.kind else {
+        return Ok(None);
+    };
+
+    let mut candidates = Vec::new();
+    for item in items {
+        let singleton = Expr {
+            line: item.line,
+            span: item.span,
+            kind: ExprKind::List(vec![item.clone()]),
+        };
+        if let Some(projected) = reusable_ui_list_projection_items(&singleton, signatures)? {
+            candidates.extend(projected.into_iter().map(|value| (None, value)));
+            continue;
+        }
+
+        match &item.kind {
+            ExprKind::ListIf {
+                condition,
+                binding: None,
+                value,
+                else_value: None,
+                ..
+            } if transparent_native_component_argument_is_reusable(condition)
+                && transparent_native_component_argument_is_reusable(value) =>
+            {
+                candidates.push((Some(condition.as_ref().clone()), value.as_ref().clone()));
+            }
+            _ => return Ok(None),
+        }
+    }
+
+    let fallback_index = if first {
+        candidates
+            .iter()
+            .position(|(condition, _)| condition.is_none())
+    } else {
+        candidates
+            .iter()
+            .rposition(|(condition, _)| condition.is_none())
+    };
+    let Some(fallback_index) = fallback_index else {
+        return Ok(None);
+    };
+    let mut result = candidates[fallback_index].1.clone();
+
+    if first {
+        for (condition, value) in candidates[..fallback_index].iter().rev() {
+            let Some(condition) = condition else {
+                return Ok(None);
+            };
+            result = Expr {
+                line: value.line,
+                span: value.span,
+                kind: ExprKind::Conditional {
+                    then_expr: Box::new(value.clone()),
+                    cond: Box::new(condition.clone()),
+                    else_expr: Box::new(result),
+                },
+            };
+        }
+    } else {
+        for (condition, value) in &candidates[fallback_index + 1..] {
+            let Some(condition) = condition else {
+                return Ok(None);
+            };
+            result = Expr {
+                line: value.line,
+                span: value.span,
+                kind: ExprKind::Conditional {
+                    then_expr: Box::new(value.clone()),
+                    cond: Box::new(condition.clone()),
+                    else_expr: Box::new(result),
+                },
+            };
+        }
+    }
+
+    Ok(Some(result))
+}
+
 fn fold_ui_primitive_expr_with_binding(
     expr: &Expr,
     binding_name: &str,
@@ -35560,6 +35646,12 @@ fn ui_expr_c_for_view_identity(
                 }
             }
             let list_member = crate::builtin_names::list_member_impl(name);
+            if matches!(list_member, "first" | "last")
+                && let Some(edge) =
+                    reusable_ui_runtime_list_edge_expr(base, list_member == "first", signatures)?
+            {
+                return ui_expr_c_for_view_identity(&edge, view, signatures, view_identity);
+            }
             if matches!(list_member, "length" | "isEmpty" | "isNotEmpty")
                 && let Some(length) =
                     reusable_ui_runtime_list_length_c(base, view, signatures, view_identity)?
