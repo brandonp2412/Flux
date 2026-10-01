@@ -84031,6 +84031,83 @@ app App
 }
 
 #[test]
+fn composed_view_effectful_list_spread_and_optional_items_scalarize_observably() {
+    let source = r#"
+fn probe() -> bool {
+    print("probe")
+    return true
+}
+
+fn maybe() -> bool? {
+    print("maybe")
+    return true
+}
+
+view Badge(flags: bool[], index: i64) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        visible: flags.length == 3 && flags[index] && flags.first && flags.last
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Badge badge at 1,1
+        flags: [...[probe(), true], ?maybe()]
+        index: windowWidth - windowWidth
+}
+
+app App
+"#;
+
+    check_source(source)
+        .expect("effectful spread/optional component list argument should typecheck");
+
+    let assert_target = |generated: &str| {
+        assert!(
+            generated.contains("__component_badge__param_flags__item_0__spread__item_0"),
+            "effectful spread item should use deterministic per-instance scalar storage"
+        );
+        assert!(
+            generated.contains("__component_badge__param_flags__item_1__optional"),
+            "effectful optional list item should use deterministic per-instance optional storage"
+        );
+        assert!(generated.contains("flux__fn_probe()"));
+        assert!(generated.contains("flux__fn_maybe()"));
+        assert!(
+            generated.contains("flux__ui_component_index_"),
+            "spread/optional runtime indexing should stay on direct candidate lowering"
+        );
+        assert!(
+            !generated.contains("flux__ui_derived___component_badge__param_flags ="),
+            "spread/optional list projections should not require aggregate derived storage"
+        );
+    };
+
+    let linux = compile_to_c(source)
+        .expect("effectful spread/optional component list should lower through Linux");
+    assert_target(&linux);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effectful spread/optional component list fixture should analyze");
+    for target in [
+        fluxc::codegen::NativeTarget::Android,
+        fluxc::codegen::NativeTarget::Windows,
+    ] {
+        let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+            database.program(),
+            database.signatures(),
+            &std::collections::HashMap::new(),
+            target,
+        )
+        .expect("effectful spread/optional component list should lower natively");
+        assert_target(&generated);
+    }
+}
+
+#[test]
 fn lowers_composed_view_parameterized_constant_list_property_on_all_native_backends() {
     let source = r#"
 view Badge(enabled: bool) {

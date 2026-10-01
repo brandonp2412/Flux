@@ -13280,10 +13280,69 @@ fn scalarize_observable_component_argument(
                         }
                         continue;
                     }
-                    if matches!(
-                        item.kind,
-                        ExprKind::ListSpread { .. } | ExprKind::ListOptional { .. }
-                    ) {
+                    if let ExprKind::ListSpread {
+                        value: spread_value,
+                        spread_span,
+                        optional: false,
+                    } = &item.kind
+                    {
+                        let spread_path = format!("{item_path}__spread");
+                        let lowered_spread = scalarize_observable_component_argument(
+                            spread_value,
+                            &Type::List(element_ty.clone()),
+                            base_name,
+                            &spread_path,
+                            name_span,
+                            type_span,
+                            signatures,
+                            staged_derived,
+                            used_derived_names,
+                        )?;
+                        lowered_items.push(Expr {
+                            line: item.line,
+                            span: item.span,
+                            kind: ExprKind::ListSpread {
+                                value: Box::new(lowered_spread),
+                                spread_span: *spread_span,
+                                optional: false,
+                            },
+                        });
+                        continue;
+                    }
+                    if let ExprKind::ListOptional {
+                        value: optional_value,
+                        question_span,
+                    } = &item.kind
+                    {
+                        if !matches!(
+                            signatures.canonical_type(&element_ty),
+                            Type::I64 | Type::Bool | Type::Str
+                        ) {
+                            return None;
+                        }
+                        let optional_path = format!("{item_path}__optional");
+                        let lowered_optional = scalarize_observable_component_argument(
+                            optional_value,
+                            &Type::Optional(element_ty.clone()),
+                            base_name,
+                            &optional_path,
+                            name_span,
+                            type_span,
+                            signatures,
+                            staged_derived,
+                            used_derived_names,
+                        )?;
+                        lowered_items.push(Expr {
+                            line: item.line,
+                            span: item.span,
+                            kind: ExprKind::ListOptional {
+                                value: Box::new(lowered_optional),
+                                question_span: *question_span,
+                            },
+                        });
+                        continue;
+                    }
+                    if matches!(item.kind, ExprKind::ListSpread { optional: true, .. }) {
                         return None;
                     }
                     lowered_items.push(scalarize_observable_component_argument(
