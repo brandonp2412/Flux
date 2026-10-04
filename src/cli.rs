@@ -2793,6 +2793,17 @@ fn build_native_target(
 ) -> Result<(), CliError> {
     let native_package = native_package_config_for_target(path)?;
     let sources = validate_project(path)?;
+    if let Some(output) = explicit_output.as_ref()
+        && let Ok(output) = fs::canonicalize(output)
+        && let Some(source) = sources.iter().find(|source| {
+            fs::canonicalize(&source.path).is_ok_and(|source_path| source_path == output)
+        })
+    {
+        return Err(CliError::Message(format!(
+            "refusing to overwrite Flux source '{}' with build output",
+            source.path.display()
+        )));
+    }
     let codegen_target = native_target.codegen_target();
     let generated =
         match fluxc::project::analyze_for_target(path, codegen_target).and_then(|analysis| {
@@ -12790,6 +12801,44 @@ mod tests {
         assert!(!root.join(".flux/cache").exists());
         assert!(!root.join(".flux/ir-cache").exists());
         assert!(!root.join(".flux/analysis-cache").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn build_rejects_output_that_overwrites_flux_source() {
+        let root = std::env::temp_dir().join(format!(
+            "flux-build-source-output-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("build fixture should be writable");
+        let entry = root.join("main.flux");
+        let source = "fn main() -> i64 {
+    return 0
+}
+";
+        fs::write(&entry, source).expect("source fixture should be writable");
+
+        let error = super::build_native_target(
+            &entry,
+            Some(entry.clone()),
+            None,
+            BuildMode::Debug,
+            NativeTargetOptions::default(),
+        )
+        .expect_err("build output must not overwrite a Flux source file");
+
+        let CliError::Message(message) = error else {
+            panic!("source/output collision should produce a CLI message");
+        };
+        assert!(message.contains("refusing to overwrite Flux source"));
+        assert_eq!(
+            fs::read_to_string(&entry).expect("source fixture should remain readable"),
+            source
+        );
         let _ = fs::remove_dir_all(root);
     }
 
